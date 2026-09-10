@@ -884,14 +884,14 @@ class OverlayMenu:
                             it.rect.collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
-        # The expanded list rows: hovering a row highlights it (the rows
-        # are a pop-up layer above the content, so they win over the items
-        # underneath).
-        if self.open_choice:
-            for i, opt in enumerate(self.options):
-                if opt.rect.collidepoint(event.pos):
-                    self.hover = f"option:{i}"
-                    break
+            # The expanded list rows: hovering a row highlights it (the rows
+            # are a pop-up layer above the content, so they win over the items
+            # underneath).
+            if self.open_choice:
+                for i, opt in enumerate(self.options):
+                    if opt.rect.collidepoint(event.pos):
+                        self.hover = f"option:{i}"
+                        break
         if event.type == pygame.MOUSEWHEEL:
             # Scroll only while the cursor is over the panel: otherwise the
             # wheel inside the game would end up scrolling the menu. The
@@ -1253,13 +1253,40 @@ class OverlayMenu:
              # The windows page rows are drawn by _draw_options (they are
              # option items, like the entries of an expanded list).
              "option": lambda *_: None}[item.kind](surface, item, s)
-        if self.open_choice:
-            # The expanded list is a pop-up layer: dim the panel content
-            # underneath it so the list reads as a separate surface (the
-            # rows themselves are opaque and drawn on top).
-            shade = pygame.Surface(r.size, pygame.SRCALPHA)
-            shade.fill((0, 0, 0, 90))
-            surface.blit(shade, r.topleft)
+        if self.open_choice and self.options:
+            # The expanded list fades at its edges: a soft gradient around
+            # the rows (top/bottom/left/right) instead of dimming the whole
+            # panel - the list reads as a floating layer while the content
+            # underneath stays fully readable.
+            first = self.options[0].rect
+            last = self.options[-1].rect
+            list_rect = pygame.Rect(first.x, first.y, first.w,
+                                     last.bottom - first.y)
+            fade = self._u(18)
+            shade = pygame.Surface(
+                (list_rect.w + 2 * fade, list_rect.h + 2 * fade),
+                pygame.SRCALPHA)
+            for off in range(fade):
+                a = int(95 * (1 - off / fade))
+                # top edge
+                pygame.draw.line(shade, (0, 0, 0, a),
+                                 (0, fade - off),
+                                 (shade.get_width(), fade - off))
+                # bottom edge
+                pygame.draw.line(shade, (0, 0, 0, a),
+                                 (0, shade.get_height() - fade + off),
+                                 (shade.get_width(),
+                                  shade.get_height() - fade + off))
+                # left edge
+                pygame.draw.line(shade, (0, 0, 0, a),
+                                 (fade - off, 0),
+                                 (fade - off, shade.get_height()))
+                # right edge
+                pygame.draw.line(shade, (0, 0, 0, a),
+                                 (shade.get_width() - fade + off, 0),
+                                 (shade.get_width() - fade + off,
+                                  shade.get_height()))
+            surface.blit(shade, (list_rect.x - fade, list_rect.y - fade))
         self._draw_options(surface)
         surface.set_clip(prev_clip)
         for item in self.items:
