@@ -525,6 +525,8 @@ class OverlayMenu:
                    bool(self.state.get("open_on_start")))
             toggle("autostart", s.get("autostart", "Autostart with Windows"),
                    bool(self.state.get("autostart")))
+            toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
+                   bool(self.state.get("rec_indicator", True)))
 
             section(s["sec_hotkeys"])
             # The remapping fields. The captions on the buttons come from these

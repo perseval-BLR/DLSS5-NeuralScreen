@@ -907,6 +907,7 @@ class Display:
             return
         self.screen.fill(CHROMA_KEY)
         self._draw_alerts()
+        self._draw_rec_indicator()
         self.menu.set_stats(self._hud)
         self.menu.draw(self.screen)
         self._draw_window_highlight()
@@ -1009,6 +1010,37 @@ class Display:
         pygame.quit()
 
     # -- HUD --------------------------------------------------------------
+
+    def _draw_rec_indicator(self) -> None:
+        """The recording indicator outside the menu: a red dot + timer.
+
+        The menu shows the REC cell, but with the menu closed there was
+        no sign that a recording is running (user 5080 request). The
+        indicator lives in the top-right corner of the HUD layer, drawn
+        over the worker's window. It is hidden from the recorded frame
+        itself: draw_capture_overlay bakes only the menu, and the HUD
+        layer is excluded from the capture - the indicator is a live
+        status, not part of the file.
+        """
+        if not self._hud.get("recording"):
+            return
+        if not self._hud.get("rec_indicator", True):
+            return
+        c = self.theme
+        r = int(round(7 * self.ui_scale))
+        pad = int(round(14 * self.ui_scale))
+        x = self.width - pad - r
+        y = pad + r
+        # The dot pulses: a static dot is easy to miss, a blinking one
+        # is what every recorder does.
+        if int(time.monotonic() * 2) % 2 == 0:
+            pygame.draw.circle(self.screen, self._rgb(c["danger"]), (x, y), r)
+        secs = float(self._hud.get("rec_seconds", 0.0))
+        text = f"REC {int(secs) // 60:d}:{int(secs) % 60:02d}"
+        surf = self._font.render(text, True, self._rgb(c["danger"]))
+        tx = x - r - int(round(8 * self.ui_scale)) - surf.get_width()
+        ty = y - surf.get_height() // 2
+        self.screen.blit(surf, (tx, ty))
 
     def _draw_alerts(self) -> None:
         """Pop-up alert: the menu palette, top centre.

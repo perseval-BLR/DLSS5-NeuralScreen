@@ -591,6 +591,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "local_structure": params["local_structure"],
         "skin_structure": params["skin_structure"],
         "monitor": monitor_name if monitor_name is not None else int(monitor),
+        "rec_indicator": bool(cfg.get("rec_indicator", True)),
     }
 
 
@@ -2576,6 +2577,7 @@ def main() -> int:
                 "recording": recorder is not None,
                 "work_size": f"{work_w}x{work_h}",
                 "rec_seconds": (recorder.duration_ms / 1000.0) if recorder else 0.0,
+                "rec_indicator": bool(cfg.get("rec_indicator", True)),
                 "open_on_start": startup_menu,
                 "autostart": _autostart_enabled(),
                 "split": split_pos,
@@ -2636,6 +2638,12 @@ def main() -> int:
                         "Autostart ON" if new_state else "Autostart OFF"))
                 else:
                     display.alert(UI_STRINGS[lang].get("autostart_err", "Autostart failed"))
+            elif kind == "toggle" and action[1] == "rec_indicator":
+                # The recording indicator outside the menu: a config flag,
+                # the HUD reads it on every redraw.
+                cfg["rec_indicator"] = not bool(cfg.get("rec_indicator", True))
+                _save_menu_layout()
+                print(f"[main] recording indicator: {'on' if cfg['rec_indicator'] else 'off'}")
             elif kind == "param":
                 new_params = dict(params)
                 new_params[action[1]] = float(action[2])
@@ -3410,6 +3418,12 @@ def main() -> int:
                 "profile": cfg["profile"],
                 "params": {k: v for k, v in params.items() if k not in ("profile", "preset", "style", "auto_mask", "ui_correction")},
                 "frames": frame_index,
+                # The recording indicator outside the menu: the HUD is drawn
+                # over the worker's window, so the user sees the REC state
+                # even with the menu closed (user 5080 request).
+                "recording": recorder is not None,
+                "rec_seconds": (recorder.duration_ms / 1000.0) if recorder else 0.0,
+                "rec_indicator": bool(cfg.get("rec_indicator", True)),
             })
 
             frame_index += 1
