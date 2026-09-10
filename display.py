@@ -281,7 +281,7 @@ class Display:
         return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
 
     def set_lang(self, lang: str) -> None:
-        """Switch the HUD status language (en/ru)."""
+        """Switch the HUD status language (en/ru/fr)."""
         if lang in STRINGS and lang != self._lang:
             self._lang = lang
 
