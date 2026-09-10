@@ -884,6 +884,14 @@ class OverlayMenu:
                             it.rect.collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
+        # The expanded list rows: hovering a row highlights it (the rows
+        # are a pop-up layer above the content, so they win over the items
+        # underneath).
+        if self.open_choice:
+            for i, opt in enumerate(self.options):
+                if opt.rect.collidepoint(event.pos):
+                    self.hover = f"option:{i}"
+                    break
         if event.type == pygame.MOUSEWHEEL:
             # Scroll only while the cursor is over the panel: otherwise the
             # wheel inside the game would end up scrolling the menu. The
@@ -1245,6 +1253,13 @@ class OverlayMenu:
              # The windows page rows are drawn by _draw_options (they are
              # option items, like the entries of an expanded list).
              "option": lambda *_: None}[item.kind](surface, item, s)
+        if self.open_choice:
+            # The expanded list is a pop-up layer: dim the panel content
+            # underneath it so the list reads as a separate surface (the
+            # rows themselves are opaque and drawn on top).
+            shade = pygame.Surface(r.size, pygame.SRCALPHA)
+            shade.fill((0, 0, 0, 90))
+            surface.blit(shade, r.topleft)
         self._draw_options(surface)
         surface.set_clip(prev_clip)
         for item in self.items:
@@ -1451,12 +1466,17 @@ class OverlayMenu:
         """
         rows = list(getattr(self, "options", []))
         rows += [i for i in self.items if i.kind == "option"]
-        for opt in rows:
+        for i, opt in enumerate(rows):
             selected = opt.extra.get("selected")
             highlighted = opt.extra.get("highlighted")
+            # The mouse hover: the pop-up rows are indexed by their position
+            # in self.options (the windows page rows have their own hover
+            # mechanism - the real window outline).
+            hovered = (i < len(self.options)
+                       and self.hover == f"option:{i}")
             if selected:
                 fill = self.c["accent"]
-            elif highlighted:
+            elif highlighted or hovered:
                 fill = self.c["surface"]
             else:
                 fill = self.c["bg"]
