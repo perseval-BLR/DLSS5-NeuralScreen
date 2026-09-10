@@ -141,13 +141,15 @@ def main() -> int:
             pygame.MOUSEBUTTONDOWN, {"pos": cells[1].center, "button": 1}))
         if out != want:
             failures.append(f"segment {key}: expected {want}, got {out}")
-    hk = find(menu, "hotkey", "toggle")
-    if hk is None:
-        failures.append("no hotkey row on the settings page")
-    else:
+    for hk_cmd in ("toggle", "settings", "screenshot_menu", "record",
+                   "window_mode", "scale_up", "scale_down", "quit"):
+        hk = find(menu, "hotkey", hk_cmd)
+        if hk is None:
+            failures.append(f"no hotkey row {hk_cmd} on the settings page")
+            continue
         out = click(menu, hk)
-        if out != [("capture", "toggle")]:
-            failures.append(f"hotkey row: expected capture, got {out}")
+        if out != [("capture", hk_cmd)]:
+            failures.append(f"hotkey row {hk_cmd}: expected capture, got {out}")
     close_icon = find(menu, "icon", "close")
     if close_icon is None:
         failures.append("no close icon on the settings page")

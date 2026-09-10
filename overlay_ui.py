@@ -60,6 +60,8 @@ HOTKEY_ROWS = (
     ("screenshot_menu", "hk_shot"),
     ("record", "hk_record"),
     ("window_mode", "hk_window"),
+    ("scale_up", "hk_scale_up"),
+    ("scale_down", "hk_scale_down"),
     ("quit", "hk_quit"),
 )
 

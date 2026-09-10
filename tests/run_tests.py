@@ -50,6 +50,7 @@ ABOUT = {
     "test_hotkey_rebind.py": "hotkeys can be reassigned from the config",
     "test_hotkey_bindings.py": "parsing, aliases and defaults survive binding changes",
     "test_hotkey_held.py": "a key held at startup is the baseline, not an event",
+    "test_hotkey_remap_no_fire.py": "a key pressed during a remap is the baseline, not an event",
     "test_header_footer.py": "the header collapse icon and the one-window footer button",
     "test_i18n.py": "every language has the same keys, none empty",
     "test_menu_position.py": "the menu position is fixed - saved offset honoured, clamped",

@@ -381,6 +381,14 @@ class HotkeyController:
         for hk_id in self._bindings:
             user32.UnregisterHotKey(None, hk_id)
         self._active = False
+        # The poller must treat the CURRENT key state as its baseline after
+        # a suspend/rebind: the key the user just pressed to remap (or is
+        # still holding) is not a fresh press. Without the reset the poller
+        # sees it as a new edge and fires the command the user just
+        # reassigned (issue: remapping Divide to Num2 auto-executed the
+        # action). The next tick re-baselines from the live state.
+        self._poll_down = {}
+        self._poll_last = {}
 
     def suspend(self) -> None:
         """Suspend the hotkeys: while the menu waits for a key, F8 must land
