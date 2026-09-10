@@ -131,7 +131,6 @@ The settings worth touching:
   result is composed onto the pristine 1:1 native frame (a matched residual
   composite), so text, edges and UI keep full resolution while the cheap
   low-res network does the relighting. Look at your own screen and pick a step.
-
 The interface speaks **12 languages** - English, Russian, French, German,
 Spanish, Italian, Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
 Pick one under the sliders icon (Language). The menu, the HUD and the alerts
