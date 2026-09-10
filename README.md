@@ -103,9 +103,9 @@ running on it, red when it is not.
 
 The settings worth touching:
 
-- **Profile** — how strong the effect is, from *Faithful* to *Extreme*. Start
-  at *Strong / Cinematic* and go from there. The four sliders underneath are
-  the same thing in detail.
+- **Profile** — how strong the effect is, from *Faithful* to *Extreme*. The
+  default is *Natural* - a faithful, balanced look. The four sliders
+  underneath are the same thing in detail.
 - **Before / after wipe** — leaves the left part of the screen untouched so
   you can see what the effect is doing. Set it back to 0 when done.
 - **Resolution the network runs at** — one slider. At the top it is your whole
@@ -117,6 +117,11 @@ The settings worth touching:
   composite), so text, edges and UI keep full resolution while the cheap
   low-res network does the relighting. Look at your own screen and pick a step.
 
+The interface speaks **12 languages** - English, Russian, French, German,
+Spanish, Italian, Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
+Pick one under the sliders icon (Language). The menu, the HUD and the alerts
+all follow.
+
 Everything else — which monitor, whether the menu opens on launch, starting
 with Windows, key assignments — is behind the sliders icon.
 
@@ -124,7 +129,8 @@ with Windows, key assignments — is behind the sliders icon.
 
 **Num0** records what you see, with system sound, into an MP4 in
 `recordings`. **Num3** saves a screenshot. The menu shows up in both if
-open - on purpose.
+open - on purpose. The recording audio passes through a soft limiter, so a
+loud system mix cannot clip the track into distortion.
 
 **Record the processed picture externally:**
 - **OBS (recommended):** launch with `NS_SPOUT=1` (environment variable,
