@@ -196,9 +196,17 @@ def main() -> int:
             else:
                 fh, fw = frame.shape[:2]
                 # The right-edge strip must NOT be panel-coloured: the menu
-                # is centred now, not cornered.
+                # is centred now, not cornered. Match the exact light-theme
+                # panel colour (240,238,230) with a small tolerance - a
+                # plain "brightness > 200" test also matches light wallpapers
+                # and fails spuriously on a light desktop.
+                def panel_mask(blk):
+                    d = (np.abs(blk[..., 0].astype(int) - 240) < 15) & \
+                        (np.abs(blk[..., 1].astype(int) - 238) < 15) & \
+                        (np.abs(blk[..., 2].astype(int) - 230) < 15)
+                    return d
                 strip = frame[max(0, fh - 700):fh, max(0, fw - 100):fw]
-                light = (strip[..., 0] > 200) & (strip[..., 1] > 200) & (strip[..., 2] > 200)
+                light = panel_mask(strip)
                 share = float(light.mean())
                 print(f"right-edge strip: {share * 100:.1f}% panel-coloured "
                       f"({fw}x{fh} screen)")
@@ -208,7 +216,10 @@ def main() -> int:
                         f"switch ({share * 100:.1f}% panel in the strip) - the "
                         f"fixed position was not honoured")
                 # And the panel must actually be there: a light blob in the
-                # centre band (the centred offset).
+                # centre band (the centred offset). The capture may shift the
+                # exact panel colour slightly, so the centre check uses a
+                # brightness threshold - the overlay background behind the
+                # panel is dark, so a bright blob in the centre is the panel.
                 band = frame[fh // 2 - 200:fh // 2 + 200, fw // 2 - 300:fw // 2 + 300]
                 light_b = (band[..., 0] > 200) & (band[..., 1] > 200) & (band[..., 2] > 200)
                 bshare = float(light_b.mean())
