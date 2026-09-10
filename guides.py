@@ -45,6 +45,14 @@ class TemporalGuideGenerator:
         self.dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_FAST)
         self.dis.setUseSpatialPropagation(True)
         self.dis.setFinestScale(1)
+        # MV validation (Feeder 0.14 static-hypothesis pattern): DIS on a
+        # static desktop produces small noise vectors (capture noise,
+        # cursor jitter, UI shimmer). Vectors below the noise floor are
+        # zeroed - NGX would otherwise treat them as real motion and smear
+        # text/UI. The floor is in flow-resolution pixels: 0.5 px at a
+        # 320-wide flow is ~6 px at 4K work resolution, far below any real
+        # motion (a 2 px scroll at 4K is 0.17 px in flow space).
+        self._flow_noise_floor = 0.5
 
     @property
     def motion_width(self) -> int:
@@ -105,6 +113,12 @@ class TemporalGuideGenerator:
                 # and was thrown away. Removed; reinstate it only together
                 # with the code that actually masks the motion vectors.
                 cur_to_prev = self.dis.calc(current, self.previous_gray, None)
+                # MV validation: zero the noise floor. DIS reports small
+                # vectors even on a static screen (capture noise, cursor
+                # jitter); NGX would smear text/UI on them. The mask is
+                # computed on the flow grid (115k elements, not 3M).
+                mag = np.hypot(cur_to_prev[..., 0], cur_to_prev[..., 1])
+                cur_to_prev[mag < self._flow_noise_floor] = 0.0
                 # Scale BEFORE the upscale: 115k elements instead of 3M, and
                 # exactly equivalent because resize is linear (verified: the
                 # two orders differ by 0.002, i.e. float16 rounding).

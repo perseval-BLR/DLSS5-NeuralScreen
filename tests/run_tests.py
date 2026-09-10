@@ -61,6 +61,7 @@ ABOUT = {
     "test_menu_scroll.py": "the menu scrolls and the wheel lands where it should",
     "test_overlay_toolwindow.py": "the overlay is a tool window - one taskbar button only",
     "test_motion_small.py": "the downscaled motion field is upscaled on the GPU",
+    "test_mv_validation.py": "noise-floor motion vectors are zeroed, real motion survives",
     "test_nr_small.py": "the reduced-resolution mode produces a real picture",
     "test_out_shm.py": "the pixel channel through shared memory",
     "test_out_status.py": "0x00000000 is a skipped frame, only 0xBAD00000 raises",
