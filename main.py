@@ -741,7 +741,8 @@ def _drain_stderr(worker, logs: list[str], stop: threading.Event) -> None:
             # revealed, resize) is part of the startup/shutdown diagnostics.
             if "[present]" in line or "[spout]" in line or "[arch]" in line or (
                     os.environ.get("NS_PHASE") == "1" and (
-                        "[phase]" in line or "[pure]" in line or "[host]" in line)):
+                        "[phase]" in line or "[pure]" in line or "[host]" in line
+                        or "[cap]" in line or "[dda]" in line)):
                 print(line)
     except Exception:
         pass
