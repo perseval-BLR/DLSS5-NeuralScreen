@@ -1892,9 +1892,20 @@ def main() -> int:
             try:
                 import cv2 as _cv2
                 path.parent.mkdir(parents=True, exist_ok=True)
-                ok = _cv2.imwrite(str(path),
-                                  _cv2.cvtColor(rgba, _cv2.COLOR_RGBA2BGRA),
-                                  [_cv2.IMWRITE_JPEG_QUALITY, 100])
+                # imencode + write_bytes, NOT imwrite: OpenCV opens the file
+                # through the C runtime with the ANSI codepage, so a path with
+                # any non-ASCII character writes NOTHING - and imwrite still
+                # answers True. Measured: a folder named in Cyrillic gave
+                # "True" and no file, while the program told the user the
+                # screenshot was saved. Encoding to memory and writing the
+                # bytes through Python leaves the path handling to Python,
+                # which does it in UTF-16.
+                ok, buf = _cv2.imencode(
+                    ".jpg", _cv2.cvtColor(rgba, _cv2.COLOR_RGBA2BGRA),
+                    [_cv2.IMWRITE_JPEG_QUALITY, 100])
+                if ok:
+                    path.write_bytes(buf.tobytes())
+                    ok = path.exists() and path.stat().st_size > 0
                 if ok:
                     print(f"[main] screenshot: {path}")
                     display.alert(f"Screenshot: {path.name}")

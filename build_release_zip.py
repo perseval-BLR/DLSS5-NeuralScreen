@@ -75,6 +75,10 @@ DEV_ONLY = {
     "autocheck.py",
     "run_tests.py",
     "build_release_zip.py",
+    # A release-verification tool for the maintainer. It shipped to users and
+    # would fail on the first line of work: it reads build_release_zip.py,
+    # which is dev-only and not in the archive.
+    "verify_github.py",
     # The docs folder holds the README screenshots - repository/release
     # assets, not program code. The archive must contain exactly what the
     # program needs to run (user rule 2026-09-08).
@@ -135,6 +139,13 @@ def _skip(path: str) -> bool:
     if norm.startswith("native/build-spout-"):
         return True
     if norm == "native/SpoutDX.lib":
+        return True
+    # The worker's source, the NGX headers and the import library are not
+    # something the program runs: the archive carries the built DLLs. It could
+    # not be rebuilt from the archive in any case - spout_bridge.cpp is
+    # dev-only - so shipping half a source tree only invited the question.
+    # The repository has all of it.
+    if norm.startswith("native/") and not norm.endswith(".dll"):
         return True
     if "/test/" in norm or "/tests/" in norm or "/testing/" in norm:
         return True

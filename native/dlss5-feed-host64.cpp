@@ -1300,6 +1300,37 @@ struct VideoGrayAck
 };
 #pragma pack(pop)
 
+// The wire protocol, pinned. Every size below is what main.py's struct format
+// packs (struct.calcsize with '<' - no padding), and tests/test_protocol_sizes
+// checks the same numbers from the Python side. If a field is added inside the
+// packed region, or a struct drifts out of it, this stops being a mysterious
+// "protocol desync" at runtime and becomes a compile error here.
+static_assert(sizeof(VideoHeader) == 64, "VideoHeader != HEADER_FMT");
+static_assert(sizeof(VideoFrameHeader) == 24, "VideoFrameHeader != FRAME_FMT");
+static_assert(sizeof(VideoResultHeader) == 28, "VideoResultHeader != OUT_FMT");
+static_assert(sizeof(VideoResizeCmd) == 64, "VideoResizeCmd != RESIZE_FMT");
+static_assert(sizeof(VideoResizeAck) == 24, "VideoResizeAck != RACK_FMT");
+static_assert(sizeof(VideoShmCmd) == 88, "VideoShmCmd != SHM_FMT");
+static_assert(sizeof(VideoShmAck) == 24, "VideoShmAck != SHM_ACK_FMT");
+static_assert(sizeof(VideoWindowCmd) == 24, "VideoWindowCmd != WINDOW_FMT");
+static_assert(sizeof(VideoWindowAck) == 24, "VideoWindowAck != WINDOW_ACK_FMT");
+static_assert(sizeof(VideoMotionCmd) == 24, "VideoMotionCmd != MOTION_FMT");
+static_assert(sizeof(VideoMotionAck) == 24, "VideoMotionAck != MOTION_ACK_FMT");
+static_assert(sizeof(VideoDdaCmd) == 24, "VideoDdaCmd != DDA_FMT");
+static_assert(sizeof(VideoDdaAck) == 24, "VideoDdaAck != DDA_ACK_FMT");
+static_assert(sizeof(VideoWgcCmd) == 32, "VideoWgcCmd != WGC_FMT");
+static_assert(sizeof(VideoWgcAck) == 24, "VideoWgcAck != WGC_ACK_FMT");
+static_assert(sizeof(VideoGrayCmd) == 88, "VideoGrayCmd != GRAY_FMT");
+static_assert(sizeof(VideoGrayAck) == 24, "VideoGrayAck != GRAY_ACK_FMT");
+static_assert(sizeof(VideoOutCmd) == 88, "VideoOutCmd != OUTS_FMT");
+static_assert(sizeof(VideoOutAck) == 24, "VideoOutAck != OUTS_ACK_FMT");
+// The offset of pts is what a mis-packed struct gets wrong first: the four
+// leading uint32s are followed by an 8-byte field that natural alignment
+// would push to 24.
+static_assert(offsetof(VideoFrameHeader, pts) == 16, "VideoFrameHeader is not packed");
+static_assert(offsetof(VideoResultHeader, pts) == 20, "VideoResultHeader is not packed");
+static_assert(offsetof(VideoWgcCmd, hwnd) == 24, "VideoWgcCmd is not packed");
+
 struct VideoTex
 {
     ID3D12Resource *tex = nullptr;

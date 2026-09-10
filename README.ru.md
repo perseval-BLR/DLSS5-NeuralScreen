@@ -12,8 +12,8 @@
 
 <table>
 <tr>
-<td><img src="docs/screenshot-main-light.png" alt="Меню, светлая тема" width="420"></td>
-<td><img src="docs/screenshot-main-dark.png" alt="Меню, тёмная тема" width="420"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-light.png" alt="Меню, светлая тема" width="420"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-dark.png" alt="Меню, тёмная тема" width="420"></td>
 </tr>
 </table>
 
@@ -105,8 +105,8 @@ NVIDIA App его не видят. В режиме окна - видят (см. 
 
 <table>
 <tr>
-<td><img src="docs/screenshot-windows.png" alt="Список окон" width="380"></td>
-<td><img src="docs/screenshot-settings.png" alt="Страница настроек" width="380"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-windows.png" alt="Список окон" width="380"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-settings.png" alt="Страница настроек" width="380"></td>
 </tr>
 </table>
 

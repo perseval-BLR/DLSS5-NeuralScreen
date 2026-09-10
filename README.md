@@ -12,8 +12,8 @@ same neural network that DLSS 5 games use, and comes back sharper.
 
 <table>
 <tr>
-<td><img src="docs/screenshot-main-light.png" alt="Menu, light theme" width="420"></td>
-<td><img src="docs/screenshot-main-dark.png" alt="Menu, dark theme" width="420"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-light.png" alt="Menu, light theme" width="420"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-main-dark.png" alt="Menu, dark theme" width="420"></td>
 </tr>
 </table>
 
@@ -103,8 +103,8 @@ Minimising the window pauses processing.
 
 <table>
 <tr>
-<td><img src="docs/screenshot-windows.png" alt="Window list" width="380"></td>
-<td><img src="docs/screenshot-settings.png" alt="Settings page" width="380"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-windows.png" alt="Window list" width="380"></td>
+<td><img src="https://raw.githubusercontent.com/perseval-BLR/DLSS5-NeuralScreen/main/docs/screenshot-settings.png" alt="Settings page" width="380"></td>
 </tr>
 </table>
 
