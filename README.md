@@ -40,8 +40,7 @@ actually doing.*
 
 Turing is below the minimum architecture - no runtime build makes the
 neural pass run on it (0xBAD00001, FeatureNotSupported). The program
-will start and the menu works; the picture is not processed. No workaround
-exists.
+starts and the menu works; the picture is not processed.
 
 ## Install
 
@@ -79,10 +78,9 @@ instead and nothing happens.
 | **Num5** | capture the window under the cursor (see below) |
 | **Ctrl+Alt+Q** | quit |
 
-Every key can be reassigned in the menu, under the sliders icon.
-
-While the menu is open it takes the mouse and keyboard, so it works on top of a
-game. Closed, clicks go straight through it as if it were not there.
+Every key can be reassigned in the menu, under the sliders icon. While the
+menu is open it takes the mouse and keyboard, so it works on top of a game.
+Closed, clicks go straight through it as if it were not there.
 
 Startup and mode switches do not flash: the overlay appears with the first
 real frame, a brief blur-with-spinner covers the pipeline rebuild.
@@ -117,7 +115,10 @@ The settings worth touching:
 
 - **Profile** — how strong the effect is, from *Faithful* to *Extreme*. The
   default is *Natural* - a faithful, balanced look. The four sliders
-  underneath are the same thing in detail.
+  underneath are the same thing in detail. **Save preset** snapshots the
+  current slider values under a name (Preset 1, Preset 2, ...) - it appears
+  in the Profile list and applies like a built-in profile; **Delete preset**
+  removes the active user preset.
 - **Before / after wipe** — leaves the left part of the screen untouched so
   you can see what the effect is doing. Set it back to 0 when done.
 - **Resolution the network runs at** — one slider. At the top it is your whole
@@ -141,8 +142,14 @@ with Windows, key assignments — is behind the sliders icon.
 
 **Num0** records what you see, with system sound, into an MP4 in
 `recordings`. **Num3** saves a screenshot. The menu shows up in both if
-open - on purpose. The recording audio passes through a soft limiter, so a
-loud system mix cannot clip the track into distortion.
+open - on purpose. While a recording runs, a red dot with a timer sits
+in the corner of the screen (off in the settings if you do not want it).
+The recording audio passes through a soft limiter, so a loud system mix
+cannot clip the track into distortion.
+
+Screenshots open a **Save As** dialog; pick a folder once with
+**Screenshot folder...** in the settings and the dialog will start there
+every time.
 
 **Record the processed picture externally:**
 - **OBS (recommended):** launch with `NS_SPOUT=1` (environment variable,
@@ -167,9 +174,6 @@ drawn over it — a Windows rule. Switch the game to *borderless* or
 **The menu pointer is missing or frozen.** A fullscreen game hides the system
 cursor; the overlay only shows the system cursor. Borderless fixes it.
 
-**The numpad hotkeys do nothing.** They need *Num Lock* to be on. With Num
-Lock off the numpad sends Insert/End/arrows and the keys simply do not exist.
-
 **The picture is soft.** Put *Resolution the network runs at* back to the top
 of its slider.
 
@@ -177,7 +181,7 @@ of its slider.
 under the sliders icon.
 
 **The menu is slow in a heavy game.** At 4K the pipeline can take up to a
-second per frame; a press may feel lost. The picture is the priority.
+second per frame; a press may feel lost.
 
 ## Known limitations
 
