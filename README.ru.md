@@ -7,7 +7,8 @@
 > **Сначала прочитайте это:** краткий гайд ниже запустит вас. Полная
 > техническая история — как это работает, что замерялось, почему так
 > устроено — в **[TECHNICAL.ru.md](TECHNICAL.ru.md)**. English:
-> **[README.md](README.md)** / **[TECHNICAL.md](TECHNICAL.md)**.
+> **[README.md](README.md)** / **[TECHNICAL.md](TECHNICAL.md)**. Русская
+> версия: **[README.ru.md](README.ru.md)**.
 
 <table>
 <tr>
@@ -191,7 +192,7 @@ Windows не рисует ничего — это правило системы.
 - **Задержка 40–60 мс** — интерактивно ок, не для киберспорта; **разрешение обработки ≤2560×1440** (сеть отказывается от 4K), вывод всегда в родном разрешении.
 - **Встроенный `nvngx_dlssnr.dll` — утёкший рантайм 310.8.0 с ядрами sm_75/86/89/120 (RTX 20-50)** — см. Лицензию ниже.
 
-## Как это устроено — как работает, что замерено и почему: **[TECHNICAL.ru.md](TECHNICAL.ru.md)**. English version: **[README.md](README.md)**.
+## Как это устроено — как работает, что замерено и почему: **[TECHNICAL.ru.md](TECHNICAL.ru.md)**. Русская версия: **[README.ru.md](README.ru.md)**. English: **[README.md](README.md)** / **[TECHNICAL.md](TECHNICAL.md)**.
 
 ## Лицензия
 
