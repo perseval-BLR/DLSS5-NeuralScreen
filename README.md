@@ -4,6 +4,11 @@
 real time.** Everything on screen — games, video, photos — goes through the
 same neural network that DLSS 5 games use, and comes back sharper.
 
+> **Read this first:** the short guide below gets you running. The full
+> technical story — how it works, what was measured, why it is built this
+> way — lives in **[TECHNICAL.md](TECHNICAL.md)**. Русская версия:
+> **[README.ru.md](README.ru.md)** / **[TECHNICAL.ru.md](TECHNICAL.ru.md)**.
+
 <table>
 <tr>
 <td><img src="docs/screenshot-main-light.png" alt="Menu, light theme" width="420"></td>
@@ -175,7 +180,7 @@ second per frame; a press may feel lost. The picture is the priority.
 - **Pipeline latency** is 40–60 ms — fine interactively, not competitively; **processing resolution is capped at 2560×1440** (the network refuses 4K), output is always your full native resolution.
 - **The bundled `nvngx_dlssnr.dll` is the leaked 310.8.0 runtime carrying sm_75/86/89/120 kernels (RTX 20-50)** — see License below.
 
-## Under the hood — how it works, what was measured and why: **[docs/TECHNICAL.md](docs/TECHNICAL.md)**. Русская версия: **[README.ru.md](README.ru.md)**.
+## Under the hood — how it works, what was measured and why: **[TECHNICAL.md](TECHNICAL.md)**. Русская версия: **[README.ru.md](README.ru.md)**.
 
 ## License
 

@@ -53,7 +53,7 @@ def zip_integrity():
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
         "audio.py", "NeuralScreen.exe",
-        "docs/TECHNICAL.md", "docs/TECHNICAL.ru.md",
+        "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
         "native/nvngx.dll", "native/nvngx_dlssnr.dll",
         "runtime/pythonw.exe", "VERSION.txt",
@@ -177,8 +177,8 @@ def readme_consistency():
     docs = {
         "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
         "README.ru.md": (ROOT / "README.ru.md").read_text(encoding="utf-8"),
-        "docs/TECHNICAL.md": (ROOT / "docs" / "TECHNICAL.md").read_text(encoding="utf-8"),
-        "docs/TECHNICAL.ru.md": (ROOT / "docs" / "TECHNICAL.ru.md").read_text(encoding="utf-8"),
+        "docs/TECHNICAL.md": (ROOT / "TECHNICAL.md").read_text(encoding="utf-8"),
+        "docs/TECHNICAL.ru.md": (ROOT / "TECHNICAL.ru.md").read_text(encoding="utf-8"),
     }
     for name in ("README.md", "README.ru.md"):
         n = len(docs[name].splitlines())
