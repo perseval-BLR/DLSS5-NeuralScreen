@@ -599,7 +599,7 @@ class OverlayMenu:
                 val = float(params.get(key, 0.0))
                 slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
 
-            section(s["sec_speed"])
+            section(s["sec_resolution"])
             # One slider, not a toggle plus a slider. The two used to be
             # separate, and with the toggle off the slider still moved, still
             # showed a changing resolution and changed the picture by exactly
