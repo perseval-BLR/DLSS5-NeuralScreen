@@ -884,6 +884,13 @@ class OverlayMenu:
                             it.rect.collidepoint(event.pos):
                         self.hover = f"{it.kind}:{it.key}"
                         break
+            # The windows page rows: the row itself is highlighted too, like
+            # the buttons (the outline on the screen is easy to miss).
+            if self.page == "windows" and self.hover_window is not None:
+                for it in self.items:
+                    if it.kind == "option" and it.rect.collidepoint(event.pos):
+                        self.hover = f"woption:{it.payload}"
+                        break
             # The expanded list rows: hovering a row highlights it (the rows
             # are a pop-up layer above the content, so they win over the items
             # underneath).
@@ -1497,10 +1504,12 @@ class OverlayMenu:
             selected = opt.extra.get("selected")
             highlighted = opt.extra.get("highlighted")
             # The mouse hover: the pop-up rows are indexed by their position
-            # in self.options (the windows page rows have their own hover
-            # mechanism - the real window outline).
-            hovered = (i < len(self.options)
-                       and self.hover == f"option:{i}")
+            # in self.options; the windows page rows carry their payload
+            # (the outline on the screen is easy to miss, so the row itself
+            # is highlighted too).
+            hovered = ((i < len(self.options)
+                        and self.hover == f"option:{i}")
+                       or self.hover == f"woption:{opt.payload}")
             if selected:
                 fill = self.c["accent"]
             elif highlighted or hovered:
