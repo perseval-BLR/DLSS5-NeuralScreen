@@ -155,12 +155,22 @@ def list_monitors() -> list[tuple[int, int, int, str]]:
 
 
 class ScreenCapture:
-    """Monitor capture through DXCamera (Desktop Duplication API)."""
+    """Monitor capture through DXCamera (Desktop Duplication API).
+
+    On hybrid-graphics laptops (Optimus) the internal display is wired to
+    the iGPU and Windows refuses a cross-adapter DDA session
+    (DXGI_ERROR_UNSUPPORTED, 0x887A0004 - issue #26). When dxcam cannot
+    open at all, the capture falls back to mss (GDI BitBlt): slower, but
+    it works on any display wiring. The worker's own DDA path is
+    unaffected - this is the Python-side capture used when the worker
+    cannot capture either.
+    """
 
     def __init__(self, monitor_idx: int = 0, devicename: str | None = None):
         import dxcam
 
         self._dxcam = dxcam
+        self._mss = None  # the GDI fallback session, when dxcam is unusable
         if devicename is not None:
             # Resolve by identity: the devicename is the stable handle, the
             # output index is whatever dxcam assigns today.
@@ -211,11 +221,18 @@ class ScreenCapture:
                     output_idx=0,
                     output_color="RGBA",
                 )
+        except Exception as exc:
+            # DXGI_ERROR_UNSUPPORTED on hybrid graphics (issue #26): the
+            # display is wired to the iGPU and DDA refuses a cross-adapter
+            # session. mss (GDI) captures any display - slower, but it
+            # works. The worker's own DDA path is tried separately and
+            # falls back to Python-side frames the same way.
+            print(f"[capture] dxcam unavailable ({exc}) - "
+                  "falling back to mss (GDI)", file=sys.stderr)
+            self._camera = None
         if self._camera is None:
-            raise RuntimeError(
-                f"dxcam.create(output_idx={monitor_idx}) returned None — "
-                "monitor not found or capture unavailable"
-            )
+            self._open_mss(monitor_idx)
+            return
         # The monitor identity of the output that was actually opened.
         output = getattr(self._camera, "_output", None)
         self.devicename = getattr(output, "devicename", None) or devicename or ""
@@ -230,6 +247,23 @@ class ScreenCapture:
                 raise RuntimeError(
                     "could not grab a first frame to determine the resolution")
             self.resolution = (probe.shape[1], probe.shape[0])
+
+    def _open_mss(self, monitor_idx: int) -> None:
+        """Open the GDI fallback (mss) for the given monitor index."""
+        import mss
+
+        self._mss = mss.mss()
+        # mss.monitors[0] is the virtual all-in-one screen; the physical
+        # monitors start at index 1 (the stas2192 pattern, issue #26).
+        real_idx = monitor_idx + 1
+        if real_idx >= len(self._mss.monitors):
+            real_idx = 1 if len(self._mss.monitors) > 1 else 0
+        self._monitor = self._mss.monitors[real_idx]
+        self.resolution = (int(self._monitor["width"]),
+                           int(self._monitor["height"]))
+        self.devicename = f"\\\\.\\DISPLAY{monitor_idx + 1}"
+        print(f"[capture] mss (GDI) capture active: {self.resolution}",
+              file=sys.stderr)
 
     @classmethod
     def resolve_monitor(cls, devicename: str) -> int | None:
@@ -248,13 +282,29 @@ class ScreenCapture:
         share memory (checked — _work/test_capture_rgba.py), so a frame can be
         held across a loop iteration.
         """
-        return self._camera.grab()
+        if self._camera is not None:
+            return self._camera.grab()
+        # The mss (GDI) fallback: BGRA -> RGBA, own copy (the raw buffer is
+        # reused by mss).
+        raw = self._mss.grab(self._monitor)
+        img = np.frombuffer(raw.raw, dtype=np.uint8).reshape(
+            (raw.height, raw.width, 4))
+        rgba = img.copy()
+        rgba[:, :, 0] = img[:, :, 2]
+        rgba[:, :, 2] = img[:, :, 0]
+        return rgba
 
     def close(self) -> None:
         """Release the capture resources."""
         if self._camera is not None:
             self._camera.release()
             self._camera = None
+        if self._mss is not None:
+            try:
+                self._mss.close()
+            except Exception:
+                pass
+            self._mss = None
 
     def __enter__(self) -> "ScreenCapture":
         return self

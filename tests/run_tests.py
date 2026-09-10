@@ -60,6 +60,7 @@ ABOUT = {
     "test_menu_position.py": "the menu position is fixed - saved offset honoured, clamped",
     "test_monitor_identity.py": "monitors are identified by DXGI devicename, not by position",
     "test_monitor_switch.py": "a monitor switch cannot crash the capture - stale indices fall back",
+    "test_mss_fallback.py": "the GDI fallback (mss) opens when dxcam cannot (Optimus)",
     "test_menu_scroll.py": "the menu scrolls and the wheel lands where it should",
     "test_overlay_toolwindow.py": "the overlay is a tool window - one taskbar button only",
     "test_motion_small.py": "the downscaled motion field is upscaled on the GPU",
