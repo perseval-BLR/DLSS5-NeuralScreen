@@ -156,6 +156,7 @@ class VideoRecorder:
         if audio:
             self._open_audio()
         self._frame_idx = 0
+        self._reserved = False  # needs_frame() reserved the next slot
         self.written = 0
         self._started = time.perf_counter()
 
@@ -353,7 +354,17 @@ class VideoRecorder:
         if self._encode_error is not None:
             return False
         elapsed = time.perf_counter() - self._started
-        return int(round(elapsed * self.fps)) > self._frame_idx
+        slot = int(elapsed * self.fps)
+        if slot > self._frame_idx:
+            # Reserve the slot: write() will put the frame into it. The
+            # reservation is what keeps the file at the real duration -
+            # recomputing the slot in write() (after the frame's round-trip
+            # through the worker) skips every second slot at a ~27 fps
+            # pipeline (73 frames / 4.8 s instead of ~150).
+            self._frame_idx = slot
+            self._reserved = True
+            return True
+        return False
 
     def write(self, rgba: np.ndarray) -> None:
         """Queue a frame for the encoder (RGBA8 full-res, 4 channels).
@@ -386,22 +397,26 @@ class VideoRecorder:
             self._thread = threading.Thread(target=self._encode_loop,
                                             name="nr-encode", daemon=True)
             self._thread.start()
-        elapsed = time.perf_counter() - self._started
-        pts = int(round(elapsed * self.fps))
-        if pts <= self._frame_idx:
-            # This second already has its quota of frames. Real time decides
-            # the duration, so the surplus goes away instead of stretching it.
-            self.dropped += 1
-            return
-        self._frame_idx = pts
+        # needs_frame() reserved the next free slot when it said yes; the
+        # elapsed clock has moved on since (the frame spent a round-trip
+        # in the worker, ~36 ms at 27 fps), so recomputing pts here would
+        # skip the reserved slot and drop every second frame (73 frames /
+        # 4.8 s instead of ~150). Write into the reserved slot; the
+        # stream rate keeps the file at 30 fps.
+        if not self._reserved:
+            # A direct write() without needs_frame() (tests): reserve the
+            # next slot ourselves.
+            self._frame_idx += 1
+        self._reserved = False
+        pts = self._frame_idx
         try:
             self._queue.put((pts, rgba), timeout=self.PUT_TIMEOUT_S)
         except queue.Full:
             # The encoder cannot keep up. Dropping the frame is more honest than
             # holding up the main loop: the user would notice on screen, not in
-            # the file.
+            # the file. The reserved slot is lost - the next needs_frame()
+            # waits for the next one.
             self.dropped += 1
-            self._frame_idx = pts - 1   # number unused, hand it to the next one
 
     def _encode_one(self, pts: int, rgba: np.ndarray) -> None:
         """The encoding proper - only from the _encode_loop thread."""

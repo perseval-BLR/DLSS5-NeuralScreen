@@ -392,7 +392,8 @@ def smoke_check():
 
 def gui_check():
     """The full GUI cycle: launch -> record -> exit. Requires NeuralScreen not
-    to be running. ~40 seconds."""
+    to be running. ~50 seconds."""
+    import re
     import time
 
     busy = running_instances()
@@ -402,6 +403,26 @@ def gui_check():
     offset = launch()
     if wait_for(offset, "NR ON", timeout=25.0) is None:
         return False, "NeuralScreen did not come up (no 'NR ON' in the log)"
+    # The first FPS lines report the warm-up (frames 2, ~1 FPS) - the NGX
+    # feature discards 120 warmup frames and the pipeline needs several more
+    # seconds to normalise (measured: 20 FPS at frame 82, 28 at 191, 38 at
+    # 336). Recording into the warm-up would produce a short, slow file and
+    # a false FAIL (75 frames / 4.8 s instead of 100+). Wait for the
+    # pipeline to have actually normalised - frames >= 300 is ~8-10 s after
+    # launch, past the warm-up.
+    fps, frames, deadline = 0.0, 0, time.monotonic() + 40.0
+    while time.monotonic() < deadline:
+        text = log_since(offset)
+        stats = re.findall(r"NR ON \| FPS\s+([\d.]+) \| frames (\d+)", text)
+        if stats:
+            fps, frames = float(stats[-1][0]), int(stats[-1][1])
+            if frames >= 300:
+                break
+        time.sleep(0.5)
+    if frames < 300:
+        quit_app()
+        return False, (f"the pipeline did not normalise: {fps:.1f} FPS, "
+                       f"{frames} frames in 40 s")
     # 2. record for 5 seconds - with the key the program actually binds
     record = binding_keys("record")
     send_key(*record)
@@ -411,6 +432,7 @@ def gui_check():
     recs = sorted((ROOT / "recordings").glob("neuralscreen-*.mp4"),
                   key=lambda p: p.stat().st_mtime)
     if not recs:
+        quit_app()
         return False, "the recording file was not created"
     rec = recs[-1]
     import av
@@ -419,6 +441,7 @@ def gui_check():
     frames, dur = s.frames, float(s.duration * s.time_base)
     c.close()
     if frames < 100 or dur < 4:
+        quit_app()
         return False, f"the recording looks suspicious: {frames} frames / {dur:.1f} s"
     # 3. exit
     left = quit_app()

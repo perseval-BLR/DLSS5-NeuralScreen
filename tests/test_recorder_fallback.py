@@ -176,6 +176,37 @@ def test_needs_frame_gates_want_pixels(out: Path, failures: list) -> None:
     out.unlink(missing_ok=True)
 
 
+def test_reserved_slot_survives_round_trip(out: Path, failures: list) -> None:
+    """The regression: needs_frame() -> write() after a round-trip.
+
+    The frame spends ~36 ms in the worker between needs_frame() and
+    write(). The old write() recomputed the slot from the elapsed clock,
+    which had moved on by more than one slot - every second frame was
+    dropped (73 frames / 4.8 s instead of ~150). The slot must be
+    reserved by needs_frame() and written as-is.
+    """
+    rec = VideoRecorder(str(out), W, H, fps=FPS, audio=False)
+    try:
+        time.sleep(1.0 / FPS + 0.01)          # slot 1 is open
+        if not rec.needs_frame():
+            failures.append("no slot open before the round trip")
+        time.sleep(0.036)                     # the worker round-trip
+        rec.write(make_frame(1))              # must land in the reserved slot
+        # written is incremented by the encoder thread - give it a moment.
+        deadline = time.monotonic() + 2.0
+        while rec.written < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if rec.written != 1:
+            failures.append(f"write() did not land: written={rec.written}")
+        # The next slot must be open right away - the old code had already
+        # consumed it by recomputing the clock.
+        if not rec.needs_frame():
+            failures.append("the next slot is not open after the round trip")
+    finally:
+        rec.close()
+    out.unlink(missing_ok=True)
+
+
 def test_close_does_not_deadlock_on_stuck_encoder(out: Path,
                                                  failures: list) -> None:
     rec = VideoRecorder(str(out), W, H, fps=FPS, audio=False)
@@ -207,12 +238,14 @@ def main() -> int:
     test_fallback_on_open_failure(out, failures)
     test_all_codecs_fail_raises(out, failures)
     test_needs_frame_gates_want_pixels(out, failures)
+    test_reserved_slot_survives_round_trip(out, failures)
     test_close_does_not_deadlock_on_stuck_encoder(out, failures)
     if failures:
         for f in failures:
             print("FAIL:", f)
         return 1
-    print("OK: AV1->HEVC fallback, needs_frame() gating, close() without deadlock")
+    print("OK: AV1->HEVC fallback, needs_frame() gating, reserved slots, "
+          "close() without deadlock")
     return 0
 
 
