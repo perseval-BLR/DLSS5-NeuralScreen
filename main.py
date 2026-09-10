@@ -1022,9 +1022,11 @@ class WorkerReader:
                     if (ngx_result & 0xFFF00000) == 0xBAD00000:
                         raise RuntimeError(
                             f"NGX evaluation failed on frame {out_index}: 0x{ngx_result:08X}")
-                    if ngx_result != 1 and byte_count == 0:
-                        # A skipped frame with no pixels: nothing to show,
-                        # the pipeline just waits for the next one.
+                    if byte_count == 0:
+                        # No pixels through the pipe: WNDO mode (the worker
+                        # showed the frame in its own window) or a skipped
+                        # frame (0x00000000). Either way there is nothing
+                        # to show - the pipeline waits for the next one.
                         self._queue.put((out_index, None))
                         continue
                     if byte_count == OUT_BYTES_IN_SHM:
