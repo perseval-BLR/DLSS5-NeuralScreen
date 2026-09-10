@@ -439,7 +439,7 @@ def load_config(path: Path) -> dict:
     # work_scale: 0.25..1.0 - the NGX processing resolution relative to the output
     scale = float(cfg.get("work_scale", 1.0))
     cfg["work_scale"] = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, scale))
-    # lang: the language of the HUD/alerts/menu (en/ru, DEFAULT_LANG by default)
+    # lang: the language of the HUD/alerts/menu (en/ru/fr, DEFAULT_LANG by default)
     lang = str(cfg.get("lang", DEFAULT_LANG))
     if lang not in UI_STRINGS:
         lang = DEFAULT_LANG
