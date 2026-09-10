@@ -3931,6 +3931,13 @@ static void ReleaseVideoTextures(VideoState &v)
     if (v.nr_out != nullptr) { v.nr_out->Release(); v.nr_out = nullptr; }
     v.nr_small = false;
     v.inputs_ready = false;
+    // The capture flag says "the current frame is already in v.color" -
+    // the texture was just released, so the flag is a lie. Without the
+    // reset, an RNSZ in capture mode (WGCW/DDA1) evaluates on a freed
+    // texture when the window has not redrawn: the frame comes out black
+    // until the next real capture (user: the window goes black after a
+    // profile change and only a click into it restores the picture).
+    g_dda_ready = false;
 }
 
 // Forward declaration: defined below, called from RunVideo on shutdown.
