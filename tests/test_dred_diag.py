@@ -56,6 +56,11 @@ def main() -> int:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+        # terminate() kills only python.exe - the worker (nvngx.dll) is a
+        # child of main.py and survives, which makes the next GUI test fail
+        # with "NeuralScreen is already running". Kill it by name.
+        subprocess.run(["taskkill", "/F", "/IM", "nvngx.dll"],
+                       capture_output=True)
 
     if dred_line is None:
         failures.append("no DRED line in the log at all")
