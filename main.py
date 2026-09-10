@@ -1833,33 +1833,53 @@ def main() -> int:
             # black for a moment on every Num5 (user: screen flashes on mode
             # switches). The worker and the shm MUST be torn down and rebuilt
             # (new size), the SDL window does not have to be.
+            recreated = False
             try:
                 display.resize(width, height)
+                recreated = False
             except Exception as exc:
                 print(f"[main] soft resize failed ({exc}) - recreating the window")
+                # The menu is recreated with the window: snapshot its live
+                # state (position, scale, height) into cfg so the restore
+                # below picks up where the user left it, not the stale
+                # values from the last menu close (user rule 10.09: fixed
+                # position until the user drags it).
+                cfg["menu_offset"] = [int(display.menu.offset[0]),
+                                      int(display.menu.offset[1])]
+                cfg["menu_scale"] = round(display.menu.user_scale, 2)
+                cfg["menu_height"] = (None if display.menu.user_height is None
+                                      else int(display.menu.user_height))
                 try:
                     display.close()
                 except Exception:
                     pass
                 display = Display(width, height, fullscreen=bool(cfg["fullscreen"]))
+                recreated = True
             # In one-window mode the overlay stops hiding from screen capture:
             # the input is that window, not the desktop, so there is no
             # self-capture loop to break - and an outside recorder can see the
             # result. The worker does the same for its picture window.
             display.set_excluded_from_capture(window_hwnd is None)
             display.set_lang(lang)
-            display.menu.set_user_scale(float(cfg.get("menu_scale", 1.0)))
             display.menu.set_hotkeys(hotkey_labels(hotkey_bindings))
             saved_theme = cfg.get("theme")
             if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
                 display.menu.set_state({"theme": saved_theme})
             display.menu.set_state({"lang": lang})
-            saved_offset = cfg.get("menu_offset")
-            if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
-                display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
-            saved_height = cfg.get("menu_height")
-            if isinstance(saved_height, (int, float)) and saved_height > 0:
-                display.menu.user_height = int(saved_height)
+            # The position/scale/height restore applies ONLY to a recreated
+            # menu (the window was rebuilt). On a soft resize the menu is
+            # alive and keeps exactly what the user set - re-applying the
+            # cfg values here would snap it back to the last saved state on
+            # every mode switch (user: menu returns to the launch position
+            # and scale after picking a window).
+            if recreated:
+                display.menu.set_user_scale(float(cfg.get("menu_scale", 1.0)))
+                saved_offset = cfg.get("menu_offset")
+                if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
+                    display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
+                saved_height = cfg.get("menu_height")
+                if isinstance(saved_height, (int, float)) and saved_height > 0:
+                    display.menu.user_height = int(saved_height)
             if menu_was_open:
                 display.menu.set_state(_menu_payload())
                 display.menu.visible = True
@@ -3115,6 +3135,15 @@ def main() -> int:
                 # A display mode change (entering/leaving a fullscreen game)
                 # can kill the pygame/SDL context - recreate the window.
                 print(f"[main] output failed ({exc}) - recreating the window")
+                # Snapshot the live menu state before the window dies - the
+                # restore below must pick up where the user left it, not the
+                # stale cfg values (user rule 10.09: fixed position until
+                # the user drags it).
+                cfg["menu_offset"] = [int(display.menu.offset[0]),
+                                      int(display.menu.offset[1])]
+                cfg["menu_scale"] = round(display.menu.user_scale, 2)
+                cfg["menu_height"] = (None if display.menu.user_height is None
+                                      else int(display.menu.user_height))
                 try:
                     display.close()
                 except Exception:

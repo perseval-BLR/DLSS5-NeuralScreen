@@ -202,6 +202,23 @@ class OverlayMenu:
         self._font = font_loader(self._u(FONT_SIZE))
         self._title_font = font_loader(self._u(TITLE_SIZE))
         self._small_font = font_loader(self._u(SMALL_SIZE))
+        # The language list shows every language in its own script (Русский,
+        # 中文, 日本語, 한국어). The current UI font cannot render CJK - the
+        # loader picks the font by the language, so dedicated CJK fonts are
+        # loaded once for those labels, chosen by the script: YaHei for
+        # Chinese, Yu Gothic for Japanese (kanji/kana), Malgun Gothic for
+        # Korean (hangul) (user: Asian names show as boxes).
+        self._cjk_fonts = {}
+        try:
+            import pygame.font as _pf
+            for _name in ("microsoftyahei", "yugothic", "malgungothic"):
+                try:
+                    self._cjk_fonts[_name] = _pf.SysFont(
+                        _name, self._u(FONT_SIZE))
+                except Exception:
+                    pass
+        except Exception:
+            self._cjk_fonts = {}
         self.panel_rect = pygame.Rect(0, 0, 0, 0)
         self._stats_rect = pygame.Rect(0, 0, 0, 0)
         self._gpu_rect = pygame.Rect(0, 0, 0, 0)
@@ -236,6 +253,15 @@ class OverlayMenu:
         # Which list is currently expanded (profile / language / theme).
         # Cycling with arrows is awkward once there are more than two options.
         self.open_choice: str | None = None
+        # The expanded list scrolls: 12 languages do not fit the screen, the
+        # panel cannot be stretched down, and the arrows must reach every
+        # entry (user: the language list has no scroll). _opt_scroll is the
+        # first visible row, _opt_index the highlighted one (arrows/Enter).
+        self._opt_scroll = 0
+        self._opt_index = 0
+        self._opt_max_scroll = 0
+        self._opt_track = pygame.Rect(0, 0, 0, 0)
+        self._opt_thumb = pygame.Rect(0, 0, 0, 0)
         # The window under the cursor on the windows page: the hwnd whose
         # outline is highlighted on the real screen (None = nothing).
         self.hover_window: int | None = None
@@ -597,7 +623,7 @@ class OverlayMenu:
                 (("windows", s["windows_btn"]),
                  ("fullscreen", s["fullscreen"])),
                 (("screenshot", s["screenshot"]),
-                 ("record", s["record_stop"] if self.state.get("recording")
+                 ("record", s["record_stop_short"] if self.state.get("recording")
                   else s["record"])),
             )
             for row in rows:
@@ -704,8 +730,13 @@ class OverlayMenu:
         self.items = items
 
         # The entries of the expanded list. They lie on top of the rows below,
-        # so they are added last and checked first on a mouse hit.
+        # so they are added last and checked first on a mouse hit. The list
+        # opens DOWN when the space below the strip fits it, otherwise UP
+        # (over the panel content) - 12 languages would otherwise run off
+        # the screen, and the panel cannot be stretched down (user: the
+        # language list has no scroll).
         self.options: list[Item] = []
+        self._opt_max_scroll = 0
         if self.open_choice:
             src = next((i for i in items if i.key == self.open_choice), None)
             if src is not None:
@@ -713,15 +744,53 @@ class OverlayMenu:
                 if strip is not None:
                     oh = self._u(CTRL_H) + self._u(6)
                     labels = src.extra.get("labels") or src.payload or []
-                    for idx, opt in enumerate(src.payload or []):
+                    total = len(src.payload or [])
+                    # The list is bounded by the PANEL, not the screen: the
+                    # panel is the window, and anything past its edge is
+                    # clipped by it (user: the language list is cut off and
+                    # the panel cannot be stretched down). Prefer opening
+                    # down; flip up when the space below the strip cannot
+                    # hold at least two rows and the space above can.
+                    down_room = self.panel_rect.bottom - strip.bottom - self._u(8)
+                    up_room = strip.top - self.panel_rect.top - self._u(8)
+                    open_up = (down_room < 2 * oh and up_room > down_room)
+                    room = up_room if open_up else down_room
+                    max_rows = max(1, room // oh)
+                    visible = min(total, max_rows)
+                    self._opt_max_scroll = max(0, total - visible)
+                    self._opt_scroll = min(max(0, self._opt_scroll),
+                                           self._opt_max_scroll)
+                    self._opt_index = min(max(0, self._opt_index), total - 1)
+                    base_y = (strip.top - self._u(4) - visible * oh
+                              if open_up else strip.bottom + self._u(4))
+                    # The list's own scrollbar: a thin track on the right of
+                    # the list, thumb proportional to the visible share.
+                    self._opt_track = pygame.Rect(
+                        strip.right - self._u(7) - max(2, self._u(3)),
+                        base_y, max(2, self._u(3)), visible * oh)
+                    if self._opt_max_scroll > 0:
+                        thumb_h = max(self._u(12),
+                                      int(self._opt_track.h * visible / total))
+                        travel = self._opt_track.h - thumb_h
+                        ty = self._opt_track.y + int(
+                            travel * (self._opt_scroll / self._opt_max_scroll))
+                        self._opt_thumb = pygame.Rect(
+                            self._opt_track.x, ty, self._opt_track.w, thumb_h)
+                    else:
+                        self._opt_thumb = pygame.Rect(0, 0, 0, 0)
+                    for idx in range(self._opt_scroll,
+                                     min(total, self._opt_scroll + visible)):
+                        opt = src.payload[idx]
                         self.options.append(Item(
                             "option", src.key,
-                            pygame.Rect(strip.x, strip.bottom + self._u(4) + idx * oh,
+                            pygame.Rect(strip.x, base_y
+                                        + (idx - self._opt_scroll) * oh,
                                         strip.w, oh),
                             payload=opt,
                             extra={"label": str(labels[idx] if idx < len(labels)
                                                 else opt),
-                                   "selected": str(opt) == str(src.extra.get("current"))}))
+                                   "selected": str(opt) == str(src.extra.get("current")),
+                                   "highlighted": idx == self._opt_index}))
 
     # -- input -------------------------------------------------------------
 
@@ -792,6 +861,14 @@ class OverlayMenu:
                     self._mouse = pygame.mouse.get_pos()
                 except Exception:
                     pass
+            # The expanded list scrolls with the wheel whenever it is open:
+            # the user opened it, so the wheel belongs to the list, not to
+            # the page (12 languages do not fit - user: no scroll in the
+            # language list).
+            if self.open_choice and self._opt_max_scroll > 0:
+                self._opt_scroll = min(
+                    max(0, self._opt_scroll - event.y), self._opt_max_scroll)
+                return out
             if self._max_scroll > 0 and self.panel_rect.collidepoint(self._mouse):
                 self.scroll = min(max(self.scroll - event.y * self._u(48), 0),
                                   self._max_scroll)
@@ -879,6 +956,31 @@ class OverlayMenu:
                                     else self.panel_rect.h)
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             out.append(("button", "close"))
+        elif event.type == pygame.KEYDOWN and self.open_choice:
+            # The expanded list is keyboard-navigable: Up/Down move the
+            # highlight (scrolling the list into view), Enter picks, Esc
+            # closes. Without this the 12-language list was unreachable by
+            # keyboard (user: cannot step down the list with the arrows).
+            total = len(self.options) + self._opt_scroll
+            if event.key == pygame.K_UP:
+                if self._opt_index > 0:
+                    self._opt_index -= 1
+                    if self._opt_index < self._opt_scroll:
+                        self._opt_scroll = self._opt_index
+            elif event.key == pygame.K_DOWN:
+                if self._opt_index < total - 1:
+                    self._opt_index += 1
+                    if self._opt_index >= self._opt_scroll + len(self.options):
+                        self._opt_scroll = self._opt_index - len(self.options) + 1
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                src = next((i for i in self.items
+                            if i.key == self.open_choice), None)
+                if src is not None and self._opt_index < len(src.payload or []):
+                    out.extend(self._pick(self.open_choice,
+                                          str(src.payload[self._opt_index])))
+                    self.open_choice = None
+            elif event.key == pygame.K_ESCAPE:
+                self.open_choice = None
         return out
 
     def _icon_click(self, key: str) -> list[tuple]:
@@ -1202,6 +1304,30 @@ class OverlayMenu:
         line = self._small_font.render(text, True, _rgb(self.c["muted"]))
         surface.blit(line, (rect.x, rect.y))
 
+    def _clip(self, font, text: str, color, max_w: int):
+        """Render text clipped to max_w with an ellipsis.
+
+        Long localized strings (French, German) and long window titles
+        overflow their controls - the panel has no clipping surface, so the
+        text bleeds over the neighbours (user: FR button label escapes the
+        button, window names overflow the rows, the resolution label covers
+        the value). Binary search the longest prefix that fits.
+        """
+        if max_w <= 8:
+            return font.render("", True, color)
+        img = font.render(text, True, color)
+        if img.get_width() <= max_w:
+            return img
+        ell = "…"
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if font.render(text[:mid] + ell, True, color).get_width() <= max_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        return font.render(text[:lo] + ell, True, color)
+
     def _draw_toggle(self, surface, item: Item, s: dict) -> None:
         on = item.value > 0.5
         size = self._u(20)
@@ -1214,17 +1340,23 @@ class OverlayMenu:
         text = item.extra.get("label")
         if not text:
             text = s["nr_on"] if on else s["nr_off"]
-        label = self._font.render(text, True,
-                                  _rgb(self.c["text"] if on else self.c["muted"]))
+        label = self._clip(self._font, text,
+                           _rgb(self.c["text"] if on else self.c["muted"]),
+                           item.rect.right - box.right - self._u(12))
         surface.blit(label, (box.right + self._u(12),
                              item.rect.centery - label.get_height() // 2))
 
     def _draw_slider(self, surface, item: Item, s: dict) -> None:
         label_h = item.extra.get("label_h", self._u(LABEL_H))
-        label = self._font.render(item.extra.get("label", item.key), True, _rgb(self.c["text"]))
-        surface.blit(label, (item.rect.x, item.rect.y))
         value_text = item.extra.get("value_text") or f"{item.value:.2f}"
+        # The value sits on the label line, right-aligned; a long localized
+        # label (FR: "Résolution de traitement du réseau") would run under
+        # it - clip the label to the space left of the value instead.
         val = self._font.render(value_text, True, _rgb(self.c["accent"]))
+        label_max = item.rect.right - val.get_width() - self._u(12) - item.rect.x
+        label = self._clip(self._font, item.extra.get("label", item.key),
+                           _rgb(self.c["text"]), label_max)
+        surface.blit(label, (item.rect.x, item.rect.y))
         surface.blit(val, (item.rect.right - val.get_width(), item.rect.y))
 
         track_y = item.rect.y + label_h + self._u(10)
@@ -1286,15 +1418,42 @@ class OverlayMenu:
         rows += [i for i in self.items if i.kind == "option"]
         for opt in rows:
             selected = opt.extra.get("selected")
-            pygame.draw.rect(surface,
-                             _rgb(self.c["accent"] if selected else self.c["bg"]),
-                             opt.rect, border_radius=self._u(RADIUS // 2))
-            pygame.draw.rect(surface, _rgb(self.c["border"]), opt.rect, self._u(1),
+            highlighted = opt.extra.get("highlighted")
+            if selected:
+                fill = self.c["accent"]
+            elif highlighted:
+                fill = self.c["surface"]
+            else:
+                fill = self.c["bg"]
+            pygame.draw.rect(surface, _rgb(fill), opt.rect,
                              border_radius=self._u(RADIUS // 2))
+            pygame.draw.rect(surface, _rgb(self.c["border"]), opt.rect,
+                             self._u(1), border_radius=self._u(RADIUS // 2))
             color = self.c["bg"] if selected else self.c["text"]
-            label = self._font.render(opt.extra.get("label", ""), True, _rgb(color))
+            text = opt.extra.get("label", "")
+            # The language list shows every language in its own script; the
+            # CJK names (中文, 日本語, 한국어) need a CJK font - the current
+            # UI font renders them as boxes. Pick by the script: hangul
+            # (AC00-D7AF) -> Malgun Gothic, kana (3040-30FF) -> Yu Gothic,
+            # CJK ideographs -> YaHei (user: Asian names show as squares).
+            font = self._font
+            if self._cjk_fonts:
+                if any(0xAC00 <= ord(ch) <= 0xD7AF for ch in text):
+                    font = self._cjk_fonts.get("malgungothic") or font
+                elif any(0x3040 <= ord(ch) <= 0x30FF for ch in text):
+                    font = self._cjk_fonts.get("yugothic") or font
+                elif any(0x4E00 <= ord(ch) <= 0x9FFF for ch in text):
+                    font = self._cjk_fonts.get("microsoftyahei") or font
+            label = self._clip(font, text, _rgb(color), opt.rect.w - self._u(24))
             surface.blit(label, (opt.rect.x + self._u(12),
                                  opt.rect.centery - label.get_height() // 2))
+        # The list's scrollbar (only when the list actually scrolls).
+        if getattr(self, "_opt_track", None) is not None and self._opt_track.w > 0 \
+                and self._opt_max_scroll > 0:
+            pygame.draw.rect(surface, _rgb(self.c["border"]), self._opt_track,
+                             border_radius=self._u(2))
+            pygame.draw.rect(surface, _rgb(self.c["muted"]), self._opt_thumb,
+                             border_radius=self._u(2))
 
     def _draw_sections(self, surface) -> None:
         """A block title: small caps and a hairline out to the right edge."""
@@ -1485,7 +1644,8 @@ class OverlayMenu:
         pygame.draw.rect(surface,
                          _rgb(self.c["accent"] if hot else self.c["border"]),
                          item.rect, self._u(1), border_radius=self._u(RADIUS // 2))
-        label = self._font.render(item.extra.get("label", item.key), True,
-                                  _rgb(item.extra.get("color", self.c["text"])))
+        label = self._clip(self._font, item.extra.get("label", item.key),
+                           _rgb(item.extra.get("color", self.c["text"])),
+                           item.rect.w - self._u(16))
         surface.blit(label, (item.rect.centerx - label.get_width() // 2,
                              item.rect.centery - label.get_height() // 2))
