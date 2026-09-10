@@ -66,6 +66,83 @@ def _init_logging() -> None:
     except Exception:
         pass  # it did not work - the prints just vanish, we do not crash
 
+
+def _log_environment(cfg: dict) -> None:
+    """Print the environment header into the log: version, OS, HDR, driver.
+
+    Users paste NeuralScreen.log into issues; the header answers the
+    questions we would otherwise have to ask (which version, which
+    Windows, is HDR on, which driver). Every probe is wrapped: a missing
+    API or a stripped system must not crash the startup - the line is
+    simply skipped.
+    """
+    try:
+        import platform
+        import sys as _sys
+        win = _sys.getwindowsversion()
+        print(f"[env] NeuralScreen {APP_VERSION} | Windows {win.major}.{win.minor} "
+              f"(build {win.build}) | {platform.platform()}")
+    except Exception:
+        print(f"[env] NeuralScreen {APP_VERSION} | Windows unknown")
+    try:
+        import gpuinfo
+        g = gpuinfo.probe()
+        print(f"[env] GPU: {g.get('name') or 'unknown'} "
+              f"({g.get('family') or '?'}, arch 0x{g.get('arch_group', 0):X})")
+    except Exception:
+        pass
+    try:
+        # The NVIDIA driver version from the display-class registry key.
+        import winreg
+        base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        for idx in range(10):
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                    f"{base}\\{idx:04d}") as key:
+                    desc, _ = winreg.QueryValueEx(key, "DriverDesc")
+                    if "NVIDIA" in str(desc):
+                        ver, _ = winreg.QueryValueEx(key, "DriverVersion")
+                        print(f"[env] driver: {ver}")
+                        break
+            except OSError:
+                continue
+    except Exception:
+        pass
+    try:
+        # HDR: the monitor data store in the registry carries HDREnabled.
+        # One read, no deep API digging - if the key is not there the
+        # line just says unknown.
+        import winreg
+        base = (r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+                r"\MonitorDataStore")
+        hdr = None
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
+                for i in range(winreg.QueryInfoKey(root)[0]):
+                    try:
+                        with winreg.OpenKey(root, winreg.EnumKey(root, i)) as mon:
+                            try:
+                                val, _ = winreg.QueryValueEx(mon, "HDREnabled")
+                                hdr = bool(val)
+                                break
+                            except OSError:
+                                continue
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        print(f"[env] HDR: {'on' if hdr else 'off' if hdr is not None else 'unknown'}")
+    except Exception:
+        pass
+    try:
+        numlock = bool(ctypes.windll.user32.GetKeyState(0x90) & 1)
+        print(f"[env] Num Lock: {'on' if numlock else 'off'} | "
+              f"lang: {cfg.get('lang', 'en')} | "
+              f"profile: {cfg.get('profile', '?')} | "
+              f"work_scale: {cfg.get('work_scale', '?')}")
+    except Exception:
+        pass
+
 # DPI awareness BEFORE any import (cv2, capture, display, tray): if some
 # module sets awareness first (dxcam, for instance, calls
 # SetProcessDpiAwareness(2) when creating an Output), a second call returns
@@ -1397,6 +1474,7 @@ def main() -> int:
 
     cfg = load_config(args.config)
     params = resolve_params(cfg)
+    _log_environment(cfg)
     width, height = int(cfg["width"]), int(cfg["height"])
     monitor_cfg = cfg["monitor"]
     if isinstance(monitor_cfg, str):

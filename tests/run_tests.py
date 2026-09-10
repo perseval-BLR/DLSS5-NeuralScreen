@@ -48,6 +48,7 @@ ABOUT = {
     "test_config.py": "the config loader validates, clamps and resolves",
     "test_config_atomic.py": "the config write is atomic and persists profile/params/monitor",
     "test_dred_diag.py": "the worker logs DRED/device-removed diagnostics at startup",
+    "test_env_header.py": "the log header carries version/OS/HDR and survives broken probes",
     "test_hotkey_once.py": "one press of a hotkey fires exactly one command",
     "test_hotkey_rebind.py": "hotkeys can be reassigned from the config",
     "test_hotkey_bindings.py": "parsing, aliases and defaults survive binding changes",
