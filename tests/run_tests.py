@@ -70,6 +70,7 @@ ABOUT = {
     "test_recorder_fallback.py": "the NVENC codec chain falls back AV1->HEVC->H.264",
     "test_rec_indicator.py": "the recording indicator draws only while recording, never in the file",
     "test_shot_dir.py": "the screenshot folder is configured, persisted and shown on the button",
+    "test_swappable_runtime.py": "the swappable runtime is driven by the config",
     "test_recovery.py": "only 0xBAD00001 is a hard failure, everything else auto-revives",
     "test_recorder_thread.py": "the encoder thread and a clean close",
     "test_residual.py": "the matched residual composite keeps 1:1 detail at reduced work",

@@ -447,8 +447,19 @@ static bool InitDirectNr(const wchar_t *data_path)
         Log("[pure] NS_NGX_VIA_CORE=1: feature 18 goes through NGX Core");
         return true;
     }
-    g_nr_module = LoadLibraryW(L"nvngx_dlssnr.dll");
-    if (!g_nr_module) { Log("[pure] LoadLibrary(nvngx_dlssnr.dll) failed %lu", GetLastError()); return false; }
+    // NS_NR_DLL=<path>: load a different runtime build without rebuilding
+    // the worker (the swappable-runtime pattern from RHI's
+    // dlss_manifest.json). The path is relative to the worker's directory
+    // or absolute; the default is the bundled nvngx_dlssnr.dll.
+    wchar_t dll_path[MAX_PATH] = {};
+    const wchar_t *dll_name = L"nvngx_dlssnr.dll";
+    if (GetEnvironmentVariableW(L"NS_NR_DLL", dll_path, MAX_PATH) > 0)
+    {
+        dll_name = dll_path;
+        Log("[pure] NS_NR_DLL=%ls", dll_name);
+    }
+    g_nr_module = LoadLibraryW(dll_name);
+    if (!g_nr_module) { Log("[pure] LoadLibrary(%ls) failed %lu", dll_name, GetLastError()); return false; }
     g_nr_init_ext = reinterpret_cast<PFN_NR_InitExt>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_Init_Ext"));
     g_nr_create = reinterpret_cast<PFN_NR_Create>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_CreateFeature"));
     g_nr_evaluate = reinterpret_cast<PFN_NR_Evaluate>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_EvaluateFeature"));

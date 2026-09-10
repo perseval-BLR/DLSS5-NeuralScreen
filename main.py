@@ -67,6 +67,19 @@ def _init_logging() -> None:
         pass  # it did not work - the prints just vanish, we do not crash
 
 
+def _apply_nr_dll(cfg: dict) -> None:
+    """The swappable runtime: a configured nr_dll reaches the worker.
+
+    The worker loads nvngx_dlssnr.dll by name; NS_NR_DLL lets a different
+    build be loaded without rebuilding the worker (the RHI
+    dlss_manifest.json pattern). The path is put into the environment,
+    which subprocess inherits. Without the flag the bundled DLL stays the
+    default.
+    """
+    if cfg.get("nr_dll"):
+        os.environ["NS_NR_DLL"] = str(cfg["nr_dll"])
+
+
 def _log_environment(cfg: dict) -> None:
     """Print the environment header into the log: version, OS, HDR, driver.
 
@@ -1476,6 +1489,7 @@ def main() -> int:
 
     cfg = load_config(args.config)
     params = resolve_params(cfg)
+    _apply_nr_dll(cfg)
     _log_environment(cfg)
     width, height = int(cfg["width"]), int(cfg["height"])
     monitor_cfg = cfg["monitor"]
