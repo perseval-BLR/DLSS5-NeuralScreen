@@ -457,6 +457,60 @@ def resolve_params(cfg: dict) -> dict:
     return params
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write data to path atomically: a temp file in the same directory,
+    flushed and fsynced, then os.replace() over the target.
+
+    A crash mid-write used to truncate config.json in place and the program
+    lost the user's settings. The temp file lives next to the target so the
+    replace is a rename within one volume - atomic on Windows. On failure the
+    temp file is removed and the original is left untouched.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
+                         work_scale: float, split_pos: float,
+                         startup_menu: bool, nr_small: bool, menu) -> dict:
+    """The settings _save_menu_layout persists into config.json.
+
+    Everything the user can change in the menu: the panel geometry, the
+    processing settings and the NR parameters. profile/params/monitor are
+    included because the menu changes them in memory only (cfg/params are
+    updated live) - without this save they would be lost on the next launch.
+    """
+    return {
+        "menu_scale": round(menu.user_scale, 2),
+        "menu_height": (None if menu.user_height is None
+                        else int(menu.user_height)),
+        "open_menu_on_start": startup_menu,
+        "split": round(split_pos, 2),
+        "nr_small": bool(nr_small),
+        "work_scale": round(work_scale, 2),
+        "theme": menu.state.get("theme", "light"),
+        "lang": lang,
+        "menu_offset": [int(menu.offset[0]), int(menu.offset[1])],
+        "profile": cfg["profile"],
+        "intensity": params["intensity"],
+        "local_tone": params["local_tone"],
+        "local_structure": params["local_structure"],
+        "skin_structure": params["skin_structure"],
+        "monitor": int(monitor),
+    }
+
+
 def _read_exact(stream, size: int) -> bytes:
     """Read exactly size bytes from the stream (the worker may give fewer)."""
     chunks = bytearray()
@@ -2262,21 +2316,10 @@ def main() -> int:
             """
             try:
                 data = json.loads(args.config.read_text(encoding="utf-8"))
-                data["menu_scale"] = round(display.menu.user_scale, 2)
-                # Height: None means "fit the content", and that is what we write.
-                data["menu_height"] = (None if display.menu.user_height is None
-                                       else int(display.menu.user_height))
-                data["open_menu_on_start"] = startup_menu
-                data["split"] = round(split_pos, 2)
-                data["nr_small"] = bool(nr_small)
-                data["work_scale"] = round(work_scale, 2)
-                data["theme"] = display.menu.state.get("theme", "light")
-                data["lang"] = lang
-                data["menu_offset"] = [int(display.menu.offset[0]),
-                                       int(display.menu.offset[1])]
-                args.config.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8")
+                data.update(_menu_layout_payload(
+                    cfg, params, monitor, lang, work_scale, split_pos,
+                    startup_menu, nr_small, display.menu))
+                _atomic_write_json(args.config, data)
             except Exception as exc:
                 print(f"[main] could not save the menu layout: {exc}", file=sys.stderr)
 
@@ -2359,9 +2402,7 @@ def main() -> int:
             try:
                 data = json.loads(args.config.read_text(encoding="utf-8"))
                 data["hotkeys"] = dict(mapping)
-                args.config.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8")
+                _atomic_write_json(args.config, data)
             except Exception as exc:
                 print(f"[main] could not save the hotkeys: {exc}",
                       file=sys.stderr)
@@ -2916,7 +2957,9 @@ def main() -> int:
                 check_worker(worker, worker_logs)
                 t0 = time.perf_counter()
                 send_frame(worker, frame_index, work_frame, guide.motion, guide.reset,
-                           pts, shm, want_pixels=(pending_shot is not None or recorder is not None),
+                           pts, shm, want_pixels=(pending_shot is not None
+                                                   or (recorder is not None
+                                                       and recorder.needs_frame())),
                            motion_small=motion_small,
                            no_color=bool(dda_mode),
                            bypass=bypass,

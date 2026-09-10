@@ -2512,6 +2512,7 @@ static HANDLE                  g_gray_file = nullptr;   // client's mapping hand
 static BYTE                   *g_gray_map = nullptr;    // mapped view
 static size_t                  g_gray_bytes = 0;
 static UINT                    g_gray_w = 0, g_gray_h = 0;
+static UINT                    g_gray_pitch = 0; // readback row pitch (aligned)
 static ID3D12Resource         *g_gray_readback = nullptr; // R8 buffer for gray
 static ID3D12Resource         *g_gray_uav = nullptr;      // R8 UAV texture (area kernel writes)
 static bool                    g_gray_mapped = false;
@@ -2528,6 +2529,7 @@ static void CloseGray()
     if (g_gray_readback) { g_gray_readback->Release(); g_gray_readback = nullptr; }
     g_gray_bytes = 0;
     g_gray_w = g_gray_h = 0;
+    g_gray_pitch = 0;
 }
 
 static void CloseDda()
@@ -2804,11 +2806,23 @@ static bool OpenGray(const VideoGrayCmd &gc)
                                               __uuidof(ID3D12Resource),
                                               reinterpret_cast<void **>(&g_gray_uav))))
     { Log("[gray] UAV tex failed"); return false; }
-    // a readback buffer of exactly need bytes
+    // The readback row pitch comes from the driver, not from the width:
+    // D3D12 readback rows are aligned (320 is not a multiple of 256, so a
+    // packed pitch would be UB - the copy would write past the row and the
+    // client would read garbage on the last rows). Ask the driver for the
+    // real footprint and size the buffer for pitch*h (code review finding).
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
+    UINT rows = 0;
+    UINT64 row_size = 0, total = 0;
+    h.dev->GetCopyableFootprints(&td, 0, 1, 0, &fp, &rows, &row_size, &total);
+    if (rows != gc.height || row_size < gc.width)
+    { Log("[gray] unexpected footprint %ux%u row %llu", rows, gc.height, (unsigned long long)row_size); return false; }
+    g_gray_pitch = static_cast<UINT>(fp.Footprint.RowPitch);
+    // a readback buffer of exactly pitch*h bytes
     D3D12_HEAP_PROPERTIES rb = { D3D12_HEAP_TYPE_READBACK };
     D3D12_RESOURCE_DESC bd = {};
     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width = need; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.Width = static_cast<UINT64>(g_gray_pitch) * gc.height; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
     bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (FAILED(h.dev->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd,
                                               D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
@@ -2816,7 +2830,7 @@ static bool OpenGray(const VideoGrayCmd &gc)
                                               reinterpret_cast<void **>(&g_gray_readback))))
     { Log("[gray] readback failed"); return false; }
     g_gray_mapped = true;
-    Log("[gray] mapping '%s' %ux%u (%zu B) active", gc.name, gc.width, gc.height, need);
+    Log("[gray] mapping '%s' %ux%u (%zu B, pitch %u) active", gc.name, gc.width, gc.height, need, g_gray_pitch);
     return true;
 }
 
@@ -2865,7 +2879,7 @@ static bool AreaToGray()
     dst.PlacedFootprint.Footprint.Width = g_gray_w;
     dst.PlacedFootprint.Footprint.Height = g_gray_h;
     dst.PlacedFootprint.Footprint.Depth = 1;
-    dst.PlacedFootprint.Footprint.RowPitch = g_gray_w;
+    dst.PlacedFootprint.Footprint.RowPitch = g_gray_pitch;
     dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8_UNORM;
     h.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     // Put g_dda_dst back into COPY_SOURCE? No - it stays
@@ -2880,11 +2894,15 @@ static bool AreaToGray()
     h.list->ResourceBarrier(2, backs);
     const UINT64 fence = EndCommands();
     if (!WaitFenceValue(h.fence, fence, 10000)) { Log("[gray] fence timeout"); return false; }
-    // map the readback -> memcpy into the client mapping
+    // map the readback -> memcpy into the client mapping. The readback
+    // rows are pitch-aligned; the client mapping is packed w*h, so the
+    // copy is row by row (code review finding).
     BYTE *mapped = nullptr;
-    D3D12_RANGE rr = { 0, g_gray_bytes };
+    D3D12_RANGE rr = { 0, static_cast<SIZE_T>(g_gray_pitch) * g_gray_h };
     if (FAILED(g_gray_readback->Map(0, &rr, reinterpret_cast<void **>(&mapped)))) return false;
-    memcpy(g_gray_map, mapped, g_gray_bytes);
+    for (UINT y = 0; y < g_gray_h; ++y)
+        memcpy(g_gray_map + static_cast<size_t>(y) * g_gray_w,
+               mapped + static_cast<size_t>(y) * g_gray_pitch, g_gray_w);
     g_gray_readback->Unmap(0, nullptr);
     return true;
 }

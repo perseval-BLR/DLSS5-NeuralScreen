@@ -57,6 +57,11 @@ BUFFER_DURATION_100NS = 4_000_000
 
 
 class WAVEFORMATEX(ctypes.Structure):
+    # pshpack1.h in mmreg.h: the structs are byte-packed, no alignment
+    # padding. Without _pack_ ctypes aligns nAvgBytesPerSec/SubFormat and
+    # the structs come out larger than the real ABI - the layout read from
+    # the audio endpoint would be wrong (code review finding).
+    _pack_ = 1
     _fields_ = [
         ("wFormatTag", WORD),
         ("nChannels", WORD),
@@ -69,6 +74,7 @@ class WAVEFORMATEX(ctypes.Structure):
 
 
 class WAVEFORMATEXTENSIBLE(ctypes.Structure):
+    _pack_ = 1
     _fields_ = [
         ("Format", WAVEFORMATEX),
         ("wValidBitsPerSample", WORD),
@@ -296,6 +302,13 @@ class LoopbackCapture:
         bits = wfx.wBitsPerSample
         is_float = tag == WAVE_FORMAT_IEEE_FLOAT
         if tag == WAVE_FORMAT_EXTENSIBLE:
+            # WAVEFORMATEXTENSIBLE carries 22 bytes of extension after the
+            # base WAVEFORMATEX. A smaller cbSize means the endpoint handed
+            # us a truncated format - casting past it would read garbage
+            # (code review finding).
+            if wfx.cbSize < 22:
+                raise RuntimeError(
+                    f"truncated extensible format: cbSize={wfx.cbSize} < 22")
             ext = ctypes.cast(mix, POINTER(WAVEFORMATEXTENSIBLE)).contents
             is_float = ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
         if is_float and bits == 32:

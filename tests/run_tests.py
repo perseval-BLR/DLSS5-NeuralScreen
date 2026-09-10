@@ -43,8 +43,10 @@ TIMEOUT = 600
 ABOUT = {
     "test_bypass.py": "NR OFF shows the raw capture and the pipeline survives",
     "test_audio_limiter.py": "the soft limiter keeps the recording from clipping",
+    "test_audio_pack.py": "the audio format structs are byte-packed, truncated formats rejected",
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
+    "test_config_atomic.py": "the config write is atomic and persists profile/params/monitor",
     "test_dred_diag.py": "the worker logs DRED/device-removed diagnostics at startup",
     "test_hotkey_once.py": "one press of a hotkey fires exactly one command",
     "test_hotkey_rebind.py": "hotkeys can be reassigned from the config",
@@ -61,6 +63,7 @@ ABOUT = {
     "test_out_shm.py": "the pixel channel through shared memory",
     "test_odd_frame_size.py": "a frame whose row pitch needs padding survives",
     "test_recorder_audio.py": "the audio track keeps up with the video",
+    "test_recorder_fallback.py": "the NVENC codec chain falls back AV1->HEVC->H.264",
     "test_recorder_thread.py": "the encoder thread and a clean close",
     "test_residual.py": "the matched residual composite keeps 1:1 detail at reduced work",
     "test_residual_split.py": "residual and the wipe compose in the same frame",

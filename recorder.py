@@ -1,8 +1,9 @@
-"""VideoRecorder - writes NR overlay frames into an MP4 (AV1 NVENC + AAC).
+"""VideoRecorder - writes NR overlay frames into an MP4 (NVENC + AAC).
 
 Records the frames Python receives from the worker (output_rgba) while
 recording is on (Num0). Frames arrive full-res RGBA8 every ~30 ms; PyAV
-converts them to yuv420p and encodes AV1 through NVENC.
+converts them to yuv420p and encodes them through NVENC (AV1, or HEVC/H.264
+on GPUs without an AV1 encoder - the first codec that opens wins).
 
 System audio comes from WASAPI loopback (audio.LoopbackCapture) as a second
 track. It is best-effort: a machine without a playback endpoint still records
@@ -28,7 +29,7 @@ from audio import LoopbackCapture
 
 
 class VideoRecorder:
-    """Writes frames into an MP4 (av1_nvenc). Created when recording starts,
+    """Writes frames into an MP4 (NVENC). Created when recording starts,
     closed on Num0/exit. write()/close() are called from the main loop only.
 
     Encoding runs in its own thread. A 4K measurement showed a synchronous
@@ -51,6 +52,13 @@ class VideoRecorder:
     #: looks at the screen, not at the file. A dropped frame does not affect
     #: timing - pts comes from the clock.
     PUT_TIMEOUT_S = 0.25
+
+    #: NVENC codecs, best first. AV1 is the newest and most efficient, but the
+    #: RTX 30 series has no AV1 encoder at all - on those cards the first
+    #: add_stream() succeeds and the failure only surfaces when the encoder is
+    #: opened. The probe below opens each codec for real and keeps the first
+    #: one that works.
+    CODEC_CHAIN = ("av1_nvenc", "hevc_nvenc", "h264_nvenc")
 
     #: Bitrate and encoder parameters live as class attributes so they can be
     #: changed without touching the constructor (measurements, experiments).
@@ -87,8 +95,9 @@ class VideoRecorder:
         self._queue: queue.Queue = queue.Queue(maxsize=self.QUEUE_DEPTH)
         self._thread: threading.Thread | None = None
         self._encode_error: BaseException | None = None
+        self._stop = threading.Event()
         self._container = av.open(path, mode="w")
-        self._stream = self._container.add_stream("av1_nvenc", rate=int(round(fps)))
+        self._stream = self._open_video_stream(width, height, fps)
         self._stream.width = width
         # An odd height is rounded up by the encoder (yuv420p needs even
         # dimensions) and the last row comes out duplicated. One-window mode
@@ -150,6 +159,44 @@ class VideoRecorder:
         self.written = 0
         self._started = time.perf_counter()
 
+    def _open_video_stream(self, width: int, height: int, fps: float):
+        """Create the video stream with the first NVENC codec that opens.
+
+        add_stream() alone is not a probe: PyAV opens the encoder lazily, at
+        the first mux() (start_encoding -> avcodec_open2). On an RTX 30 card
+        add_stream("av1_nvenc") succeeds and the recording dies mid-way with
+        "no NVENC capable devices found". So each candidate is opened for
+        real - on a throwaway null-muxer container, because a stream cannot
+        be removed from a container and start_encoding() would re-open a
+        codec context that is still closed. The chosen codec is stored on
+        self.codec for the caller (and the tests).
+        """
+        rate = int(round(fps))
+        for name in self.CODEC_CHAIN:
+            try:
+                with av.open("null", mode="w", format="null") as probe:
+                    stream = probe.add_stream(name, rate=rate)
+                    stream.width = width
+                    stream.height = height
+                    stream.pix_fmt = "yuv420p"
+                    stream.time_base = Fraction(1, rate)
+                    stream.bit_rate = self.BIT_RATE
+                    stream.gop_size = max(30, rate * 2)
+                    stream.max_b_frames = 0
+                    if self.ENCODER_OPTIONS:
+                        stream.options = dict(self.ENCODER_OPTIONS)
+                    stream.codec_context.open()
+            except Exception as exc:                      # noqa: BLE001
+                print(f"[record] {name} unavailable ({exc}) - trying the "
+                      f"next codec", file=sys.stderr)
+                continue
+            print(f"[record] video codec: {name}")
+            self.codec = name
+            return self._container.add_stream(name, rate=rate)
+        raise RuntimeError(
+            "no NVENC encoder available (tried "
+            + ", ".join(self.CODEC_CHAIN) + ")")
+
     def _open_audio(self) -> None:
         """Start the loopback and add the AAC track. Failure is not fatal."""
         cap = LoopbackCapture()
@@ -189,24 +236,44 @@ class VideoRecorder:
         reason video is: the container must be touched from one thread only.
         The wait on the video queue is bounded so that audio keeps flowing even
         while the pipeline is between frames.
+
+        The loop ends on the stop event OR on the None sentinel, whichever
+        comes first. The sentinel is the normal path (close() puts it after
+        draining the queue); the event is the escape hatch for a close() that
+        must not wait for a stuck encoder. Either way the container is closed
+        HERE, on this thread - close() never touches it while we are alive.
         """
-        while True:
+        try:
+            while not self._stop.is_set():
+                try:
+                    item = self._queue.get(timeout=0.05)
+                except queue.Empty:
+                    self._pump_audio()
+                    continue
+                if item is None:
+                    self._pump_audio()
+                    break
+                pts, rgba = item
+                try:
+                    self._pump_audio()
+                    self._encode_one(pts, rgba)
+                except BaseException as exc:   # noqa: BLE001 - report back to main
+                    self._encode_error = exc
+                    print(f"[record] encoding aborted: {exc}", file=sys.stderr)
+                    break
+        finally:
+            # The container is ours alone: flush the audio, write the trailer
+            # and close it. On a stuck encoder this still runs - the trailer
+            # is best-effort, and the file is left without one only if the
+            # container itself refuses to close.
+            self._close_audio()
             try:
-                item = self._queue.get(timeout=0.05)
-            except queue.Empty:
-                self._pump_audio()
-                continue
-            if item is None:
-                self._pump_audio()
-                return
-            pts, rgba = item
-            try:
-                self._pump_audio()
-                self._encode_one(pts, rgba)
-            except BaseException as exc:   # noqa: BLE001 - report back to main
-                self._encode_error = exc
-                print(f"[record] encoding aborted: {exc}", file=sys.stderr)
-                return
+                for packet in self._stream.encode(None):  # flush encoder
+                    self._container.mux(packet)
+                self._container.close()
+            except Exception as exc:
+                print(f"[record] close failed: {exc}", file=sys.stderr)
+            self._container = None
 
     def _pump_audio(self) -> None:
         """Move captured samples into the container; pad gaps with silence.
@@ -270,6 +337,23 @@ class VideoRecorder:
                 return
             for packet in self._astream.encode(frame):
                 self._container.mux(packet)
+
+    def needs_frame(self) -> bool:
+        """Whether the recorder wants the next frame's pixels.
+
+        Gates FRAME_FLAG_WANT_PIXELS in main.py: the flag is expensive (a
+        full 33 MB round-trip from the worker per frame), so it must be
+        requested only when the recording can actually use a frame. The
+        stream runs at 30 fps - the pipeline usually delivers more - so the
+        demand is throttled to one frame per stream slot. The test mirrors
+        write()'s acceptance (pts > _frame_idx): a frame is wanted exactly
+        when write() would keep it, and the first slot (pts 0) is dropped by
+        write() anyway.
+        """
+        if self._encode_error is not None:
+            return False
+        elapsed = time.perf_counter() - self._started
+        return int(round(elapsed * self.fps)) > self._frame_idx
 
     def write(self, rgba: np.ndarray) -> None:
         """Queue a frame for the encoder (RGBA8 full-res, 4 channels).
@@ -340,28 +424,58 @@ class VideoRecorder:
         self.written += 1
 
     def close(self) -> None:
-        """Wait for the encoder, write the trailer and close the container.
+        """Stop the encoder thread and let it finish the file.
 
-        The thread is stopped BEFORE we touch the container: it is the sole
-        owner while recording runs, and the container must not be touched from
-        two threads.
+        The thread is the sole owner of the container while it runs, so the
+        container is closed THERE, never from here. This method only signals
+        and waits:
+
+          * drain the queue (put the sentinel with a timeout - a full queue
+            must not block close() forever if the encoder is stuck);
+          * set the stop event as the escape hatch: the loop checks it every
+            50 ms and exits even when the sentinel never gets consumed;
+          * join with a timeout, then report what the thread left behind.
+
+        The old code put the sentinel without a timeout and joined from the
+        main thread: a stuck encoder left the queue full, the put() blocked
+        forever, and close() deadlocked the whole app.
         """
         if self._container is None:
             return
         if self._thread is not None:
-            self._queue.put(None)
+            try:
+                self._queue.put(None, timeout=self.PUT_TIMEOUT_S)
+            except queue.Full:
+                # The encoder is stuck and the queue is full - the sentinel
+                # will never be consumed. The stop event below is the way out.
+                print("[record] queue full on close - stopping via the event",
+                      file=sys.stderr)
+            self._stop.set()
             self._thread.join(timeout=30.0)
             if self._thread.is_alive():
-                # The encoder is stuck (NVENC stall, driver hang). Touching
-                # the container from here while the thread is still inside
-                # mux() would be undefined behaviour - leave the container
-                # alone and report the loss instead of corrupting the file.
+                # The encoder is stuck (NVENC stall, driver hang). The
+                # container is still owned by the thread - touching it from
+                # here would be undefined behaviour. The thread is daemon, so
+                # the process can still exit; the file is left without a
+                # trailer.
                 print("[record] encoder did not finish within 30 s - "
                       "the file is left without a trailer", file=sys.stderr)
-                self._container = None
                 self._thread = None
                 return
             self._thread = None
+        else:
+            # No frame was ever written, so the encode thread never started
+            # and nobody owns the container - close it here. The flush still
+            # runs: it opens the encoder and writes the header, so the file
+            # is a valid (empty) MP4 instead of 0 bytes.
+            self._close_audio()
+            try:
+                for packet in self._stream.encode(None):  # flush encoder
+                    self._container.mux(packet)
+                self._container.close()
+            except Exception as exc:
+                print(f"[record] close failed: {exc}", file=sys.stderr)
+            self._container = None
         if self.dropped:
             print(f"[record] frames dropped: {self.dropped} "
                   f"(encoder could not keep up)", file=sys.stderr)
@@ -372,16 +486,6 @@ class VideoRecorder:
             # truncated file.
             print(f"[record] encoder error: {self._encode_error}",
                   file=sys.stderr)
-        # The encoder thread is gone, so the container is ours again: take the
-        # tail of the audio and flush both encoders.
-        self._close_audio()
-        try:
-            for packet in self._stream.encode(None):  # flush encoder
-                self._container.mux(packet)
-            self._container.close()
-        except Exception as exc:
-            print(f"[record] close failed: {exc}", file=sys.stderr)
-        self._container = None
 
     def _close_audio(self) -> None:
         """Stop the capture, write what is left and flush the AAC encoder.
