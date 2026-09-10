@@ -2936,6 +2936,93 @@ static bool AreaToGray()
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Adaptive exposure (PaperWhite principle, Ghady983/RenoDX-DLSS-5-Artifact-Fix)
+// ---------------------------------------------------------------------------
+// A static exposure leaves dark scenes underexposed: the network sees a
+// near-black frame and produces artifacts/flicker on textures. The desktop
+// is exactly that case - windows of very different brightness (dark IDE +
+// bright site). The fix: sample the AREA luminance we already compute for
+// the guides (320x180 R8), map the average through a smoothstep between
+// Dark/Lit thresholds, and feed the result into DLSS.Exposure.Scale with
+// temporal smoothing so the value cannot flicker.
+//
+// NS_PW=0 disables (tests); default on, like the residual composite.
+// NS_PW_DARK / NS_PW_LIT: luminance thresholds (0..1) for the smoothstep.
+// NS_PW_MIN / NS_PW_MAX: exposure range the value is mapped into.
+// NS_PW_TAU: EMA time constant in seconds (0 = instant).
+static bool PwEnabled()
+{
+    char buf[8] = {};
+    const DWORD got = GetEnvironmentVariableA("NS_PW", buf, sizeof(buf));
+    return !(got > 0 && got < sizeof(buf) && buf[0] == '0');
+}
+
+static float PwEnvFloat(const char *name, float def)
+{
+    char buf[32] = {};
+    const DWORD got = GetEnvironmentVariableA(name, buf, sizeof(buf));
+    if (got > 0 && got < sizeof(buf))
+    {
+        const float f = static_cast<float>(atof(buf));
+        if (f >= 0.0f) return f;
+    }
+    return def;
+}
+
+static float g_pw_exposure = 1.0f;   // current smoothed value
+static double g_pw_last = 0.0;       // last update time (GetTickCount64 ms)
+static bool   g_pw_logged = false;
+
+// Called once per captured frame, after AreaToGray filled g_gray_map.
+static void UpdateAdaptiveExposure()
+{
+    if (!PwEnabled() || !g_gray_mapped || g_gray_w == 0 || g_gray_h == 0)
+    {
+        g_pw_exposure = 1.0f;
+        return;
+    }
+    const float dark = PwEnvFloat("NS_PW_DARK", 0.10f);
+    const float lit  = PwEnvFloat("NS_PW_LIT", 0.40f);
+    const float mn   = PwEnvFloat("NS_PW_MIN", 1.00f);
+    const float mx   = PwEnvFloat("NS_PW_MAX", 1.10f);
+    const float tau  = PwEnvFloat("NS_PW_TAU", 0.50f);
+    if (!g_pw_logged)
+    {
+        Log("[pw] adaptive exposure on (dark=%.2f lit=%.2f min=%.2f max=%.2f tau=%.2f)",
+            dark, lit, mn, mx, tau);
+        g_pw_logged = true;
+    }
+
+    // Average luminance of the AREA frame (0..1).
+    double sum = 0.0;
+    const size_t n = static_cast<size_t>(g_gray_w) * g_gray_h;
+    for (size_t i = 0; i < n; ++i) sum += g_gray_map[i] / 255.0;
+    const float avg = static_cast<float>(sum / static_cast<double>(n));
+
+    // smoothstep(dark, lit, avg): 0 in dark scenes, 1 in lit ones. The
+    // exposure goes UP in dark scenes (the network sees a brighter frame
+    // and stops producing artifacts in the shadows - the Ghady983
+    // principle) and stays at 1.0 in lit ones.
+    float t = (avg - dark) / (lit - dark);
+    t = (t < 0.0f) ? 0.0f : (t > 1.0f) ? 1.0f : t;
+    const float target = mx - (mx - mn) * (t * t * (3.0f - 2.0f * t));
+
+    // Temporal smoothing: EMA with a time constant.
+    const double now = static_cast<double>(GetTickCount64());
+    if (tau <= 0.0f || g_pw_last == 0.0)
+    {
+        g_pw_exposure = target;
+    }
+    else
+    {
+        const float dt = static_cast<float>((now - g_pw_last) / 1000.0);
+        const float a = 1.0f - expf(-dt / tau);
+        g_pw_exposure += (target - g_pw_exposure) * a;
+    }
+    g_pw_last = now;
+}
+
 // Open capture. w/h = capture size; the worker keeps its own pipe for motion.
 // The D3D11 device the capture runs on. Desktop Duplication and Windows
 // Graphics Capture both hand their frames to the same bridge into D3D12, so
@@ -3181,6 +3268,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     if (!WaitFenceValue(h.fence, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
     // Hand the client the luminance frame (320x180) for the optical flow
     if (!AreaToGray()) { /* best effort: guides go without a fresh frame */ }
+    UpdateAdaptiveExposure();
     g_dda_ready = true;
     return true;
 }
@@ -3579,7 +3667,8 @@ static bool EvaluateVideo(VideoState &v, int reset)
     h.params->Set("DLSSNR.UseAutoMask", g_video_options.auto_mask);
     h.params->Set("DLSSNR.Style", g_video_options.style);
     h.params->Set("DLSSNR.UICorrection", g_video_options.ui_correction);
-    h.params->Set("DLSS.Pre.Exposure", 1.0f); h.params->Set("DLSS.Exposure.Scale", 1.0f);
+    h.params->Set("DLSS.Pre.Exposure", 1.0f);
+    h.params->Set("DLSS.Exposure.Scale", g_pw_exposure);
     DWORD code = 0;
     NVSDK_NGX_Result result = static_cast<NVSDK_NGX_Result>(0x7FFFFFFF);
     __try { result = g_nr_evaluate(h.list, h.feature, h.params, nullptr); }

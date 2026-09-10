@@ -44,6 +44,7 @@ ABOUT = {
     "test_bypass.py": "NR OFF shows the raw capture and the pipeline survives",
     "test_audio_limiter.py": "the soft limiter keeps the recording from clipping",
     "test_audio_pack.py": "the audio format structs are byte-packed, truncated formats rejected",
+    "test_adaptive_exposure.py": "adaptive exposure brightens dark scenes, lit scenes untouched",
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
     "test_config_atomic.py": "the config write is atomic and persists profile/params/monitor",
