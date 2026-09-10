@@ -107,7 +107,12 @@ def run(label: str, args: list, note: str = "") -> dict:
     print(f"\n>>> {label}" + (f"  ({note})" if note else ""))
     started = time.monotonic()
     try:
-        args = [a if a.startswith("tests/") else f"tests/{a}" for a in args]
+        # Only file arguments get the tests/ prefix - flags (--smoke,
+        # --gui) must pass through untouched, otherwise autocheck.py runs
+        # without its flag and fails on the stale zip instead of doing
+        # the smoke/GUI cycle.
+        args = [a if a.startswith("tests/") or a.startswith("-")
+                else f"tests/{a}" for a in args]
         r = subprocess.run([str(PY)] + args, cwd=ROOT, timeout=TIMEOUT,
                            capture_output=True, text=True, env=CHILD_ENV,
                            encoding="utf-8", errors="replace")
