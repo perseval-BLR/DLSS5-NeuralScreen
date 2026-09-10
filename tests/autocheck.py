@@ -199,6 +199,12 @@ def readme_consistency():
             if not (base / target).exists():
                 return False, f"{name} points at a missing {target}"
         for src in re.findall(r'<img src="([^"]+)"', text):
+            # The screenshots are addressed absolutely on purpose: docs/ is
+            # not in the release archive, and a relative link left every
+            # image broken for anyone who unpacked the zip. Only a relative
+            # path is ours to resolve.
+            if src.startswith(("http://", "https://")):
+                continue
             if not (base / src).exists():
                 return False, f"{name} shows a missing {src}"
     return True, (f"READMEs {len(docs['README.md'].splitlines())}/"
