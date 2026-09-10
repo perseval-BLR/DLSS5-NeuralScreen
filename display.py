@@ -1037,7 +1037,10 @@ class Display:
             pygame.draw.circle(self.screen, self._rgb(c["danger"]), (x, y), r)
         secs = float(self._hud.get("rec_seconds", 0.0))
         text = f"REC {int(secs) // 60:d}:{int(secs) % 60:02d}"
-        surf = self._font.render(text, True, self._rgb(c["danger"]))
+        # The digits in the full danger colour read as a bright raspberry
+        # slab on a dark desktop - the dot carries the "recording" signal,
+        # the text is secondary and stays muted (user feedback).
+        surf = self._font.render(text, True, self._rgb(c["muted"]))
         tx = x - r - int(round(8 * self.ui_scale)) - surf.get_width()
         ty = y - surf.get_height() // 2
         self.screen.blit(surf, (tx, ty))

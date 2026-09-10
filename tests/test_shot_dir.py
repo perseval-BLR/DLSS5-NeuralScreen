@@ -1,19 +1,17 @@
-"""The screenshot folder: a configured dir skips the Save As dialog.
+"""The screenshot folder: a configured dir is where Save As opens.
 
-Issue #20: the user wanted a fixed output folder for screenshots. With
-screenshot_dir set in the config, Num3 writes straight into that folder
-with a timestamped name; without it the Save As dialog is used. The
-folder picker's answer (a directory) is remembered in the config and
-shown on the settings button.
+Issue #20: the user wanted a fixed output folder for screenshots. The
+folder picker in the settings remembers the folder; the Save As dialog
+then opens in it (the dialog itself always appears - the folder is the
+starting point, not a replacement).
 
-Checked: the folder path is built inside the configured dir; a missing
-dir is created; the payload carries the configured folder; the settings
-button shows the folder in its caption.
+Checked: the payload carries the configured folder; the settings button
+shows the folder in its caption; the dialog's initial dir comes from
+the config.
 """
 import importlib.util
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
@@ -42,23 +40,7 @@ def main() -> int:
     if payload.get("screenshot_dir") != r"C:\Shots":
         failures.append(f"the folder did not persist: {payload.get('screenshot_dir')!r}")
 
-    # 2. The folder path builder: timestamped name inside the dir.
-    d = Path(tempfile.mkdtemp(prefix="ns-shots-"))
-    try:
-        # The builder lives inside _open_save_dialog (a closure); the
-        # equivalent logic is exercised through the config flag check:
-        # a configured dir must exist after the save path is built.
-        target = d / "neuralscreen-20260910-120000-000.jpg"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.parent.is_dir():
-            failures.append("the configured folder was not created")
-        if target.suffix != ".jpg":
-            failures.append(f"unexpected suffix: {target.suffix}")
-    finally:
-        import shutil
-        shutil.rmtree(d, ignore_errors=True)
-
-    # 3. The settings button caption shows the configured folder.
+    # 2. The settings button caption shows the configured folder.
     import pygame
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
@@ -79,11 +61,19 @@ def main() -> int:
     finally:
         pygame.quit()
 
+    # 3. The dialog's initial dir comes from the config: the source of
+    #    _open_save_dialog must pass the configured folder to the dialog.
+    src = (BASE / "main.py").read_text(encoding="utf-8")
+    if "_ask_save_path(hwnd, default_name, initial_dir)" not in src:
+        failures.append("the dialog does not receive the initial dir")
+    if "screenshot_dir" not in src.split("def _open_save_dialog")[1][:800]:
+        failures.append("_open_save_dialog does not read screenshot_dir")
+
     print("=" * 60)
     if failures:
         print(f"FAIL: {len(failures)} - {failures}")
         return 1
-    print("OK: the screenshot folder is configured, persisted and shown on the button")
+    print("OK: the screenshot folder is where Save As opens")
     return 0
 
 

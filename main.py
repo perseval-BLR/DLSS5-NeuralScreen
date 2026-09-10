@@ -1716,11 +1716,14 @@ def main() -> int:
         perf: dict[str, list[float]] = {k: [] for k in PERF_KEYS}
         last_perf_log = time.monotonic()
 
-        def _ask_save_path(parent_hwnd: int, default_name: str) -> Path | None:
+        def _ask_save_path(parent_hwnd: int, default_name: str,
+                           initial_dir: str | None = None) -> Path | None:
             """The native "Save as" dialog (GetSaveFileNameW).
 
             Returns the chosen path, or None on cancel. The JPEG filter is the
             default; the extension is appended when the user leaves it out.
+            initial_dir is the folder the dialog opens in (the configured
+            screenshot folder, if any).
             """
             try:
                 import ctypes
@@ -1762,6 +1765,7 @@ def main() -> int:
                 ofn.lpstrFile = buf
                 ofn.nMaxFile = 1024
                 ofn.lpstrDefExt = "jpg"
+                ofn.lpstrInitialDir = initial_dir or None
                 ofn.Flags = 0x00000002 | 0x00000008  # OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST
                 ok = ctypes.windll.comdlg32.GetSaveFileNameW(ctypes.byref(ofn))
                 if not ok:
@@ -2505,31 +2509,21 @@ def main() -> int:
             comes back through a queue. A second dialog is not opened - one
             window is already up.
 
-            With a configured screenshot_dir the dialog is skipped entirely:
-            the screenshot goes straight into that folder (issue #20).
+            A configured screenshot_dir is the folder the dialog opens in,
+            not a replacement for it (issue #20).
             """
             nonlocal shot_dialog_open
-            shot_dir = cfg.get("screenshot_dir")
-            if isinstance(shot_dir, str) and shot_dir.strip():
-                try:
-                    d = Path(shot_dir).expanduser()
-                    d.mkdir(parents=True, exist_ok=True)
-                    stamp = time.strftime("%Y%m%d-%H%M%S")
-                    stamp = f"{stamp}-{time.time() % 1 * 1000:03.0f}"
-                    shot_paths.put(d / f"neuralscreen-{stamp}.jpg")
-                    return
-                except Exception as exc:
-                    print(f"[main] screenshot_dir failed ({exc}) - "
-                          f"falling back to the dialog", file=sys.stderr)
             if shot_dialog_open:
                 return
             shot_dialog_open = True
             hwnd = display.get_hwnd()
             default_name = f"neuralscreen-{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+            shot_dir = cfg.get("screenshot_dir")
+            initial_dir = str(shot_dir) if isinstance(shot_dir, str) and shot_dir.strip() else None
 
             def _run() -> None:
                 try:
-                    shot_paths.put(_ask_save_path(hwnd, default_name))
+                    shot_paths.put(_ask_save_path(hwnd, default_name, initial_dir))
                 except Exception as exc:
                     print(f"[main] the save dialog crashed: {exc}", file=sys.stderr)
                     shot_paths.put(None)

@@ -11,6 +11,7 @@ the indicator is NOT baked into a captured frame.
 """
 import os
 import sys
+import time
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -21,6 +22,12 @@ import pygame  # noqa: E402
 import display as display_mod  # noqa: E402
 
 
+def _is_red(p) -> bool:
+    """The danger colour #BC4C2E = (188, 76, 46); the chroma key is
+    (255,0,255) - the blue channel separates them."""
+    return p.r > 150 and p.g < 100 and p.b < 100
+
+
 def main() -> int:
     failures = []
     pygame.init()
@@ -29,26 +36,28 @@ def main() -> int:
         disp.set_hud({"recording": False, "rec_seconds": 0.0,
                       "rec_indicator": True})
         disp.draw_overlay(min_interval=0.0)
-        # The top-right corner: nothing red while not recording. The
-        # background is the chroma key (255,0,255) - the blue channel
-        # separates it from the red indicator.
+        # The top-right corner: nothing red while not recording.
         px = disp.screen.get_at((disp.width - 20, 20))
-        if px.r > 200 and px.g < 100 and px.b < 100:
+        if _is_red(px):
             failures.append("the indicator shows while not recording")
 
-        # Recording on: the dot (or the REC text) must be visible.
+        # Recording on: the dot (or the REC text) must be visible. The dot
+        # pulses (2 Hz), so the check retries across both phases.
         disp.set_hud({"recording": True, "rec_seconds": 65.0,
                       "rec_indicator": True})
-        disp.draw_overlay(min_interval=0.0)
         found = False
-        for y in range(0, 60):
-            for x in range(disp.width - 200, disp.width):
-                p = disp.screen.get_at((x, y))
-                if p.r > 200 and p.g < 100 and p.b < 100:
-                    found = True
+        for _attempt in range(6):
+            disp.draw_overlay(min_interval=0.0)
+            for y in range(0, 60):
+                for x in range(disp.width - 200, disp.width):
+                    if _is_red(disp.screen.get_at((x, y))):
+                        found = True
+                        break
+                if found:
                     break
             if found:
                 break
+            time.sleep(0.25)
         if not found:
             failures.append("no red indicator while recording")
 
@@ -59,8 +68,7 @@ def main() -> int:
         found = False
         for y in range(0, 60):
             for x in range(disp.width - 200, disp.width):
-                p = disp.screen.get_at((x, y))
-                if p.r > 200 and p.g < 100 and p.b < 100:
+                if _is_red(disp.screen.get_at((x, y))):
                     found = True
                     break
             if found:
@@ -79,8 +87,7 @@ def main() -> int:
         found = False
         for y in range(0, 60):
             for x in range(disp.width - 200, disp.width):
-                p = cap.get_at((x, y))
-                if p.r > 200 and p.g < 100 and p.b < 100:
+                if _is_red(cap.get_at((x, y))):
                     found = True
                     break
             if found:
