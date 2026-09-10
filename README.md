@@ -47,7 +47,7 @@ exists.
 
 1. Download the archive from [Releases](https://github.com/perseval-BLR/DLSS5-NeuralScreen/releases)
    and unpack it anywhere. **Everything is inside** — including NVIDIA's
-   `nvngx_dlssnr.dll` (165 MB, too big for GitHub to keep in the repository,
+   `nvngx_dlssnr.dll` (158 MB, too big for GitHub to keep in the repository,
    so it ships in the archive instead).
 2. Run **`NeuralScreen.exe`**.
 
@@ -76,7 +76,7 @@ instead and nothing happens.
 | **Num3** | screenshot |
 | **Num0** | start / stop recording, with sound |
 | **Num4** / **Num6** | processing resolution down / up |
-| **Num5** | process one window instead of the whole screen |
+| **Num5** | capture the window under the cursor (see below) |
 | **Ctrl+Alt+Q** | quit |
 
 Every key can be reassigned in the menu, under the sliders icon.
@@ -149,8 +149,9 @@ loud system mix cannot clip the track into distortion.
   e.g. `set NS_SPOUT=1` then `NeuralScreen.exe`). The worker publishes the
   output as a Spout2 shared texture - add a **Spout2 Capture** source in OBS
   (free plugin) and record. Works in full-screen mode too. Off by default.
-- **NVIDIA App / OBS display capture:** use one-window mode - point at the
-  window, **Num5**, record, **Num5** when done. In this mode the overlay is
+- **NVIDIA App / OBS display capture:** use one-window mode - pick the
+  window in the menu (or point at it and press **Num5**), record, then
+  switch back to **Fullscreen** when done. In this mode the overlay is
   visible to screen capture; in full-screen mode it hides (the program
   captures the screen itself, and a visible overlay would feed on itself).
 
@@ -182,12 +183,10 @@ second per frame; a press may feel lost. The picture is the priority.
 
 - **True fullscreen games** cannot have the overlay drawn over them — a Windows rule. Borderless or windowed only.
 - **A second instance is not guarded** — close the first one first.
-- **The window list** shows every visible window; Num5 takes the one under the cursor. **A second monitor** works but was not tested with a window between them; the menu position in window mode starts bottom-right.
+- **The window list** shows every visible window; Num5 takes the one under the cursor. **A second monitor** works but was not tested with a window between them.
 - **HDR displays** are not supported: switch to SDR (Win+Alt+B).
 - **Pipeline latency** is 40–60 ms — fine interactively, not competitively; **processing resolution is capped at 2560×1440** (the network refuses 4K), output is always your full native resolution.
 - **The bundled `nvngx_dlssnr.dll` is the leaked 310.8.0 runtime carrying sm_75/86/89/120 kernels (RTX 20-50)** — see License below.
-
-## Under the hood — how it works, what was measured and why: **[TECHNICAL.md](TECHNICAL.md)**. English: **[README.md](README.md)**. Русская версия: **[README.ru.md](README.ru.md)** / **[TECHNICAL.ru.md](TECHNICAL.ru.md)**.
 
 ## License
 
