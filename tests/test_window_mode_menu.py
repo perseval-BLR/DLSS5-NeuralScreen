@@ -3,18 +3,17 @@
 The regression: with the menu open at launch (open_menu_on_start) the saved
 offset was computed for the full desktop and landed the panel OUTSIDE a small
 captured window - the menu came back clipped off the right edge on the first
-window-mode activation. The fix: _rebuild_pipeline gives the restored menu
-the same treatment as the settings handler - expand the layer to the whole
-monitor and place the panel in the bottom-right corner.
+window-mode activation. The fix: the saved offset is honoured as-is and
+layout() clamps the panel fully inside the screen (user rule 10.09: fixed
+position until the user drags it) - no more bottom-right re-placement.
 
 How it is checked: in window mode the overlay is visible to an outside
 capture (WDA is off), so a Desktop Duplication frame shows the menu. The
-panel is a light cream (#F0EEE6) rectangle; when it is placed correctly it
-reaches the right edge of the screen (margin 24), when it is clipped it
-stops ~300 px short. A strip along the right edge must be mostly panel.
+test forces a centred offset; the panel must be visible in the centre and
+NOT at the right edge (the old corner jump is gone).
 
-The test forces a light theme and the menu-open config, and restores the
-user's config afterwards.
+The test forces a light theme, the menu-open config and a centred offset,
+and restores the user's config afterwards.
 """
 import ctypes
 import json
@@ -100,6 +99,9 @@ def main() -> int:
     test_cfg["split"] = 0.0
     test_cfg["nr_small"] = True
     test_cfg["work_scale"] = 0.65
+    # A centred offset: the panel must stay where the config says, not jump
+    # to the bottom-right corner (the old place_bottom_right behaviour).
+    test_cfg["menu_offset"] = [0, 0]
     CFG.write_text(json.dumps(test_cfg, indent=2), encoding="utf-8")
 
     restore_numlock = False
@@ -181,9 +183,10 @@ def main() -> int:
             return 1
         pump(0.5)
 
-        # The menu must be fully visible: in window mode the overlay is
-        # visible to an outside capture, and the panel reaches the right
-        # edge of the screen (bottom-right placement, margin 24).
+        # The menu must be fully visible and stay where the config put it:
+        # in window mode the overlay is visible to an outside capture, and
+        # the panel must NOT jump to the right edge (the old bottom-right
+        # re-placement is gone - user rule 10.09: fixed position).
         import dxcam
         cam = dxcam.create(output_idx=0, output_color="RGB")
         try:
@@ -192,26 +195,26 @@ def main() -> int:
                 failures.append("no capture frame to inspect the menu")
             else:
                 fh, fw = frame.shape[:2]
-                # A strip along the right edge, the height of the panel.
+                # The right-edge strip must NOT be panel-coloured: the menu
+                # is centred now, not cornered.
                 strip = frame[max(0, fh - 700):fh, max(0, fw - 100):fw]
                 light = (strip[..., 0] > 200) & (strip[..., 1] > 200) & (strip[..., 2] > 200)
                 share = float(light.mean())
                 print(f"right-edge strip: {share * 100:.1f}% panel-coloured "
                       f"({fw}x{fh} screen)")
-                if share < 0.30:
+                if share > 0.30:
                     failures.append(
-                        f"the menu is not at the right edge after the window-mode "
-                        f"switch ({share * 100:.1f}% panel in the strip) - it is "
-                        f"clipped off the screen (the regression)")
-                # And the panel must actually be there: a light blob somewhere
-                # in the bottom-right quadrant.
-                quad = frame[fh // 2:, fw // 2:]
-                light_q = (quad[..., 0] > 200) & (quad[..., 1] > 200) & (quad[..., 2] > 200)
-                qshare = float(light_q.mean())
-                print(f"bottom-right quadrant: {qshare * 100:.1f}% panel-coloured")
-                if qshare < 0.01:
-                    failures.append("no panel visible in the bottom-right "
-                                    "quadrant at all")
+                        f"the menu jumped to the right edge after the window-mode "
+                        f"switch ({share * 100:.1f}% panel in the strip) - the "
+                        f"fixed position was not honoured")
+                # And the panel must actually be there: a light blob in the
+                # centre band (the centred offset).
+                band = frame[fh // 2 - 200:fh // 2 + 200, fw // 2 - 300:fw // 2 + 300]
+                light_b = (band[..., 0] > 200) & (band[..., 1] > 200) & (band[..., 2] > 200)
+                bshare = float(light_b.mean())
+                print(f"centre band: {bshare * 100:.1f}% panel-coloured")
+                if bshare < 0.01:
+                    failures.append("no panel visible in the centre band at all")
         finally:
             del cam
     finally:

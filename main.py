@@ -1865,18 +1865,11 @@ def main() -> int:
                 display.menu.visible = True
                 display.set_menu_opaque(True)
                 display.set_menu_input(True)
-                # The saved offset was computed for the full desktop and lands
-                # the panel outside a small captured window - the same problem
-                # the settings handler solves with place_bottom_right. A menu
-                # restored across a window-mode switch must get the same
-                # treatment, otherwise it comes back clipped off the right
-                # edge (user: menu cut off on the first activation in window
-                # mode).
+                # The saved offset is honoured as-is: the panel stays where
+                # the user left it, clamped to the screen by layout() (user
+                # rule 10.09: fixed position until the user drags it).
                 if window_hwnd is not None:
                     display.set_fullscreen_layer(mon_w, mon_h)
-                    display.menu.place_bottom_right(
-                        display.screen.get_width(),
-                        display.screen.get_height())
             # guides and the buffers follow the new resolution.
             guides = TemporalGuideGenerator(work_w, work_h, emit_small=motion_small)
             buf_full = np.empty((height, width, 4), dtype=np.uint8)
@@ -2607,17 +2600,11 @@ def main() -> int:
                             # be clipped by it. Expand the layer to the whole
                             # monitor while the menu is open, so the menu is
                             # always fully visible (user: menu lost outside a
-                            # small window).
+                            # small window). The saved offset is honoured -
+                            # layout() clamps it to the screen (user rule
+                            # 10.09: fixed position until the user drags it).
                             if window_hwnd is not None:
                                 display.set_fullscreen_layer(mon_w, mon_h)
-                                # The saved offset was computed for the 4K
-                                # desktop and lands the panel outside a small
-                                # captured window - start in the bottom-right
-                                # corner instead, the user drags it where they
-                                # want (user: menu flies off the desktop).
-                                display.menu.place_bottom_right(
-                                    display.screen.get_width(),
-                                    display.screen.get_height())
                             # The mouse lands on the title bar, so the user
                             # does not have to hunt for the pointer (user
                             # request). The layout must be current for the

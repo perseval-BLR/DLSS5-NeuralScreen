@@ -325,23 +325,6 @@ class OverlayMenu:
         r = self._title_bar
         return (r.x + r.w // 2, r.y + r.h // 2)
 
-    def place_bottom_right(self, screen_w: int, screen_h: int,
-                          margin: int = 24) -> None:
-        """Put the panel into the bottom-right corner of the screen.
-
-        The temporary answer to "the menu flies off the desktop in window
-        mode": the offset from the config was computed for the 4K desktop and
-        lands the panel outside a small captured window. On every menu open in
-        window mode the panel starts in the bottom-right corner; the user
-        drags it where they want and the offset is saved on close as usual.
-        """
-        self.layout(screen_w, screen_h)
-        w, h = self.panel_rect.w, self.panel_rect.h
-        # The offset is relative to the screen centre: solve for the corner.
-        self.offset = [screen_w - w - margin - (screen_w - w) // 2,
-                       screen_h - h - margin - (screen_h - h) // 2]
-        self.layout(screen_w, screen_h)
-
     def _capture_mouse(self, on: bool) -> None:
         """Capture the mouse while dragging the panel by its title bar.
 
@@ -662,12 +645,16 @@ class OverlayMenu:
         self.content_height = content_h
         self._max_scroll = max(0, content_h - h)
         self.scroll = min(max(self.scroll, 0), self._max_scroll)
-        # Offset from the centre plus a clamp, so the panel cannot be dragged
-        # entirely off the edge of the screen.
+        # Offset from the centre plus a clamp, so the panel always stays
+        # fully inside the screen: the user's saved position is honoured
+        # (no jumping to a corner on mode switches), and a stale offset
+        # (resolution change, monitor swap) is pulled back to the edge
+        # instead of leaving the panel half off the desktop (user rule
+        # 10.09: fixed position until the user drags it).
         x = (screen_w - w) // 2 + self.offset[0]
         y = (screen_h - h) // 2 + self.offset[1]
-        x = min(max(x, -w + self._u(80)), screen_w - self._u(80))
-        y = min(max(y, 0), max(0, screen_h - self._u(60)))
+        x = min(max(x, 0), max(0, screen_w - w))
+        y = min(max(y, 0), max(0, screen_h - h))
         self.panel_rect = pygame.Rect(x, y, w, h)
         self._title_bar = pygame.Rect(x, y, w, title_h)
         grip = self._u(26)

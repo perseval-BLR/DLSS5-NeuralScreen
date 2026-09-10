@@ -52,6 +52,7 @@ ABOUT = {
     "test_hotkey_held.py": "a key held at startup is the baseline, not an event",
     "test_header_footer.py": "the header collapse icon and the one-window footer button",
     "test_i18n.py": "every language has the same keys, none empty",
+    "test_menu_position.py": "the menu position is fixed - saved offset honoured, clamped",
     "test_menu_scroll.py": "the menu scrolls and the wheel lands where it should",
     "test_overlay_toolwindow.py": "the overlay is a tool window - one taskbar button only",
     "test_motion_small.py": "the downscaled motion field is upscaled on the GPU",
