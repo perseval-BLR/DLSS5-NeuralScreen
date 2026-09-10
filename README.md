@@ -32,7 +32,7 @@ actually doing.*
   | **RTX 40** (Ada) | ✅ works - through the built-in architecture hook |
   | **RTX 30** (Ampere) | ✅ works - restored in v1.5.1 (the universal runtime + spoof 0x1B0, same stack as v1.3.0) |
   | **RTX 20** (Turing) | ❌ cannot run the neural pass at all - below the minimum architecture (DLSS5-Feeder issue #73). See *Trying RTX 20* below. |
-  | **Laptops with hybrid graphics (Optimus)** | ⚠️ works only when the display is driven by the NVIDIA GPU - force the dGPU (MUX switch, or an external monitor on the dGPU port). On the iGPU it fails on the first frame |
+  | **Laptops with hybrid graphics (Optimus)** | ✅ works - on the iGPU display the capture falls back to GDI (slower, confirmed on an Acer Nitro with RTX 4050) |
 
 - **Nothing installed.** The release archive brings its own Python.
 
@@ -118,7 +118,9 @@ The settings worth touching:
   underneath are the same thing in detail. **Save preset** snapshots the
   current slider values under a name (Preset 1, Preset 2, ...) - it appears
   in the Profile list and applies like a built-in profile; **Delete preset**
-  removes the active user preset.
+  removes the active user preset. Dark scenes are handled automatically: an
+  adaptive exposure brightens them for the network, so shadows keep their
+  detail instead of turning into artifacts.
 - **Before / after wipe** — leaves the left part of the screen untouched so
   you can see what the effect is doing. Set it back to 0 when done.
 - **Resolution the network runs at** — one slider. At the top it is your whole
