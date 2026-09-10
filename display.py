@@ -1021,29 +1021,42 @@ class Display:
         itself: draw_capture_overlay bakes only the menu, and the HUD
         layer is excluded from the capture - the indicator is a live
         status, not part of the file.
+
+        The badge is OPAQUE: the HUD window carries a global alpha
+        (LWA_ALPHA), so a bare dot and text blend with the worker's
+        frame underneath and read as a translucent raspberry smear. A
+        solid badge (like the alerts) keeps the colours true.
         """
         if not self._hud.get("recording"):
             return
         if not self._hud.get("rec_indicator", True):
             return
         c = self.theme
-        r = int(round(7 * self.ui_scale))
-        pad = int(round(14 * self.ui_scale))
-        x = self.width - pad - r
-        y = pad + r
+        secs = float(self._hud.get("rec_seconds", 0.0))
+        text = f"REC {int(secs) // 60:d}:{int(secs) % 60:02d}"
+        surf = self._font.render(text, True, self._rgb(c["text"]))
+        pad_x = int(round(10 * self.ui_scale))
+        pad_y = int(round(6 * self.ui_scale))
+        r = int(round(5 * self.ui_scale))
+        dot_d = r * 2 + int(round(4 * self.ui_scale))
+        w = dot_d + pad_x + surf.get_width() + pad_x
+        h = surf.get_height() + pad_y * 2
+        x = self.width - w - int(round(14 * self.ui_scale))
+        y = int(round(14 * self.ui_scale))
+        rect = pygame.Rect(x, y, w, h)
+        radius = int(round(8 * self.ui_scale))
+        pygame.draw.rect(self.screen, self._rgb(c["bg"]), rect,
+                         border_radius=radius)
+        pygame.draw.rect(self.screen, self._rgb(c["border"]), rect,
+                         max(1, int(round(self.ui_scale))), border_radius=radius)
         # The dot pulses: a static dot is easy to miss, a blinking one
         # is what every recorder does.
         if int(time.monotonic() * 2) % 2 == 0:
-            pygame.draw.circle(self.screen, self._rgb(c["danger"]), (x, y), r)
-        secs = float(self._hud.get("rec_seconds", 0.0))
-        text = f"REC {int(secs) // 60:d}:{int(secs) % 60:02d}"
-        # The digits in the full danger colour read as a bright raspberry
-        # slab on a dark desktop - the dot carries the "recording" signal,
-        # the text is secondary and stays muted (user feedback).
-        surf = self._font.render(text, True, self._rgb(c["muted"]))
-        tx = x - r - int(round(8 * self.ui_scale)) - surf.get_width()
-        ty = y - surf.get_height() // 2
-        self.screen.blit(surf, (tx, ty))
+            cy = rect.y + rect.h // 2
+            pygame.draw.circle(self.screen, self._rgb(c["danger"]),
+                               (rect.x + pad_x + r, cy), r)
+        self.screen.blit(surf, (rect.x + dot_d + pad_x,
+                                rect.y + pad_y))
 
     def _draw_alerts(self) -> None:
         """Pop-up alert: the menu palette, top centre.

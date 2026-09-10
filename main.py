@@ -2640,6 +2640,7 @@ def main() -> int:
             """
             nonlocal lang, running, startup_menu, split_pos, hotkey_bindings
             nonlocal nr_small
+            nonlocal shot_dialog_open
             kind = action[0]
             if kind == "nr":
                 tray_commands.put("toggle")
@@ -2785,41 +2786,48 @@ def main() -> int:
                     if shot_dialog_open:
                         return
                     shot_dialog_open = True
+                    hwnd = display.get_hwnd()  # captured here: pygame is not thread-safe
 
                     def _pick_dir() -> None:
                         try:
                             import ctypes
                             from ctypes import wintypes
-                            # SHBrowseForFolder: the classic folder picker,
-                            # a plain Win32 call - no COM plumbing.
-                            class _BROWSEINFO(ctypes.Structure):
-                                _fields_ = [
-                                    ("hwndOwner", wintypes.HWND),
-                                    ("pidlRoot", wintypes.LPVOID),
-                                    ("pszDisplayName", wintypes.LPWSTR),
-                                    ("lpszTitle", wintypes.LPCWSTR),
-                                    ("ulFlags", wintypes.UINT),
-                                    ("lpfn", wintypes.LPVOID),
-                                    ("lParam", wintypes.LPARAM),
-                                    ("iImage", ctypes.c_int),
-                                ]
-                            shell32 = ctypes.WinDLL("shell32")
-                            shell32.SHBrowseForFolderW.argtypes = [
-                                ctypes.POINTER(_BROWSEINFO)]
-                            shell32.SHBrowseForFolderW.restype = wintypes.LPVOID
-                            shell32.SHGetPathFromIDListW.argtypes = [
-                                wintypes.LPVOID, wintypes.LPWSTR]
-                            shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
-                            buf = ctypes.create_unicode_buffer(260)
-                            bi = _BROWSEINFO()
-                            bi.hwndOwner = display.get_hwnd() or None
-                            bi.lpszTitle = "Select the screenshot folder"
-                            bi.ulFlags = 0x0001  # BIF_RETURNONLYFSDIRS
-                            pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
-                            if pidl and shell32.SHGetPathFromIDListW(pidl, buf):
-                                shot_paths.put(Path(buf.value.strip()))
-                            else:
-                                shot_paths.put(None)  # cancelled
+                            # SHBrowseForFolder needs COM on this thread.
+                            ole32 = ctypes.WinDLL("ole32")
+                            ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+                            try:
+                                # SHBrowseForFolder: the classic folder picker,
+                                # a plain Win32 call - no COM plumbing.
+                                class _BROWSEINFO(ctypes.Structure):
+                                    _fields_ = [
+                                        ("hwndOwner", wintypes.HWND),
+                                        ("pidlRoot", wintypes.LPVOID),
+                                        ("pszDisplayName", wintypes.LPWSTR),
+                                        ("lpszTitle", wintypes.LPCWSTR),
+                                        ("ulFlags", wintypes.UINT),
+                                        ("lpfn", wintypes.LPVOID),
+                                        ("lParam", wintypes.LPARAM),
+                                        ("iImage", ctypes.c_int),
+                                    ]
+                                shell32 = ctypes.WinDLL("shell32")
+                                shell32.SHBrowseForFolderW.argtypes = [
+                                    ctypes.POINTER(_BROWSEINFO)]
+                                shell32.SHBrowseForFolderW.restype = wintypes.LPVOID
+                                shell32.SHGetPathFromIDListW.argtypes = [
+                                    wintypes.LPVOID, wintypes.LPWSTR]
+                                shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+                                buf = ctypes.create_unicode_buffer(260)
+                                bi = _BROWSEINFO()
+                                bi.hwndOwner = hwnd or None
+                                bi.lpszTitle = "Select the screenshot folder"
+                                bi.ulFlags = 0x0001  # BIF_RETURNONLYFSDIRS
+                                pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+                                if pidl and shell32.SHGetPathFromIDListW(pidl, buf):
+                                    shot_paths.put(Path(buf.value.strip()))
+                                else:
+                                    shot_paths.put(None)  # cancelled
+                            finally:
+                                ole32.CoUninitialize()
                         except Exception as exc:
                             print(f"[main] folder picker failed: {exc}",
                                   file=sys.stderr)
