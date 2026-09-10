@@ -66,6 +66,7 @@ ABOUT = {
     "test_odd_frame_size.py": "a frame whose row pitch needs padding survives",
     "test_recorder_audio.py": "the audio track keeps up with the video",
     "test_recorder_fallback.py": "the NVENC codec chain falls back AV1->HEVC->H.264",
+    "test_recovery.py": "only 0xBAD00001 is a hard failure, everything else auto-revives",
     "test_recorder_thread.py": "the encoder thread and a clean close",
     "test_residual.py": "the matched residual composite keeps 1:1 detail at reduced work",
     "test_residual_split.py": "residual and the wipe compose in the same frame",

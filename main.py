@@ -1258,6 +1258,18 @@ def check_worker(worker: subprocess.Popen, logs: list[str]) -> None:
         )
 
 
+def _hard_failure(logs: list[str]) -> bool:
+    """Whether the worker's tail shows a HARD failure - 0xBAD00001.
+
+    FeatureNotSupported (0xBAD00001) means the GPU cannot run the neural
+    pass at all (Turing, a broken runtime build): no auto-recovery will
+    ever clear it, and retrying only spins the restart loop. Transient
+    failures (0x00000000 no-frame, timeouts, driver hiccups) can clear
+    on their own - those are the ones worth an automatic revive.
+    """
+    return any("0xBAD00001" in line for line in logs[-40:])
+
+
 def shutdown_worker(worker: subprocess.Popen, stop: threading.Event | None = None) -> None:
     """Graceful shutdown: close stdin (EOF -> the worker exits with code 0), wait 10 s.
 
@@ -1716,6 +1728,11 @@ def main() -> int:
         # Auto-recovery limit: if the worker dies N times in a row we turn NR
         # off (pause) and raise an alert instead of spinning through restarts.
         MAX_CONSECUTIVE_RESTARTS = 3
+        # A transient failure (no-frame, driver hiccup) gets ONE automatic
+        # revive after this backoff instead of leaving NR off until the user
+        # presses Num1. A hard failure (0xBAD00001) never auto-revives.
+        AUTO_REVIVE_BACKOFF = 30.0  # seconds
+        next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
         consecutive_restarts = 0
         guide_fails = 0
 
@@ -2686,7 +2703,7 @@ def main() -> int:
             stay responsive while main waits for the worker (user: "NR toggle
             does not always fire in Cyberpunk").
             """
-            nonlocal running, paused, worker_failed, recorder, window_hwnd, work_frame, last_foreground, work_scale, params, lang, width, height, mon_w, mon_h, frame_index, pending_apply, last_restart, split_pos, startup_menu, nr_small, work_h, work_w, monitor, dda_mode, dda_attempted, present_mode, present_attempted, out_shm, out_attempted, motion_small, motion_attempted, gray_active, follow_pos, follow_resize, pts, output_rgba, pending_shot, consecutive_restarts, guide_fails, buf_full, guides, shm, worker, worker_logs, reader, worker_stop, display, tray, hotkeys, cfg
+            nonlocal running, paused, worker_failed, recorder, window_hwnd, work_frame, last_foreground, work_scale, params, lang, width, height, mon_w, mon_h, frame_index, pending_apply, last_restart, split_pos, startup_menu, nr_small, work_h, work_w, monitor, dda_mode, dda_attempted, present_mode, present_attempted, out_shm, out_attempted, motion_small, motion_attempted, gray_active, follow_pos, follow_resize, pts, output_rgba, pending_shot, consecutive_restarts, guide_fails, buf_full, guides, shm, worker, worker_logs, reader, worker_stop, display, tray, hotkeys, cfg, next_auto_revive
             try:
                 while True:
                     cmd = tray_commands.get_nowait()
@@ -2854,8 +2871,36 @@ def main() -> int:
             # stopped. Commands still run (Num1 revives it), but no frame is
             # grabbed or sent - the worker is dead and would only be
             # restarted in vain (issue #3: endless restart loop on a GPU
-            # where feature 18 cannot be created).
+            # where feature 18 cannot be created). A transient failure gets
+            # one automatic revive after the backoff (recovery pattern from
+            # dlss5-video-player 0.17.2: CreateFeature-once, retries as a
+            # fallback - the revive is a fresh process, not a feature
+            # recreation).
             if worker_failed:
+                if next_auto_revive and time.monotonic() >= next_auto_revive:
+                    next_auto_revive = 0.0
+                    worker_failed = False
+                    print("[main] auto-reviving the worker after the transient failure")
+                    try:
+                        worker, worker_logs, reader, worker_stop = restart_worker(
+                            worker, params, work_w, work_h, warmup,
+                            width if (work_w != width or work_h != height) else 0,
+                            height if (work_w != width or work_h != height) else 0,
+                            worker_stop, shm)
+                        _forget_present()
+                        _forget_dda()
+                        _forget_out()
+                        _sync_motion_size()
+                        frame_index = 0
+                        pts = 0
+                        paused = False
+                        display.set_visible(True)
+                        display.alert(UI_STRINGS[lang]["nr_on"])
+                        tray._set_state(nr=True)
+                    except Exception as exc:
+                        print(f"[main] auto-revive failed ({exc}) - staying NR OFF",
+                              file=sys.stderr)
+                        worker_failed = True
                 time.sleep(0.05)
                 continue
 
@@ -3024,7 +3069,15 @@ def main() -> int:
                     # The worker is gone and will not come back on its own:
                     # stop hammering it, hide the overlay so the desktop is
                     # not covered by a black window (issue #3), and wait for
-                    # the user to turn NR back on.
+                    # the user to turn NR back on. A HARD failure
+                    # (0xBAD00001 - the GPU cannot run the pass at all) is
+                    # permanent; a transient one (no-frame, driver hiccup)
+                    # gets one automatic revive after a backoff instead of
+                    # leaving the user with NR off until they press Num1.
+                    if not _hard_failure(worker_logs):
+                        next_auto_revive = time.monotonic() + AUTO_REVIVE_BACKOFF
+                        print(f"[main] transient worker failure - auto-revive "
+                              f"in {AUTO_REVIVE_BACKOFF:.0f}s")
                     try:
                         shutdown_worker(worker, worker_stop)
                     except Exception:
@@ -3125,7 +3178,13 @@ def main() -> int:
                     # removed only on a received frame).
                     display.exit_switch_mode()
                     # Same for the overlay itself: hide it so the desktop is
-                    # not covered by a black window (issue #3).
+                    # not covered by a black window (issue #3). A HARD
+                    # failure (0xBAD00001) is permanent; a transient one gets
+                    # one automatic revive after a backoff.
+                    if not _hard_failure(worker_logs):
+                        next_auto_revive = time.monotonic() + AUTO_REVIVE_BACKOFF
+                        print(f"[main] transient worker failure - auto-revive "
+                              f"in {AUTO_REVIVE_BACKOFF:.0f}s")
                     try:
                         shutdown_worker(worker, worker_stop)
                     except Exception:
