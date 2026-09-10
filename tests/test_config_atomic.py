@@ -140,7 +140,10 @@ def main() -> int:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
 
-    # 4. The save payload persists profile, params and monitor.
+    # 4. The save payload persists profile, params and monitor. The monitor
+    #    is saved as the DXGI devicename when it can be resolved (multi-
+    #    monitor machines), falling back to the positional int otherwise
+    #    (single monitor: devicename_for_output_idx(2) is None).
     cfg = dict(GOOD, profile="Extreme / Overdrive")
     params = resolve_params(cfg)
     params["intensity"] = 2.1
@@ -151,7 +154,9 @@ def main() -> int:
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
         if payload[key] != params[key]:
             failures.append(f"{key} not persisted: {payload[key]} vs {params[key]}")
-    if payload["monitor"] != 2:
+    if payload["monitor"] != 2 and not (
+            isinstance(payload["monitor"], str)
+            and payload["monitor"].startswith("\\\\.\\DISPLAY")):
         failures.append(f"monitor not persisted: {payload['monitor']!r}")
 
     # 5. Round trip: the payload merged into a config survives load_config
@@ -166,7 +171,9 @@ def main() -> int:
         loaded = load_config(target)
         if loaded["profile"] != "Extreme / Overdrive":
             failures.append(f"round trip lost the profile: {loaded['profile']!r}")
-        if loaded["monitor"] != 2:
+        if loaded["monitor"] != 2 and not (
+                isinstance(loaded["monitor"], str)
+                and loaded["monitor"].startswith("\\\\.\\DISPLAY")):
             failures.append(f"round trip lost the monitor: {loaded['monitor']!r}")
         resolved = resolve_params(loaded)
         for key in ("intensity", "local_tone", "local_structure", "skin_structure"):

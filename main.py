@@ -91,7 +91,8 @@ import cv2
 import numpy as np
 import pygame  # HUD overlay on the recorded frame (image.frombuffer)
 
-from capture import ScreenCapture, list_monitors
+from capture import (ScreenCapture, devicename_for_output_idx, list_monitors,
+                     resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator
 from hotkeys import (HotkeyController, build_bindings,
@@ -490,7 +491,12 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
     processing settings and the NR parameters. profile/params/monitor are
     included because the menu changes them in memory only (cfg/params are
     updated live) - without this save they would be lost on the next launch.
+
+    monitor is saved as the DXGI devicename (e.g. '\\\\.\\DISPLAY1') so the
+    saved monitor keeps pointing at the same physical display when the
+    arrangement changes; old configs with a positional int still load.
     """
+    monitor_name = devicename_for_output_idx(int(monitor))
     return {
         "menu_scale": round(menu.user_scale, 2),
         "menu_height": (None if menu.user_height is None
@@ -507,7 +513,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "local_tone": params["local_tone"],
         "local_structure": params["local_structure"],
         "skin_structure": params["skin_structure"],
-        "monitor": int(monitor),
+        "monitor": monitor_name if monitor_name is not None else int(monitor),
     }
 
 
@@ -1380,7 +1386,18 @@ def main() -> int:
     cfg = load_config(args.config)
     params = resolve_params(cfg)
     width, height = int(cfg["width"]), int(cfg["height"])
-    monitor = int(cfg["monitor"])
+    monitor_cfg = cfg["monitor"]
+    if isinstance(monitor_cfg, str):
+        # New configs store the DXGI devicename - resolve it to the current
+        # output index; a monitor that is not connected falls back to 0.
+        monitor = resolve_output_idx(monitor_cfg)
+        if monitor is None:
+            print(f"[main] monitor {monitor_cfg!r} from config.json is not "
+                  "connected - using monitor 0", file=sys.stderr)
+            monitor = 0
+    else:
+        # Old configs store the positional index.
+        monitor = int(monitor_cfg)
     warmup = int(cfg["warmup"])
     work_scale = float(cfg["work_scale"])
     # The worker reads NS_NR_SMALL once, at startup: with it on, Neural
@@ -1815,18 +1832,29 @@ def main() -> int:
             tray._set_state(scale=work_scale)
             last_restart = time.monotonic()
 
-        def _switch_monitor(new_monitor: int) -> None:
+        def _switch_monitor(new_monitor: int | str) -> None:
             """Switch the capture/output monitor - a full pipeline restart.
 
             The resolution, the capture, the window, the worker and the shm
             are all tied to the monitor - it cannot be switched on the fly.
             Recording stops (the frame size changes). The menu is recreated
             with its theme/language/layout preserved.
+
+            new_monitor is the dxcam output index, or a DXGI devicename
+            ('\\\\.\\DISPLAY1') - the menu hands over the devicename so the
+            switch is by identity, not by position.
             """
             # Everything downstream of the size - the worker, the shm, the
             # overlay, the flags - is rebuilt by _rebuild_pipeline, which owns
             # those names; this function only picks the monitor and the size.
             nonlocal monitor, width, height, work_w, work_h, capture
+            if isinstance(new_monitor, str):
+                resolved = resolve_output_idx(new_monitor)
+                if resolved is None:
+                    print(f"[main] monitor {new_monitor!r} is not connected",
+                          file=sys.stderr)
+                    return
+                new_monitor = resolved
             if new_monitor == monitor:
                 return
             print(f"[main] monitor change: {monitor} -> {new_monitor}")
@@ -2430,6 +2458,10 @@ def main() -> int:
             """The current state for the menu - a single source of truth."""
             _refresh_gpu_ok()
             wins = list_capturable_windows()
+            # The devicename is the stable identity: the menu hands it back
+            # on a switch, so a reorder cannot redirect the capture.
+            monitor_entries = [f"{i}: {w}x{h} ({dev})"
+                               for i, w, h, dev in list_monitors()]
             return {
                 "nr": not paused,
                 "work_scale": work_scale,
@@ -2455,8 +2487,12 @@ def main() -> int:
                 "gpu_text": gpu_text,
                 "gpu_ok": gpu_ok,
                 "window_mode": window_hwnd is not None,
-                "monitor": str(monitor),
-                "monitors": [f"{i}: {w}x{h}" for i, w, h in list_monitors()],
+                "monitor_devicename": capture.devicename,
+                "monitors": monitor_entries,
+                "monitor": next(
+                    (m for m in monitor_entries
+                     if m.startswith(f"{monitor}: ")),
+                    str(monitor)),
                 "windows": [f"{h:X}: {t}" for h, t in wins],
                 "window_current": next(
                     (f"{h:X}: {t}" for h, t in wins if h == window_hwnd), ""),
@@ -2548,13 +2584,14 @@ def main() -> int:
                 # _save_menu_layout() runs on menu close and on exit.
                 print(f"[main] menu theme -> {action[1]}")
             elif kind == "monitor":
-                # The value arrives as "N: WxH" - take the index before the colon.
+                # The value arrives as "N: WxH (\\\\.\\DISPLAY1)" - the
+                # devicename is the identity, the index is only a label.
                 try:
-                    new_monitor = int(str(action[1]).split(":")[0])
+                    new_monitor = str(action[1]).split(" (")[1].rstrip(")")
                 except (ValueError, IndexError):
                     print(f"[main] invalid monitor: {action[1]!r}", file=sys.stderr)
                     return
-                if new_monitor != monitor:
+                if new_monitor != capture.devicename:
                     _switch_monitor(new_monitor)
             elif kind == "window":
                 # The window list in the menu: the value is "hwnd: title".
