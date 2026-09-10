@@ -20,6 +20,7 @@ Example:
 from __future__ import annotations
 
 import ctypes
+import sys
 from ctypes import wintypes
 
 import numpy as np
@@ -53,6 +54,39 @@ def _dxcam_output_index_by_devicename() -> dict[str, int]:
         for idx, output in enumerate(outputs):
             mapping.setdefault(output.devicename, idx)
     return mapping
+
+
+def _output_count() -> int:
+    """The number of outputs dxcam currently knows on the primary adapter.
+
+    0 means dxcam is unavailable or its factory failed - callers treat it
+    as "no valid index", never as output 0.
+    """
+    try:
+        import dxcam
+
+        return len(dxcam.__factory.outputs[0])
+    except Exception:
+        return 0
+
+
+def _refresh_dxcam_factory() -> None:
+    """Re-enumerate the DXGI adapters/outputs in the dxcam factory.
+
+    The factory is a process-wide Singleton built at the first import; a
+    monitor unplugged or a dock changed after that leaves a stale outputs
+    list, and dxcam.create(output_idx=N) then raises IndexError for an
+    index that was valid a minute ago (issue #24/#26: 'list index out of
+    range' on a monitor switch). Dropping the cached instance makes the
+    next access re-enumerate.
+    """
+    try:
+        import dxcam
+
+        dxcam.Singleton._instances.pop(dxcam.DXFactory, None)
+        dxcam.__factory = dxcam.DXFactory()
+    except Exception:
+        pass
 
 
 def resolve_output_idx(devicename: str) -> int | None:
@@ -135,14 +169,48 @@ class ScreenCapture:
                 raise ValueError(
                     f"no dxcam output matches devicename {devicename!r}")
             monitor_idx = resolved
+        # The dxcam factory caches the output list at the first import; a
+        # monitor unplugged or a dock changed since then leaves stale
+        # indices, and dxcam.create() raises IndexError for them (issue
+        # #24/#26). Validate, refresh the factory once, then fall back to
+        # output 0 - the capture must never take the app down.
+        if monitor_idx >= _output_count():
+            print(f"[capture] output {monitor_idx} is gone - "
+                  "re-enumerating the dxcam factory", file=sys.stderr)
+            _refresh_dxcam_factory()
+            if monitor_idx >= _output_count():
+                print(f"[capture] output {monitor_idx} still missing - "
+                      "falling back to output 0", file=sys.stderr)
+                monitor_idx = 0
         self.monitor_idx = monitor_idx
         # output_color="RGBA": dxcam converts BGRA->RGBA into its own reusable
         # buffer. This used to be a cv2.cvtColor right here — an extra 33 MB
         # allocated for every 4K frame.
-        self._camera = dxcam.create(
-            output_idx=monitor_idx,
-            output_color="RGBA",
-        )
+        try:
+            self._camera = dxcam.create(
+                output_idx=monitor_idx,
+                output_color="RGBA",
+            )
+        except IndexError:
+            # The factory was fresh a moment ago but the topology changed
+            # between the check and the create - one more refresh, then the
+            # primary output as the last resort.
+            print(f"[capture] dxcam.create({monitor_idx}) raised IndexError - "
+                  "re-enumerating and retrying", file=sys.stderr)
+            _refresh_dxcam_factory()
+            try:
+                self._camera = dxcam.create(
+                    output_idx=monitor_idx,
+                    output_color="RGBA",
+                )
+            except IndexError:
+                print("[capture] the chosen output is gone - "
+                      "falling back to output 0", file=sys.stderr)
+                self.monitor_idx = 0
+                self._camera = dxcam.create(
+                    output_idx=0,
+                    output_color="RGBA",
+                )
         if self._camera is None:
             raise RuntimeError(
                 f"dxcam.create(output_idx={monitor_idx}) returned None — "

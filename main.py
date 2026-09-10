@@ -2077,7 +2077,19 @@ def main() -> int:
             # The new monitor: its real resolution.
             monitor = new_monitor
             cfg["monitor"] = monitor
-            capture = ScreenCapture(monitor_idx=monitor)
+            try:
+                capture = ScreenCapture(monitor_idx=monitor)
+            except Exception as exc:
+                # The chosen output is gone (unplugged between the menu
+                # render and the click, dock changed, driver reset) - the
+                # capture must never take the app down. Fall back to the
+                # primary output and tell the user.
+                print(f"[main] monitor {monitor} failed to open: {exc}",
+                      file=sys.stderr)
+                capture = ScreenCapture(monitor_idx=0)
+                monitor = capture.monitor_idx
+                cfg["monitor"] = monitor
+                display.alert(UI_STRINGS[lang]["mon_fail"])
             width, height = capture.resolution
             work_w, work_h = _work_size(width, height, work_scale)
             _rebuild_pipeline(f"Monitor {monitor}: {width}x{height}")
