@@ -42,6 +42,7 @@ TIMEOUT = 600
 # digging through the file to find out what broke.
 ABOUT = {
     "test_bypass.py": "NR OFF shows the raw capture and the pipeline survives",
+    "test_audio_limiter.py": "the soft limiter keeps the recording from clipping",
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
     "test_dred_diag.py": "the worker logs DRED/device-removed diagnostics at startup",
@@ -65,6 +66,7 @@ ABOUT = {
     "test_reveal.py": "the present window stays hidden until the first Present",
     "test_split.py": "the before/after wipe leaves the left side untouched",
     "test_taskbar_window.py": "the taskbar button exists, opens the menu, closes cleanly",
+    "test_ui_buttons.py": "every control on every page fires the right command",
     "test_wgc_capture.py": "the worker captures one window (the single-window input)",
     "test_window_filter.py": "the window list holds only real taskbar windows",
     "test_windows_page.py": "the windows page lists, highlights and switches",

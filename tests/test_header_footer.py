@@ -88,21 +88,25 @@ def main() -> int:
         if ("button", "close") not in out:
             failures.append(f"the min icon should emit (button, close), got {out}")
 
-    # 3. The footer on the main page: screenshot, record, fullscreen.
+    # 3. The footer on the main page: only Exit. The capture actions moved
+    #    into the Actions section (user rule 10.09: Select window +
+    #    Fullscreen on top, Screenshot + Record below).
     actions = [i for i in menu.items if i.kind == "action"]
     keys = [i.key for i in actions]
     print(f"footer actions: {keys}")
-    if "fullscreen" not in keys:
-        failures.append(f"the footer should hold the fullscreen button, got {keys}")
+    if keys != ["exit"]:
+        failures.append(f"the footer should hold only exit, got {keys}")
     if "window" in keys:
         failures.append("the one-window button should be gone from the footer")
     if "collapse" in keys:
         failures.append("the collapse button should be gone from the footer")
 
-    # 4. The fullscreen button emits the window_mode command.
-    fs_btn = next((i for i in actions if i.key == "fullscreen"), None)
+    # 4. The fullscreen button lives in the Actions section and emits the
+    #    window_mode command.
+    fs_btn = next((i for i in menu.items
+                   if i.kind == "button" and i.key == "fullscreen"), None)
     if fs_btn is None:
-        failures.append("no fullscreen button in the footer")
+        failures.append("no fullscreen button in the Actions section")
     else:
         out = click(menu, fs_btn)
         print(f"fullscreen click -> {out}")
@@ -144,8 +148,13 @@ def main() -> int:
         failures.append(f"lang/theme must not be on the main page, got {main_segs}")
     set_segs = seg_keys("settings")
     print(f"settings page segmented: {set_segs}")
-    if "lang" not in set_segs or "theme" not in set_segs:
-        failures.append(f"the settings page must hold lang and theme, got {set_segs}")
+    if "lang" in set_segs:
+        failures.append(f"lang must be a drop-down, not a segment, got {set_segs}")
+    if "theme" not in set_segs:
+        failures.append(f"the settings page must hold the theme segment, got {set_segs}")
+    set_choices = [i.key for i in menu.items if i.kind == "choice"]
+    if "lang" not in set_choices:
+        failures.append(f"the settings page must hold the lang drop-down, got {set_choices}")
 
     # 8. Clicking the theme segment on the settings page emits the same
     #    ("theme", ...) action main already handles. The segment cells are
@@ -181,6 +190,46 @@ def main() -> int:
             if not any(k == "theme" for k, *_ in out):
                 failures.append(f"the theme segment should emit a theme "
                                 f"action, got {out}")
+
+    # 9. The live indicators (stats block + GPU line) are main-page only
+    #    (user rule 10.09): the settings and windows pages are about
+    #    configuration - FPS/RES/WORK/FRAMES/REC/PROFILE and the GPU dot
+    #    are noise there. The rects must be empty on those pages and real
+    #    on the main one.
+    menu.page = "main"
+    menu.layout(3840, 2160)
+    main_stats = menu._stats_rect
+    main_gpu = menu._gpu_rect
+    print(f"main stats rect: {main_stats}, gpu rect: {main_gpu}")
+    if main_stats.w <= 0 or main_gpu.h <= 0:
+        failures.append("the main page must show the stats block and the "
+                        "GPU line")
+    for page in ("settings", "windows"):
+        menu.page = page
+        menu.layout(3840, 2160)
+        print(f"{page} stats rect: {menu._stats_rect}, "
+              f"gpu rect: {menu._gpu_rect}")
+        if menu._stats_rect.w > 0 or menu._gpu_rect.h > 0:
+            failures.append(f"the {page} page must not show the live "
+                            f"indicators")
+
+    # 10. The windows page: its own title ("Select window") and NO header
+    #     icons - the Back button in the footer is the only way out (user
+    #     rule 10.09). The settings page keeps its close icon.
+    menu.page = "windows"
+    menu.layout(3840, 2160)
+    w_icons = [i.key for i in menu.items if i.kind == "icon"]
+    print(f"windows page header icons: {w_icons}")
+    if w_icons:
+        failures.append(f"the windows page must have no header icons, "
+                        f"got {w_icons}")
+    menu.page = "settings"
+    menu.layout(3840, 2160)
+    s_icons = [i.key for i in menu.items if i.kind == "icon"]
+    print(f"settings page header icons: {s_icons}")
+    if s_icons != ["close"]:
+        failures.append(f"the settings page must keep the close icon, "
+                        f"got {s_icons}")
 
     print("=" * 60)
     if failures:

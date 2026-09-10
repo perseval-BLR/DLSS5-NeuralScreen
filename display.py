@@ -119,6 +119,11 @@ LWA_COLORKEY = 0x1
 LWA_ALPHA = 0x2
 
 FONT_NAME = "consolas"
+# The CJK scripts (zh/ja/ko) have no glyphs in Consolas - it renders them
+# as tofu boxes. Each script gets its own font: YaHei for Chinese, Yu
+# Gothic for Japanese (kanji), Malgun Gothic for Korean (hangul). The
+# loader is called with the current language.
+CJK_FONTS = {"zh": "microsoftyahei", "ja": "yugothic", "ko": "malgungothic"}
 # The base layout sizes are set for 1440p. On taller screens the interface is
 # scaled up, on shorter ones it stays as is: there is nowhere left to shrink to,
 # the text would become unreadable. Hence the "up only" rule (see ui_scale).
@@ -215,6 +220,10 @@ class Display:
         # of the game would steal focus and fight for topmost, whereas here we
         # are already above the frame and already transparent by key.
         self.menu = OverlayMenu(self.ui_scale, self._load_font)
+        # HUD language (NR ON/NR OFF), see set_lang(). Must exist before the
+        # fonts: the loader picks the font by the language (CJK scripts
+        # have no glyphs in the default font).
+        self._lang = "ru"
         self._font = self._load_font(size=self.font_size)
         self._alert_font = self._load_font(
             size=max(10, int(round(ALERT_FONT_SIZE * self.ui_scale))))
@@ -230,7 +239,6 @@ class Display:
         self._menu_input = False
         if click_through:
             self._set_click_through()
-        self._lang = "ru"  # HUD language (NR ON/NR OFF), see set_lang()
         # NOTE: _visible/_reveal_pending are set right after set_mode - the
         # window starts hidden and reveal() shows it after the first frame.
         # HUD mode: the worker draws the frame, the window shows only the HUD
@@ -281,9 +289,13 @@ class Display:
         return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
 
     def set_lang(self, lang: str) -> None:
-        """Switch the HUD status language (en/ru)."""
+        """Switch the HUD status language (en/ru/fr/...)."""
         if lang in STRINGS and lang != self._lang:
             self._lang = lang
+            # The HUD/alert fonts follow the language: CJK scripts have no
+            # glyphs in the default font (tofu boxes).
+            self._font = self._load_font(size=self.font_size)
+            self._alert_font = self._load_font(size=ALERT_FONT_SIZE)
 
     def set_visible(self, visible: bool) -> None:
         """Show/hide the window (SW_SHOW/SW_HIDE).
@@ -365,7 +377,8 @@ class Display:
 
     def _load_font(self, size: int = FONT_SIZE):
         try:
-            return pygame.font.SysFont(FONT_NAME, size)
+            name = CJK_FONTS.get(self._lang, FONT_NAME)
+            return pygame.font.SysFont(name, size)
         except Exception:
             return pygame.font.Font(None, size)
 

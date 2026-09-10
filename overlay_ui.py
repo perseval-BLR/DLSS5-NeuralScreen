@@ -204,6 +204,12 @@ class OverlayMenu:
         self._small_font = font_loader(self._u(SMALL_SIZE))
         self.panel_rect = pygame.Rect(0, 0, 0, 0)
         self._stats_rect = pygame.Rect(0, 0, 0, 0)
+        self._gpu_rect = pygame.Rect(0, 0, 0, 0)
+        # The relative rects are computed in layout() for the main page
+        # only; the defaults keep the non-main pages safe (the drawers are
+        # skipped there anyway).
+        self._stats_rel = pygame.Rect(0, 0, 0, 0)
+        self._gpu_rel = pygame.Rect(0, 0, 0, 0)
         # The panel can be dragged by its title bar and stretched by its
         # corner. The offset is stored relative to the screen centre, so it
         # survives a resolution change without the window ending up off-screen.
@@ -243,7 +249,6 @@ class OverlayMenu:
         self._sections: list = []
         self._hint_rel = pygame.Rect(0, 0, 0, 0)
         self._rule_rel = pygame.Rect(0, 0, 0, 0)
-        self._rule2_rel = pygame.Rect(0, 0, 0, 0)
         # What is under the cursor: "title" (draggable) or "grip" (resizable).
         # Without the highlight these zones are invisible and impossible to
         # find.
@@ -294,10 +299,22 @@ class OverlayMenu:
         for k, v in payload.items():
             if k == "lang":
                 self.lang = v
+                self._reload_fonts()
             elif k == "params" and isinstance(v, dict):
                 self.state["params"] = dict(v)
             elif k in self.state:
                 self.state[k] = v
+
+    def _reload_fonts(self) -> None:
+        """Recreate the fonts after a language switch.
+
+        The CJK scripts (zh/ja/ko) have no glyphs in the default font -
+        Consolas renders them as tofu boxes. The loader picks the font by
+        the language, so the cached font objects must be rebuilt.
+        """
+        self._font = self._load_font(self._u(FONT_SIZE))
+        self._title_font = self._load_font(self._u(TITLE_SIZE))
+        self._small_font = self._load_font(self._u(SMALL_SIZE))
 
     def title_center(self) -> tuple[int, int]:
         """The centre of the title bar in screen coordinates.
@@ -372,7 +389,10 @@ class OverlayMenu:
         iw = self._u(ICON_W)
         igap = self._u(8)
         iy = self._u(TITLE_H) // 2 - iw // 2
-        order = ["help", "gear", "min"] if self.page != "settings" else ["close"]
+        order = (["help", "gear", "min"] if self.page == "main"
+                 else ["close"] if self.page == "settings"
+                 else [])  # the windows page: no header icons at all - the
+        # Back button in the footer is the only way out (user rule 10.09).
         # Laid out right to left: the right edge is the last icon.
         for idx, kind in enumerate(reversed(order)):
             ix = pad + inner_w - iw - idx * (iw + igap)
@@ -380,18 +400,26 @@ class OverlayMenu:
                               pygame.Rect(ix, iy, iw, iw)))
         cy = self._u(TITLE_H) + self._u(SECTION_GAP)
 
-        # The readings block
-        stat_h = self._u(STAT_LINE_H) * 2 + self._u(STAT_PAD) * 2
-        self._stats_rel = pygame.Rect(pad, cy, inner_w, stat_h)
-        cy += stat_h + self._u(6)
+        # The readings block and the GPU line belong to the MAIN page only:
+        # the settings and windows pages are about configuration, and the
+        # live indicators (FPS/RES/WORK/FRAMES/REC/PROFILE + the GPU dot)
+        # are noise there (user rule 10.09: the main page shows the state,
+        # the other pages do the work). The rects are still computed for the
+        # main page - the drawers check the page before drawing.
+        if self.page == "main":
+            # The readings block
+            stat_h = self._u(STAT_LINE_H) * 2 + self._u(STAT_PAD) * 2
+            self._stats_rel = pygame.Rect(pad, cy, inner_w, stat_h)
+            cy += stat_h + self._u(6)
 
-        # The GPU line: a status dot and the card model. A separate line rather
-        # than a cell in the readings block - this is not a pipeline reading
-        # but the answer to "does this work on my card at all". The capture
-        # mode (fullscreen / window) sits on the second line below it.
-        gpu_h = self._u(SMALL_SIZE) * 2 + self._u(10)
-        self._gpu_rel = pygame.Rect(pad, cy, inner_w, gpu_h)
-        cy += gpu_h + gap
+            # The GPU line: a status dot and the card model. A separate line
+            # rather than a cell in the readings block - this is not a
+            # pipeline reading but the answer to "does this work on my card
+            # at all". The capture mode (fullscreen / window) sits on the
+            # second line below it.
+            gpu_h = self._u(SMALL_SIZE) * 2 + self._u(10)
+            self._gpu_rel = pygame.Rect(pad, cy, inner_w, gpu_h)
+            cy += gpu_h + gap
 
         # The content is split into titled blocks: eight identical rows in a
         # row gave the eye nothing to hold on to. The titles are not
@@ -416,12 +444,14 @@ class OverlayMenu:
                                      "label_h": label_h}))
             cy += label_h + ctrl_h + (self._u(SMALL_SIZE) + 4 if hint else 0) + gap
 
-        def choice(key: str, label: str, current: str, options: list) -> None:
+        def choice(key: str, label: str, current: str, options: list,
+                   labels: list | None = None) -> None:
             nonlocal cy
             items.append(Item("choice", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h),
                               payload=list(options),
                               extra={"label": label, "current": current,
+                                     "labels": list(labels or options),
                                      "label_h": label_h}))
             cy += label_h + ctrl_h + gap
 
@@ -507,8 +537,12 @@ class OverlayMenu:
             # live behind the gear). The segmented controls emit the same
             # ("lang", ...) / ("theme", ...) actions main already handles.
             section(s["sec_view"])
-            segmented("lang", s["language"], self.lang, ["en", "ru"],
-                      ["EN", "RU"])
+            # The language list: a drop-down, not segments - the full set
+            # of popular languages (12) cannot fit in a segmented row
+            # (user rule 10.09: the list expands, it is not cycled).
+            langs = list(STRINGS.keys())
+            choice("lang", s["language"], self.lang, langs,
+                   labels=[STRINGS[L].get(f"lang_{L}", L) for L in langs])
             segmented("theme", s["theme"], self.state.get("theme", "light"),
                       ["light", "dark"], [s["theme_light"], s["theme_dark"]])
             cy += gap
@@ -570,16 +604,28 @@ class OverlayMenu:
                    value_text=(s.get("off", "off") if split_val <= 0.0
                                else f"{split_val:.2f}"))
 
-            section(s["sec_view"])
-            # The window list moved to its own page: the drop-down was
-            # cramped and gave no feedback about what each entry actually
-            # is. The button opens the page where hovering a row highlights
-            # the real window's outline on the screen.
-            items.append(Item("button", "windows",
-                              pygame.Rect(pad, cy, inner_w, act_h),
-                              extra={"label": s["windows_btn"],
-                                     "filled": False}))
-            cy += act_h + pad
+            section(s["sec_actions"])
+            # Two rows of two: Select window + Fullscreen on top, Screenshot
+            # + Record below (user rule 10.09: the capture actions belong
+            # together in one section, the footer keeps only Exit).
+            bgap = self._u(BTN_GAP)
+            bw = (inner_w - bgap) // 2
+            rows = (
+                (("windows", s["windows_btn"]),
+                 ("fullscreen", s["fullscreen"])),
+                (("screenshot", s["screenshot"]),
+                 ("record", s["record_stop"] if self.state.get("recording")
+                  else s["record"])),
+            )
+            for row in rows:
+                for idx, (key, label) in enumerate(row):
+                    items.append(Item("button", key,
+                                      pygame.Rect(pad + idx * (bw + bgap),
+                                                  cy, bw, act_h),
+                                      extra={"label": label,
+                                             "filled": False}))
+                cy += act_h + self._u(8)
+            cy += pad - self._u(8)
 
         # The footer: actions with the hotkey printed underneath. "Collapse"
         # and "Exit" used to look equally harmless, even though one hides the
@@ -595,20 +641,6 @@ class OverlayMenu:
                                      "filled": False}))
             cy += act_h + pad
         else:
-            row = [("screenshot", s["screenshot"], self.hotkeys.get("screenshot_menu", ""), False),
-                   ("record", s["record_stop"] if self.state.get("recording")
-                   else s["record"], self.hotkeys.get("record", ""), True),
-                   ("fullscreen", s["fullscreen"], self.hotkeys.get("window_mode", ""), False)]
-            bgap = self._u(BTN_GAP)
-            bw = (inner_w - bgap * (len(row) - 1)) // len(row)
-            for idx, (key, label, hk, filled) in enumerate(row):
-                items.append(Item("action", key,
-                                  pygame.Rect(pad + idx * (bw + bgap), cy, bw, act_h),
-                                  extra={"label": label, "hotkey": hk,
-                                         "filled": filled}))
-            cy += act_h + self._u(16)
-            self._rule2_rel = pygame.Rect(pad, cy, inner_w, 1)
-            cy += self._u(14)
             exit_h = self._u(EXIT_H)
             items.append(Item("action", "exit",
                               pygame.Rect(pad, cy, inner_w, exit_h),
@@ -647,11 +679,15 @@ class OverlayMenu:
         self._viewport = pygame.Rect(x, y + title_h, w, max(0, h - title_h))
         # All the content lives shifted by the scroll; the title bar does not.
         sy = y - self.scroll
-        self._stats_rect = self._stats_rel.move(x, sy)
-        self._gpu_rect = self._gpu_rel.move(x, sy)
+        # The stats/GPU rects exist only on the main page (the layout skips
+        # them elsewhere) - keep the attributes defined so the drawers and
+        # any hit-testing never see a stale rect from a previous page.
+        self._stats_rect = (self._stats_rel.move(x, sy)
+                            if self.page == "main" else pygame.Rect(0, 0, 0, 0))
+        self._gpu_rect = (self._gpu_rel.move(x, sy)
+                          if self.page == "main" else pygame.Rect(0, 0, 0, 0))
         self._hint_rect = self._hint_rel.move(x, sy)
         self._rule_rect = self._rule_rel.move(x, sy)
-        self._rule2_rect = self._rule2_rel.move(x, sy)
         self._section_rects = [(t, r.move(x, sy)) for t, r in self._sections]
         if self._max_scroll > 0:
             bar_w = max(2, self._u(3))
@@ -689,13 +725,15 @@ class OverlayMenu:
                 strip = src.extra.get("strip")
                 if strip is not None:
                     oh = self._u(CTRL_H) + self._u(6)
+                    labels = src.extra.get("labels") or src.payload or []
                     for idx, opt in enumerate(src.payload or []):
                         self.options.append(Item(
                             "option", src.key,
                             pygame.Rect(strip.x, strip.bottom + self._u(4) + idx * oh,
                                         strip.w, oh),
                             payload=opt,
-                            extra={"label": str(opt),
+                            extra={"label": str(labels[idx] if idx < len(labels)
+                                                else opt),
                                    "selected": str(opt) == str(src.extra.get("current"))}))
 
     # -- input -------------------------------------------------------------
@@ -887,22 +925,19 @@ class OverlayMenu:
             self.capturing = None
             self.hover_window = None
             return [("capture", None)]
-        if key == "fullscreen":
-            # The fullscreen button: the same action as the Num5 hotkey in
-            # window mode - back to the whole screen. In fullscreen mode it
-            # is a no-op (main shows the "already active" alert).
-            return [("button", "window_mode")]
-        if key == "screenshot":
-            return [("button", "screenshot")]
         return [("button", key)]
 
     def _button_click(self, key: str) -> list[tuple]:
-        """A plain button. The windows button opens the window list page."""
+        """A plain button. The windows button opens the window list page,
+        the fullscreen button returns the capture to the whole screen (the
+        window-mode exit, same as the Num5 hotkey)."""
         if key == "windows":
             self.page = "windows"
             self.scroll = 0
             self.capturing = None
             return [("capture", None)]
+        if key == "fullscreen":
+            return [("button", "window_mode")]
         return [("button", key)]
 
     def _pick(self, key: str, value: str) -> list[tuple]:
@@ -1022,7 +1057,8 @@ class OverlayMenu:
                              (tb.right - self._u(RADIUS), tb.bottom - 1),
                              max(2, self._u(2)))
         head = (s.get("settings_title", "Settings") if self.page == "settings"
-                else s["title"])
+                else s.get("windows_title", "Select window")
+                if self.page == "windows" else s["title"])
         title = self._title_font.render(head, True, _rgb(self.c["text"]))
         surface.blit(title, (r.x + pad, r.y + self._u(16)))
         # The version right after the title: the top right corner is taken by
@@ -1039,8 +1075,12 @@ class OverlayMenu:
         # rows would spill outside the panel.
         prev_clip = surface.get_clip()
         surface.set_clip(self._viewport)
-        self._draw_stats(surface, s)
-        self._draw_gpu(surface, s)
+        # The live indicators are main-page only (user rule 10.09): the
+        # settings/windows pages skip them entirely - the rects are not even
+        # computed there, so the drawers must not run.
+        if self.page == "main":
+            self._draw_stats(surface, s)
+            self._draw_gpu(surface, s)
         self._draw_sections(surface)
         self._draw_rules(surface, s)
         # The resize corner: three short strokes, as resize handles usually go
@@ -1108,10 +1148,12 @@ class OverlayMenu:
         pygame.draw.rect(surface, _rgb(self.c["surface"]), rect,
                          border_radius=self._u(RADIUS // 2))
         fps = st.get("fps")
+        mode = (s["mode_window"] if self.state.get("window_mode")
+                else s["mode_fullscreen"])
         rows = (
             (("FPS", f"{fps:.1f}" if isinstance(fps, (int, float)) else "—"),
              ("RES", str(st.get("resolution", "—"))),
-             ("WORK", str(self.state.get("work_size", "—")))),
+             ("MODE", mode)),
             (("FRAMES", str(st.get("frames", "—"))),
              ("REC", self._rec_text(s)),
              ("PROFILE", str(self.state.get("profile", "—")).split(" /")[0])),
@@ -1139,14 +1181,12 @@ class OverlayMenu:
         cy = rect.y + rect.h // 2
         pygame.draw.circle(surface, _rgb(color), (rect.x + r, cy), r)
         text = self.state.get("gpu_text") or "—"
-        hint = (s["gpu_wait"] if ok is None
-                else s["gpu_ok"] if ok else s["gpu_no"])
         name = self._small_font.render(text, True, _rgb(self.c["text"]))
-        # The name and the hint share one line: a long card name (laptop
-        # GPUs, "GeForce RTX ... Laptop GPU") would overlap the hint. Clip
-        # the name to the space left after the hint, with an ellipsis.
-        note = self._small_font.render(hint, True, _rgb(color))
-        avail = rect.right - (rect.x + r * 2 + self._u(8)) - note.get_width() - self._u(8)
+        # The status text next to the card is gone: the dot colour already
+        # answers "does it work" (user rule 10.09). The capture mode moved
+        # into the stats block (MODE cell) - no duplicate line under the
+        # card. The name gets the full row width now.
+        avail = rect.right - (rect.x + r * 2 + self._u(8)) - self._u(8)
         if avail < self._u(24):
             avail = self._u(24)  # never let the name vanish entirely
         if name.get_width() > avail:
@@ -1157,18 +1197,6 @@ class OverlayMenu:
             name = clip
         surface.blit(name, (rect.x + r * 2 + self._u(8),
                             cy - name.get_height() // 2))
-        surface.blit(note, (rect.right - note.get_width(),
-                            cy - note.get_height() // 2))
-        # The capture mode under the card: fullscreen or window mode. The
-        # user asked for a visible answer to "what mode am I in right now"
-        # (the fullscreen button is the window-mode exit, so the state must
-        # be readable at a glance).
-        mode = (s["mode_window"] if self.state.get("window_mode")
-                else s["mode_fullscreen"])
-        mode_line = self._small_font.render(mode, True,
-                                            _rgb(self.c["muted"]))
-        surface.blit(mode_line, (rect.x + r * 2 + self._u(8),
-                                  rect.y + rect.h + self._u(2)))
 
     def _rec_text(self, s: dict) -> str:
         """Recording state: the duration is more useful than a bare "on"."""
@@ -1242,11 +1270,14 @@ class OverlayMenu:
                          border_radius=self._u(RADIUS // 2))
         pygame.draw.rect(surface, _rgb(self.c["border"]), strip, self._u(1),
                          border_radius=self._u(RADIUS // 2))
-        cur = self._font.render(str(item.extra.get("current", "")), True,
+        cur_val = str(item.extra.get("current", ""))
+        labels = item.extra.get("labels") or item.payload or []
+        if cur_val in (item.payload or []):
+            cur_val = str(labels[item.payload.index(cur_val)])
+        cur = self._font.render(cur_val, True,
                                 _rgb(self.c["text"]))
         surface.blit(cur, (strip.x + self._u(12),
                            strip.centery - cur.get_height() // 2))
-        # A triangle arrow on the right: the list expands, it is not cycled
         cx = strip.right - self._u(16)
         cy = strip.centery
         size = self._u(5)
@@ -1291,12 +1322,11 @@ class OverlayMenu:
                                  (x0, ly), (rect.right, ly), 1)
 
     def _draw_rules(self, surface, s: dict) -> None:
-        """The dividers before the footer and before exit, plus the hint."""
-        for rect in (getattr(self, "_rule_rect", None),
-                     getattr(self, "_rule2_rect", None)):
-            if rect is not None and rect.w > 0:
-                pygame.draw.line(surface, _rgb(self.c["border"]),
-                                 (rect.x, rect.y), (rect.right, rect.y), 1)
+        """The divider before the footer, plus the hint."""
+        rect = getattr(self, "_rule_rect", None)
+        if rect is not None and rect.w > 0:
+            pygame.draw.line(surface, _rgb(self.c["border"]),
+                             (rect.x, rect.y), (rect.right, rect.y), 1)
         hint = getattr(self, "_hint_rect", None)
         if self.page == "settings" and hint is not None and hint.w > 0:
             img = self._small_font.render(s["hotkey_hint"], True,
@@ -1411,9 +1441,11 @@ class OverlayMenu:
         hk = item.extra.get("hotkey")
         note = item.extra.get("note")
         if hk or note:
-            # The two-line layout: the name on top, the caption below.
+            # The two-line layout: the name on top, the caption below. The
+            # name sits a little below the top edge so the button reads as
+            # centred (user: the Quit label was too close to the top).
             surface.blit(name, (rect.centerx - name.get_width() // 2,
-                                rect.y + self._u(6)))
+                                rect.y + self._u(10)))
         else:
             # A single-line action (Back without a hotkey): centre it, the
             # top-anchored position was left over from the two-line layout

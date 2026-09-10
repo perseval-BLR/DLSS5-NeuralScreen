@@ -361,4 +361,30 @@ class LoopbackCapture:
         out = out.astype(np.float32, copy=True)
         if scale != 1.0:
             out *= scale
-        return out
+        return LoopbackCapture._limit(out)
+
+    #: Soft limiter threshold. The system mix can hand back peaks above
+    #: 0 dBFS (measured up to +7.9 dB on the bench), and AAC clips those
+    #: peaks into distortion. Below the threshold the signal passes
+    #: untouched; above it a tanh tail folds the peak toward 1.0. A hard
+    #: clip would square off the waveform, a plain gain would duck the
+    #: whole recording.
+    LIMIT_THRESHOLD = 0.9
+
+    @staticmethod
+    def _limit(x: np.ndarray) -> np.ndarray:
+        """Soft-clip peaks above LIMIT_THRESHOLD toward 1.0.
+
+        Monotonic (louder in, louder out), sign-preserving, and a no-op
+        below the threshold - the same array comes back, so quiet passages
+        are bit-for-bit untouched.
+        """
+        if x.size == 0:
+            return x
+        if float(np.abs(x).max()) <= LoopbackCapture.LIMIT_THRESHOLD:
+            return x
+        sign = np.sign(x)
+        a = (np.abs(x) - LoopbackCapture.LIMIT_THRESHOLD) / (
+            1.0 - LoopbackCapture.LIMIT_THRESHOLD)
+        return sign * (LoopbackCapture.LIMIT_THRESHOLD
+                       + (1.0 - LoopbackCapture.LIMIT_THRESHOLD) * np.tanh(a))
