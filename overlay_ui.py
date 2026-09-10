@@ -507,8 +507,8 @@ class OverlayMenu:
             # live behind the gear). The segmented controls emit the same
             # ("lang", ...) / ("theme", ...) actions main already handles.
             section(s["sec_view"])
-            segmented("lang", s["language"], self.lang, ["en", "ru"],
-                      ["EN", "RU"])
+            segmented("lang", s["language"], self.lang, ["en", "ru", "fr"],
+                      ["EN", "RU", "FR"])
             segmented("theme", s["theme"], self.state.get("theme", "light"),
                       ["light", "dark"], [s["theme_light"], s["theme_dark"]])
             cy += gap
