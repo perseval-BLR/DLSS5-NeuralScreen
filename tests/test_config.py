@@ -65,15 +65,15 @@ def main() -> int:
         finally:
             p.unlink()
 
-    # 3. Unknown profile raises.
+    # 3. An unknown profile falls back to Natural instead of raising
+    #    (a stale reference to a deleted user preset must not crash).
     bad = dict(GOOD, profile="Ultra Turbo")
     p = write_cfg(bad)
     try:
-        try:
-            load_config(p)
-            failures.append("unknown profile did not raise")
-        except ValueError:
-            pass
+        cfg = load_config(p)
+        if cfg["profile"] != "Natural":
+            failures.append(f"unknown profile must fall back to Natural, "
+                            f"got {cfg['profile']!r}")
     finally:
         p.unlink()
 

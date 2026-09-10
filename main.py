@@ -300,6 +300,14 @@ PROFILES = {
                                 intensity=2.50, local_tone=2.00, local_structure=2.00, skin_structure=1.5),
 }
 
+# The four sliders a user preset stores. The same keys as PROFILES carries,
+# minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
+# tied to the built-in profile the preset was saved from).
+PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
+PARAM_MIN, PARAM_MAX = 0.0, 2.5
+SKIN_MIN = -1.0
+PRESET_NAME_PREFIX = "Preset"
+
 BASE_DIR = Path(__file__).resolve().parent
 NATIVE_DIR = BASE_DIR / "native"
 # IMPORTANT: NGX Core returns FAIL_PlatformError from Init_Ext for ANY process
@@ -512,6 +520,77 @@ class SharedFrameBuffer:
             print(f"[main] could not close the shared memory: {exc}", file=sys.stderr)
 
 
+def _valid_preset_value(key: str, value) -> bool:
+    """A preset value is a finite number inside the slider range.
+
+    The config is user-editable: a hand-typed "intensity": "abc" or 99.0
+    must not crash the program - the preset is dropped instead (the
+    built-in profiles always survive).
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
+    return lo <= value <= PARAM_MAX
+
+
+# The NGX plumbing fields a preset carries along with the four sliders.
+# They are integers with a small, known range (the same values PROFILES
+# uses); anything outside is a broken entry.
+_PRESET_INT_KEYS = {
+    "profile": (0, 2), "preset": (0, 2), "style": (0, 2),
+    "auto_mask": (0, 1), "ui_correction": (0, 1),
+}
+
+
+def load_presets(cfg: dict) -> dict:
+    """The user presets from the config, validated.
+
+    A preset is a full params snapshot: the four sliders plus the NGX
+    plumbing (profile/preset/style/auto_mask/ui_correction), so applying
+    it reproduces the exact look it was saved with. Anything that is not
+    exactly that shape is dropped - a broken entry must not take the
+    program down, and a broken entry must not be offered in the menu
+    either.
+    """
+    raw = cfg.get("presets")
+    if not isinstance(raw, dict):
+        return {}
+    presets: dict = {}
+    for name, values in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(values, dict):
+            continue
+        clean = {}
+        ok = True
+        for key in PRESET_KEYS:
+            if key not in values or not _valid_preset_value(key, values[key]):
+                ok = False
+                break
+            clean[key] = float(values[key])
+        if not ok:
+            continue
+        for key, (lo, hi) in _PRESET_INT_KEYS.items():
+            v = values.get(key)
+            if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
+                ok = False
+                break
+            clean[key] = v
+        if ok:
+            presets[name.strip()] = clean
+    return presets
+
+
+def _next_preset_name(presets: dict) -> str:
+    """The first free "Preset N" name (Preset 1, Preset 2, ...)."""
+    n = 1
+    while f"{PRESET_NAME_PREFIX} {n}" in presets:
+        n += 1
+    return f"{PRESET_NAME_PREFIX} {n}"
+
+
 def load_config(path: Path) -> dict:
     """Load and validate config.json."""
     with open(path, "r", encoding="utf-8") as fh:
@@ -522,8 +601,13 @@ def load_config(path: Path) -> dict:
     if missing:
         raise ValueError(f"config.json: missing fields: {sorted(missing)}")
     if cfg["profile"] not in PROFILES:
-        raise ValueError(f"config.json: unknown profile {cfg['profile']!r}; "
-                         f"available: {sorted(PROFILES)}")
+        # A user preset name, or a stale reference to a deleted preset.
+        # A stale reference must not take the program down - fall back to
+        # the default profile (the menu still lists the surviving presets).
+        if cfg["profile"] not in load_presets(cfg):
+            print(f"[main] config.json: unknown profile {cfg['profile']!r}; "
+                  f"falling back to 'Natural'", file=sys.stderr)
+            cfg["profile"] = "Natural"
     for key in ("width", "height", "warmup"):
         if not isinstance(cfg[key], int) or cfg[key] <= 0:
             raise ValueError(f"config.json: field {key} must be a positive integer")
@@ -539,8 +623,16 @@ def load_config(path: Path) -> dict:
 
 
 def resolve_params(cfg: dict) -> dict:
-    """Profile + custom NR parameters from the config (null = use the profile)."""
-    params = dict(PROFILES[cfg["profile"]])
+    """Profile + custom NR parameters from the config (null = use the profile).
+
+    A user preset is a full params snapshot and wins over the built-in
+    profile it was saved from; the per-key overrides below still apply on
+    top (they are the live slider values).
+    """
+    if cfg["profile"] in PROFILES:
+        params = dict(PROFILES[cfg["profile"]])
+    else:
+        params = dict(load_presets(cfg).get(cfg["profile"], PROFILES["Natural"]))
     for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
         value = cfg.get(key)
         if value is not None:
@@ -1489,6 +1581,7 @@ def main() -> int:
 
     cfg = load_config(args.config)
     params = resolve_params(cfg)
+    presets = load_presets(cfg)
     _apply_nr_dll(cfg)
     _log_environment(cfg)
     width, height = int(cfg["width"]), int(cfg["height"])
@@ -2603,7 +2696,8 @@ def main() -> int:
                 "nr_small": nr_small,
                 "screen_size": f"{width}x{height}",
                 "profile": cfg["profile"],
-                "profiles": list(PROFILES),
+                "profiles": list(PROFILES) + list(presets),
+                "preset_active": cfg["profile"] in presets,
                 "params": {k: params[k] for k in
                            ("intensity", "local_tone",
                             "local_structure", "skin_structure")},
@@ -2641,6 +2735,7 @@ def main() -> int:
             nonlocal lang, running, startup_menu, split_pos, hotkey_bindings
             nonlocal nr_small
             nonlocal shot_dialog_open
+            nonlocal presets
             kind = action[0]
             if kind == "nr":
                 tray_commands.put("toggle")
@@ -2685,7 +2780,13 @@ def main() -> int:
                 new_params[action[1]] = float(action[2])
                 request_apply(work_scale, cfg["profile"], new_params)
             elif kind == "profile":
-                request_apply(work_scale, action[1], dict(PROFILES[action[1]]))
+                if action[1] in PROFILES:
+                    request_apply(work_scale, action[1], dict(PROFILES[action[1]]))
+                elif action[1] in presets:
+                    request_apply(work_scale, action[1], dict(presets[action[1]]))
+                else:
+                    print(f"[main] unknown profile {action[1]!r} - ignored",
+                          file=sys.stderr)
             elif kind == "lang":
                 if action[1] in UI_STRINGS and action[1] != lang:
                     lang = action[1]
@@ -2846,6 +2947,32 @@ def main() -> int:
                     except Exception as exc:
                         print(f"[main] could not open {REPO_URL}: {exc}",
                               file=sys.stderr)
+                elif name == "save_preset":
+                    # The current slider values, snapshotted as a named
+                    # preset. The NGX plumbing of the active profile rides
+                    # along, so the preset reproduces the exact look it was
+                    # saved with.
+                    name = _next_preset_name(presets)
+                    presets[name] = dict(params)
+                    cfg["presets"] = presets
+                    _save_menu_layout()
+                    display.menu.set_state(
+                        {"profiles": list(PROFILES) + list(presets)})
+                    print(f"[main] preset saved: {name}")
+                    display.alert(f"Preset saved: {name}")
+                elif name == "delete_preset":
+                    # Only a user preset can be deleted - the built-in
+                    # profiles are not deletable.
+                    if cfg["profile"] in presets:
+                        del presets[cfg["profile"]]
+                        cfg["presets"] = presets
+                        _save_menu_layout()
+                        display.menu.set_state(
+                            {"profiles": list(PROFILES) + list(presets)})
+                        print(f"[main] preset deleted: {cfg['profile']}")
+                        display.alert(f"Preset deleted: {cfg['profile']}")
+                        request_apply(work_scale, "Natural",
+                                      dict(PROFILES["Natural"]))
                 elif name == "channel":
                     # The channel label in the settings page opens the
                     # channel (user rule 2026-09-08).

@@ -175,6 +175,7 @@ class OverlayMenu:
             "profile": "",
             "profiles": [],
             "params": {},
+            "preset_active": False,
             "recording": False,
             "work_size": "",
             "theme": "light",
@@ -598,6 +599,22 @@ class OverlayMenu:
                 lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
                 val = float(params.get(key, 0.0))
                 slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
+            # Save / Delete preset: the user presets live in the same list
+            # as the built-in profiles. Delete is only offered while a user
+            # preset is active - the built-in profiles are not deletable.
+            bgap = self._u(BTN_GAP)
+            bw = (inner_w - bgap) // 2
+            for idx, (key, label) in enumerate((
+                    ("save_preset", s["save_preset"]),
+                    ("delete_preset", s["delete_preset"]))):
+                items.append(Item("button", key,
+                                  pygame.Rect(pad + idx * (bw + bgap),
+                                              cy, bw, act_h),
+                                  extra={"label": label,
+                                         "filled": False,
+                                         "disabled": key == "delete_preset"
+                                         and not self.state.get("preset_active")}))
+            cy += act_h + self._u(8)
 
             section(s["sec_resolution"])
             # One slider, not a toggle plus a slider. The two used to be
@@ -931,7 +948,8 @@ class OverlayMenu:
             elif item.kind == "toggle":
                 out.append(("nr",) if item.key == "nr" else ("toggle", item.key))
             elif item.kind == "button":
-                out.extend(self._button_click(item.key))
+                if not item.extra.get("disabled"):
+                    out.extend(self._button_click(item.key))
             elif item.kind == "option":
                 out.extend(self._pick(item.key, str(item.payload)))
                 self.open_choice = None
@@ -1656,13 +1674,16 @@ class OverlayMenu:
 
     def _draw_button(self, surface, item: Item, s: dict) -> None:
         hot = self.hover == f"button:{item.key}"
+        disabled = bool(item.extra.get("disabled"))
         pygame.draw.rect(surface, _rgb(self.c["surface"]), item.rect,
                          border_radius=self._u(RADIUS // 2))
         pygame.draw.rect(surface,
-                         _rgb(self.c["accent"] if hot else self.c["border"]),
+                         _rgb(self.c["accent"] if hot and not disabled
+                              else self.c["border"]),
                          item.rect, self._u(1), border_radius=self._u(RADIUS // 2))
         label = self._clip(self._font, item.extra.get("label", item.key),
-                           _rgb(item.extra.get("color", self.c["text"])),
+                           _rgb(self.c["muted"] if disabled
+                                else item.extra.get("color", self.c["text"])),
                            item.rect.w - self._u(16))
         surface.blit(label, (item.rect.centerx - label.get_width() // 2,
                              item.rect.centery - label.get_height() // 2))

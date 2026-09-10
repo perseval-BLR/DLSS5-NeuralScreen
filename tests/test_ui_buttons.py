@@ -252,6 +252,39 @@ def main() -> int:
         if not out or out[0][0] != want_prefix:
             failures.append(f"slider {key}: expected {want_prefix}..., got {out}")
 
+    # 7. The preset buttons: Save emits, Delete is disabled without an
+    #    active user preset and emits nothing.
+    menu.layout(3840, 2160)
+    paint(menu)
+    save_btn = find(menu, "button", "save_preset")
+    del_btn = find(menu, "button", "delete_preset")
+    if save_btn is None or del_btn is None:
+        failures.append("the preset buttons are missing on the main page")
+    else:
+        out = click(menu, save_btn)
+        if out != [("button", "save_preset")]:
+            failures.append(f"save_preset: expected [('button', 'save_preset')], "
+                            f"got {out}")
+        if not del_btn.extra.get("disabled"):
+            failures.append("delete_preset must be disabled without an "
+                            "active user preset")
+        out = click(menu, del_btn)
+        if out:
+            failures.append(f"a disabled button must not emit, got {out}")
+        # With an active user preset the delete button becomes live.
+        menu.set_state({"preset_active": True})
+        menu.layout(3840, 2160)
+        paint(menu)
+        del_btn = find(menu, "button", "delete_preset")
+        if del_btn is None or del_btn.extra.get("disabled"):
+            failures.append("delete_preset must be enabled with an active "
+                            "user preset")
+        else:
+            out = click(menu, del_btn)
+            if out != [("button", "delete_preset")]:
+                failures.append(f"delete_preset: expected "
+                                f"[('button', 'delete_preset')], got {out}")
+
     if failures:
         for f in failures:
             print("FAIL:", f)
