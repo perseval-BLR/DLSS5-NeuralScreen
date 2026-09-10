@@ -179,6 +179,8 @@ class OverlayMenu:
             "work_size": "",
             "theme": "light",
             "rec_seconds": 0.0,
+            "rec_indicator": True,
+            "screenshot_dir": "",
             "open_on_start": True,
             "split": 0.0,
             # Which card this is and whether NR runs on it. gpu_ok:
@@ -519,6 +521,17 @@ class OverlayMenu:
             if monitors:
                 choice("monitor", s.get("monitor", "Monitor"),
                        str(self.state.get("monitor", "0")), monitors)
+            # The screenshot folder: a plain button that opens the folder
+            # picker (issue #20). The current value is shown as the caption
+            # so the user sees what is configured.
+            shot_dir = self.state.get("screenshot_dir") or ""
+            label = s.get("shot_dir_btn", "Screenshot folder...")
+            if shot_dir:
+                label = f"{label}  ·  {shot_dir}"
+            items.append(Item("button", "shot_dir",
+                              pygame.Rect(pad, cy, inner_w, ctrl_h),
+                              extra={"label": label}))
+            cy += ctrl_h + gap
 
             section(s["sec_behaviour"])
             toggle("open_on_start", s["open_on_start"],

@@ -28,6 +28,7 @@ STRINGS = {
     "en": {
         "theme": "Theme",
         "monitor": "Monitor",
+        "shot_dir_btn": "Screenshot folder...",
         "autostart": "Autostart with Windows",
         "rec_indicator": "Recording indicator",
         "autostart_on": "Autostart ON",
@@ -121,6 +122,7 @@ STRINGS = {
     "ru": {
         "theme": "Тема",
         "monitor": "Монитор",
+        "shot_dir_btn": "Папка скриншотов...",
         "autostart": "Автозапуск с Windows",
         "rec_indicator": "Индикатор записи",
         "autostart_on": "Автозапуск включён",
@@ -214,6 +216,7 @@ STRINGS = {
     "fr": {
         "theme": "Thème",
         "monitor": "Moniteur",
+        "shot_dir_btn": "Dossier de captures...",
         "autostart": "Démarrer avec Windows",
         "rec_indicator": "Indicateur d'enregistrement",
         "autostart_on": "Démarrage automatique activé",
@@ -307,6 +310,7 @@ STRINGS = {
     "de": {
         "theme": "Design",
         "monitor": "Monitor",
+        "shot_dir_btn": "Screenshot-Ordner...",
         "autostart": "Mit Windows starten",
         "rec_indicator": "Aufnahmeindikator",
         "autostart_on": "Autostart aktiviert",
@@ -400,6 +404,7 @@ STRINGS = {
     "es": {
         "theme": "Tema",
         "monitor": "Monitor",
+        "shot_dir_btn": "Carpeta de capturas...",
         "autostart": "Iniciar con Windows",
         "rec_indicator": "Indicador de grabación",
         "autostart_on": "Inicio automático activado",
@@ -493,6 +498,7 @@ STRINGS = {
     "it": {
         "theme": "Tema",
         "monitor": "Monitor",
+        "shot_dir_btn": "Cartella screenshot...",
         "autostart": "Avvio con Windows",
         "rec_indicator": "Indicatore di registrazione",
         "autostart_on": "Avvio automatico attivato",
@@ -586,6 +592,7 @@ STRINGS = {
     "pt": {
         "theme": "Tema",
         "monitor": "Monitor",
+        "shot_dir_btn": "Pasta de capturas...",
         "autostart": "Iniciar com o Windows",
         "rec_indicator": "Indicador de gravação",
         "autostart_on": "Início automático ativado",
@@ -679,6 +686,7 @@ STRINGS = {
     "pl": {
         "theme": "Motyw",
         "monitor": "Monitor",
+        "shot_dir_btn": "Folder zrzutów...",
         "autostart": "Uruchamiaj z Windows",
         "rec_indicator": "Wskaźnik nagrywania",
         "autostart_on": "Autostart włączony",
@@ -772,6 +780,7 @@ STRINGS = {
     "uk": {
         "theme": "Тема",
         "monitor": "Монітор",
+        "shot_dir_btn": "Папка скріншотів...",
         "autostart": "Автозапуск з Windows",
         "rec_indicator": "Індикатор запису",
         "autostart_on": "Автозапуск увімкнено",
@@ -865,6 +874,7 @@ STRINGS = {
     "zh": {
         "theme": "主题",
         "monitor": "显示器",
+        "shot_dir_btn": "截图文件夹...",
         "autostart": "随 Windows 启动",
         "rec_indicator": "录制指示器",
         "autostart_on": "已启用开机自启",
@@ -958,6 +968,7 @@ STRINGS = {
     "ja": {
         "theme": "テーマ",
         "monitor": "モニター",
+        "shot_dir_btn": "スクリーンショットフォルダー...",
         "autostart": "Windows と一緒に起動",
         "rec_indicator": "録画インジケーター",
         "autostart_on": "自動起動オン",
@@ -1051,6 +1062,7 @@ STRINGS = {
     "ko": {
         "theme": "테마",
         "monitor": "모니터",
+        "shot_dir_btn": "스크린샷 폴더...",
         "autostart": "Windows와 함께 시작",
         "rec_indicator": "녹화 표시기",
         "autostart_on": "자동 시작 켜짐",

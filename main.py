@@ -592,6 +592,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "skin_structure": params["skin_structure"],
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
+        "screenshot_dir": cfg.get("screenshot_dir") or "",
     }
 
 
@@ -2489,8 +2490,23 @@ def main() -> int:
             the clock). So the dialog lives in its own thread and the path
             comes back through a queue. A second dialog is not opened - one
             window is already up.
+
+            With a configured screenshot_dir the dialog is skipped entirely:
+            the screenshot goes straight into that folder (issue #20).
             """
             nonlocal shot_dialog_open
+            shot_dir = cfg.get("screenshot_dir")
+            if isinstance(shot_dir, str) and shot_dir.strip():
+                try:
+                    d = Path(shot_dir).expanduser()
+                    d.mkdir(parents=True, exist_ok=True)
+                    stamp = time.strftime("%Y%m%d-%H%M%S")
+                    stamp = f"{stamp}-{time.time() % 1 * 1000:03.0f}"
+                    shot_paths.put(d / f"neuralscreen-{stamp}.jpg")
+                    return
+                except Exception as exc:
+                    print(f"[main] screenshot_dir failed ({exc}) - "
+                          f"falling back to the dialog", file=sys.stderr)
             if shot_dialog_open:
                 return
             shot_dialog_open = True
@@ -2515,6 +2531,16 @@ def main() -> int:
                     shot_dialog_open = False
                     if shot_path is None:
                         print("[main] screenshot cancelled by the user")
+                        continue
+                    if shot_path.is_dir():
+                        # The folder picker answered: remember the folder
+                        # and let the next screenshot go there without a
+                        # dialog (issue #20).
+                        cfg["screenshot_dir"] = str(shot_path)
+                        _save_menu_layout()
+                        display.menu.set_state({"screenshot_dir": str(shot_path)})
+                        print(f"[main] screenshot folder -> {shot_path}")
+                        display.alert(f"Screenshot folder: {shot_path}")
                         continue
                     if present_mode:
                         pending_shot = shot_path
@@ -2578,6 +2604,7 @@ def main() -> int:
                 "work_size": f"{work_w}x{work_h}",
                 "rec_seconds": (recorder.duration_ms / 1000.0) if recorder else 0.0,
                 "rec_indicator": bool(cfg.get("rec_indicator", True)),
+                "screenshot_dir": cfg.get("screenshot_dir") or "",
                 "open_on_start": startup_menu,
                 "autostart": _autostart_enabled(),
                 "split": split_pos,
@@ -2742,6 +2769,56 @@ def main() -> int:
                         _switch_window(0)
                     else:
                         display.alert(UI_STRINGS[lang]["fs_active"])
+                elif name == "shot_dir":
+                    # The screenshot folder picker (issue #20). The dialog
+                    # is modal, so it lives in its own thread; the chosen
+                    # folder comes back through the same queue as the save
+                    # dialog, and the config is written on the main thread.
+                    if shot_dialog_open:
+                        return
+                    shot_dialog_open = True
+
+                    def _pick_dir() -> None:
+                        try:
+                            import ctypes
+                            from ctypes import wintypes
+                            # SHBrowseForFolder: the classic folder picker,
+                            # a plain Win32 call - no COM plumbing.
+                            class _BROWSEINFO(ctypes.Structure):
+                                _fields_ = [
+                                    ("hwndOwner", wintypes.HWND),
+                                    ("pidlRoot", wintypes.LPVOID),
+                                    ("pszDisplayName", wintypes.LPWSTR),
+                                    ("lpszTitle", wintypes.LPCWSTR),
+                                    ("ulFlags", wintypes.UINT),
+                                    ("lpfn", wintypes.LPVOID),
+                                    ("lParam", wintypes.LPARAM),
+                                    ("iImage", ctypes.c_int),
+                                ]
+                            shell32 = ctypes.WinDLL("shell32")
+                            shell32.SHBrowseForFolderW.argtypes = [
+                                ctypes.POINTER(_BROWSEINFO)]
+                            shell32.SHBrowseForFolderW.restype = wintypes.LPVOID
+                            shell32.SHGetPathFromIDListW.argtypes = [
+                                wintypes.LPVOID, wintypes.LPWSTR]
+                            shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+                            buf = ctypes.create_unicode_buffer(260)
+                            bi = _BROWSEINFO()
+                            bi.hwndOwner = display.get_hwnd() or None
+                            bi.lpszTitle = "Select the screenshot folder"
+                            bi.ulFlags = 0x0001  # BIF_RETURNONLYFSDIRS
+                            pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+                            if pidl and shell32.SHGetPathFromIDListW(pidl, buf):
+                                shot_paths.put(Path(buf.value.strip()))
+                            else:
+                                shot_paths.put(None)  # cancelled
+                        except Exception as exc:
+                            print(f"[main] folder picker failed: {exc}",
+                                  file=sys.stderr)
+                            shot_paths.put(None)
+
+                    threading.Thread(target=_pick_dir, name="folder-picker",
+                                     daemon=True).start()
                 elif name == "github":
                     # The hotkeys, profiles and requirements are described
                     # only in the README - there was no way to learn about
