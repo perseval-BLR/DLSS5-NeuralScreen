@@ -75,6 +75,10 @@ DEV_ONLY = {
     "autocheck.py",
     "run_tests.py",
     "build_release_zip.py",
+    # The docs folder holds the README screenshots - repository/release
+    # assets, not program code. The archive must contain exactly what the
+    # program needs to run (user rule 2026-09-08).
+    "docs/",
     # Spout2 SDK dev baggage: the headers, the test tools and the build
     # scripts are for the repository, not for the end user. The release
     # needs only the two DLLs (Spout.dll, SpoutDX.dll) and the bridge
@@ -117,6 +121,11 @@ def _skip(path: str) -> bool:
     # folders that ship inside site-packages (pygame/tests, comtypes/test,
     # win32ctypes/tests, numpy/testing) - library developer baggage.
     if norm in DEV_ONLY or norm.startswith("tests/") or norm.startswith("test_"):
+        return True
+    # The docs folder holds the README screenshots - repository/release
+    # assets, not program code (user rule 2026-09-08: the archive must
+    # contain exactly what the program needs to run).
+    if norm.startswith("docs/"):
         return True
     # Spout2 SDK dev baggage: the headers, the test tools and the build
     # scripts are for the repository, not for the end user. The release
