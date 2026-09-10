@@ -50,7 +50,7 @@ LOG_PATH = Path(__file__).resolve().parent / "NeuralScreen.log"
 
 # The version shown in the menu header. Kept in sync with native/launcher.rc
 # (FileVersion/ProductVersion) and build_release_zip.py at release time.
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 
 # The channel label: the header shows the version, the channel lives in the
 # settings page (user rule 2026-09-08).
