@@ -1899,8 +1899,10 @@ def main() -> int:
                     display.alert(f"Screenshot: {path.name}")
                 else:
                     print(f"[main] failed to write the screenshot: {path}", file=sys.stderr)
+                    display.alert(UI_STRINGS[lang]["shot_fail"])
             except Exception as exc:
                 print(f"[main] screenshot failed: {exc}", file=sys.stderr)
+                display.alert(UI_STRINGS[lang]["shot_fail"])
 
         def _perf(key: str, t0: float) -> None:
             """Record the stage duration (ms) into the timings dictionary."""
@@ -2552,12 +2554,14 @@ def main() -> int:
             out_shm = False
             out_attempted = False
 
-        def _save_menu_layout() -> None:
+        def _save_menu_layout() -> bool:
             """Remember the panel size and position in config.json.
 
             We write on menu close and on exit rather than on every mouse
             move: dragging would otherwise hammer the file dozens of times
-            per second.
+            per second. Returns False when the write failed - the callers
+            that promise the user something (presets, hotkeys) show an
+            alert then.
             """
             try:
                 data = json.loads(args.config.read_text(encoding="utf-8"))
@@ -2565,8 +2569,10 @@ def main() -> int:
                     cfg, params, monitor, lang, work_scale, split_pos,
                     startup_menu, nr_small, display.menu))
                 _atomic_write_json(args.config, data)
+                return True
             except Exception as exc:
                 print(f"[main] could not save the menu layout: {exc}", file=sys.stderr)
+                return False
 
         def _refresh_gpu_ok() -> None:
             """Whether NR works - from the worker's answer, not the architecture.
@@ -2653,19 +2659,22 @@ def main() -> int:
             except queue.Empty:
                 pass
 
-        def _save_hotkeys(mapping: dict) -> None:
+        def _save_hotkeys(mapping: dict) -> bool:
             """Write the assignments into config.json.
 
             Separate from _save_menu_layout: that one runs on menu close,
-            while the user expects a key to be saved right away.
+            while the user expects a key to be saved right away. Returns
+            False when the write failed - the caller shows an alert.
             """
             try:
                 data = json.loads(args.config.read_text(encoding="utf-8"))
                 data["hotkeys"] = dict(mapping)
                 _atomic_write_json(args.config, data)
+                return True
             except Exception as exc:
                 print(f"[main] could not save the hotkeys: {exc}",
                       file=sys.stderr)
+                return False
 
         def _work_scale_cap() -> float:
             """The scale above which the work size just hits the NGX cap.
@@ -2815,7 +2824,11 @@ def main() -> int:
                     hotkey_bindings = build_bindings(over)
                     hotkeys.rebind(hotkey_bindings)
                     display.menu.set_hotkeys(hotkey_labels(hotkey_bindings))
-                    _save_hotkeys(over)
+                    if not _save_hotkeys(over):
+                        # The assignment works for this session but will not
+                        # survive a restart - the user must know.
+                        display.alert(UI_STRINGS[lang]["save_fail"])
+                        return
                     print(f"[main] {cmd} -> {text}")
                     display.alert(UI_STRINGS[lang]["settings_applied"])
             elif kind == "theme":
@@ -2955,7 +2968,13 @@ def main() -> int:
                     name = _next_preset_name(presets)
                     presets[name] = dict(params)
                     cfg["presets"] = presets
-                    _save_menu_layout()
+                    if not _save_menu_layout():
+                        # The preset lives in memory but not on disk - the
+                        # user must know it will not survive a restart.
+                        del presets[name]
+                        cfg["presets"] = presets
+                        display.alert(UI_STRINGS[lang]["save_fail"])
+                        return
                     display.menu.set_state(
                         {"profiles": list(PROFILES) + list(presets)})
                     print(f"[main] preset saved: {name}")
@@ -2966,7 +2985,9 @@ def main() -> int:
                     if cfg["profile"] in presets:
                         del presets[cfg["profile"]]
                         cfg["presets"] = presets
-                        _save_menu_layout()
+                        if not _save_menu_layout():
+                            display.alert(UI_STRINGS[lang]["save_fail"])
+                            return
                         display.menu.set_state(
                             {"profiles": list(PROFILES) + list(presets)})
                         print(f"[main] preset deleted: {cfg['profile']}")
@@ -3125,6 +3146,7 @@ def main() -> int:
                                 recorder.close()
                             except Exception as exc:
                                 print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
+                                display.alert(UI_STRINGS[lang]["rec_save_fail"])
                             secs = recorder.duration_ms / 1000.0
                             print(f"[main] recording finished: {rec_path} "
                                   f"({recorder.written} frames, {secs:.1f}s)")
