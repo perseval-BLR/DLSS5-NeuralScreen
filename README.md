@@ -89,9 +89,15 @@ real frame, a brief blur-with-spinner covers the pipeline rebuild.
 ### Whole screen or one window
 
 NeuralScreen renders the whole screen by default. To process one window
-instead (a game, a browser): point at it, press **Num5** or pick
-**Select window...** in the menu. The overlay follows the window. Back
-to the whole screen: **Num5** again or **Fullscreen** in the menu.
+instead (a game, a browser), pick **Select window...** in the menu - the
+list shows every open window, hovering highlights it on the screen, and
+the overlay follows the window. Back to the whole screen: **Fullscreen**
+in the menu.
+
+**Num5** is a shortcut for the common case: the window you want is already
+open and covers the screen - point at it and press **Num5** to capture it
+directly. For anything else, use the window list in the menu.
+
 Minimising the window pauses processing.
 
 ## The menu
