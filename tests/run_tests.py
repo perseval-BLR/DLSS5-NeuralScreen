@@ -61,6 +61,7 @@ ABOUT = {
     "test_motion_small.py": "the downscaled motion field is upscaled on the GPU",
     "test_nr_small.py": "the reduced-resolution mode produces a real picture",
     "test_out_shm.py": "the pixel channel through shared memory",
+    "test_out_status.py": "0x00000000 is a skipped frame, only 0xBAD00000 raises",
     "test_odd_frame_size.py": "a frame whose row pitch needs padding survives",
     "test_recorder_audio.py": "the audio track keeps up with the video",
     "test_recorder_fallback.py": "the NVENC codec chain falls back AV1->HEVC->H.264",

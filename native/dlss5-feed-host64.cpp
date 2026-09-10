@@ -521,7 +521,12 @@ static UINT64 EndCommands()
     ID3D12CommandList *lists[] = { h.list };
     h.queue->ExecuteCommandLists(1, lists);
     const UINT64 v = ++h.fence_value;
-    h.queue->Signal(h.fence, v);
+    // Signal can fail with DXGI_ERROR_DEVICE_REMOVED - the fence value
+    // would then never complete and every wait would time out. Surface
+    // the failure instead of pretending the commands were submitted
+    // (code review finding).
+    const HRESULT sig = h.queue->Signal(h.fence, v);
+    if (FAILED(sig)) { Log("[host] queue Signal failed 0x%08X", sig); return 0; }
     h.alloc_fence[h.frame_slot] = v;
     h.frame_slot = (h.frame_slot + 1) % Host::kFrames;
     return v;
@@ -529,9 +534,22 @@ static UINT64 EndCommands()
 
 static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms)
 {
+    // 0 means EndCommands could not submit (queue Signal failed) - there
+    // is nothing to wait for, and waiting on 0 would be a false success
+    // (the fence is already at 0 or beyond).
+    if (v == 0) return false;
+    // UINT64_MAX is the device-removed marker: GetCompletedValue returns
+    // it when the device is gone, and "completed >= v" would then be a
+    // false success (code review finding). Check it first.
+    if (f->GetCompletedValue() == UINT64_MAX) return false;
     if (f->GetCompletedValue() >= v) return true;
     f->SetEventOnCompletion(v, h.fence_event);
-    return WaitForSingleObject(h.fence_event, ms) == WAIT_OBJECT_0;
+    if (WaitForSingleObject(h.fence_event, ms) != WAIT_OBJECT_0) return false;
+    // The event can be signalled by a LATER fence value (the event is
+    // shared); re-check the actual value before declaring success.
+    const UINT64 now = f->GetCompletedValue();
+    if (now == UINT64_MAX) return false;
+    return now >= v;
 }
 
 static void CloseListGuarded()
@@ -986,7 +1004,7 @@ static bool Evaluate(ID3D12Resource *color, ID3D12Resource *output, ID3D12Resour
     DWORD ecode = 0;
     NVSDK_NGX_Result re = SafeEvaluateDLSS(&ep, &ecode);
     if (ecode != 0) { AbortCommands(); Log("[host] evaluate raised 0x%08X (caught; nothing submitted)", ecode); return false; }
-    EndCommands();
+    if (EndCommands() == 0) return false;   // queue Signal failed (device removed)
     if (NVSDK_NGX_FAILED(re)) { Log("[host] evaluate failed 0x%08X (%s)", re, NgxResultName(re)); return false; }
     return true;
 }

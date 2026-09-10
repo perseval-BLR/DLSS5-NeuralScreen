@@ -1012,12 +1012,19 @@ class WorkerReader:
                     _magic, out_index, ok, byte_count, ngx_result, _pts = struct.unpack(OUT_FMT, magic_raw + rest)
                     if not ok:
                         raise RuntimeError(f"worker answered with an error for frame {out_index}: ok={ok}")
-                    if ngx_result != 1:
+                    # The NGX result is not a boolean: 0x00000000 means "no
+                    # frame this call" (the network skipped the evaluation -
+                    # a laptop on the iGPU, a driver hiccup) and is NOT a
+                    # failure. Only the 0xBAD00000 family is a real error
+                    # (NVSDK_NGX_FAILED masks the top nibble). Treating
+                    # 0x00000000 as a crash restarted the worker three
+                    # times and then turned NR off (issue #11, kortul).
+                    if (ngx_result & 0xFFF00000) == 0xBAD00000:
                         raise RuntimeError(
                             f"NGX evaluation failed on frame {out_index}: 0x{ngx_result:08X}")
-                    if byte_count == 0:
-                        # WNDO mode: the worker showed the frame in its own
-                        # window, no pixels go through the pipe
+                    if ngx_result != 1 and byte_count == 0:
+                        # A skipped frame with no pixels: nothing to show,
+                        # the pipeline just waits for the next one.
                         self._queue.put((out_index, None))
                         continue
                     if byte_count == OUT_BYTES_IN_SHM:
