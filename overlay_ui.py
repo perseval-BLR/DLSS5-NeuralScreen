@@ -519,7 +519,11 @@ class OverlayMenu:
             if hint:
                 extra["hint"] = hint
                 line_h = self._small_font.get_height() + self._u(4)
-                hint_h = self._u(8) + (str(hint).count("\n") + 1) * line_h
+                # The last line carries no trailing space of its own: with it
+                # a hinted control sat further from its neighbour than two
+                # plain ones did.
+                hint_h = (self._u(8) + (str(hint).count("\n") + 1) * line_h
+                          - self._u(4))
             items.append(Item("choice", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h + hint_h),
                               payload=list(options),
@@ -557,9 +561,12 @@ class OverlayMenu:
                 extra["hint"] = hint
                 # Multi-line hints: the Spout2 toggle explains two capture
                 # paths and does not fit one line at 1440p. The block is
-                # measured with the real font height.
+                # measured with the real font height, and the last line
+                # carries no trailing space of its own - with it a hinted
+                # control sat further from its neighbour than two plain ones.
                 line_h = self._small_font.get_height() + self._u(4)
-                hint_h = self._u(8) + (str(hint).count("\n") + 1) * line_h
+                hint_h = (self._u(8) + (str(hint).count("\n") + 1) * line_h
+                          - self._u(4))
             items.append(Item("toggle", key,
                               pygame.Rect(pad, cy, inner_w, ctrl_h + hint_h),
                               value=1.0 if on else 0.0,
@@ -653,7 +660,10 @@ class OverlayMenu:
                                          "key": self.hotkeys.get(cmd, "—"),
                                          "capturing": self.capturing == cmd}))
                 cy += field_h + self._u(6)
-            cy += gap
+            # The caption belongs to the rows above it, not to the section
+            # below: a full row gap on both sides left 96 px of nothing
+            # before APPEARANCE.
+            cy += self._u(8)
             self._hint_rel = pygame.Rect(pad, cy, inner_w,
                                          self._u(SMALL_SIZE) + self._u(6))
             cy += self._hint_rel.h + gap
@@ -817,7 +827,6 @@ class OverlayMenu:
                                       extra={"label": label,
                                              "filled": False}))
                 cy += act_h + self._u(8)
-            cy += pad - self._u(8)
 
         # The footer: actions with the hotkey printed underneath. "Collapse"
         # and "Exit" used to look equally harmless, even though one hides the
