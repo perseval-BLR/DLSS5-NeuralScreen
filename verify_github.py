@@ -40,7 +40,15 @@ def _fetch(url: str, dest: Path) -> bool:
 
 
 def _gh(args: list) -> str:
+    """gh, decoded as UTF-8 whatever the console codepage is.
+
+    text=True alone decodes with the ANSI codepage (cp1251 on this machine),
+    and the v1.6.1 release body - English and Russian in one document - has
+    bytes it cannot decode: the reader thread died, stdout came back None
+    and the verifier crashed on a release that was perfectly fine.
+    """
     return subprocess.run(["gh"] + args, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
                           check=True).stdout.strip()
 
 
