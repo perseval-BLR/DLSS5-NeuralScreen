@@ -347,16 +347,36 @@ class OverlayMenu:
             elif k in self.state:
                 self.state[k] = v
 
+    def _load(self, size: int, mono: bool = False):
+        """One face, through the loader the caller handed us.
+
+        The live app passes display._load_font, which takes the role; the
+        offscreen renderers and the tests pass a one-argument callable, and
+        those get the proportional face for everything - which is what they
+        had before the split.
+        """
+        try:
+            return self._load_font(size, mono=mono)
+        except TypeError:
+            return self._load_font(size)
+
     def _build_fonts(self) -> None:
-        """The menu's three faces, built together.
+        """The menu's faces, built together.
 
         Called from __init__ and after every scale/language change - the
         sizes and the language both change what the loader returns. Which
         faces those are lives in fonts.py; this only asks for them.
+
+        Two roles, as fonts.py divides them: the proportional face carries
+        language - titles, labels, hints, buttons - and the monospaced one
+        carries readings, where a fixed advance keeps digits from dancing
+        sideways as they change.
         """
-        self._font = self._load_font(self._u(FONT_SIZE))
-        self._title_font = self._load_font(self._u(TITLE_SIZE))
-        self._small_font = self._load_font(self._u(SMALL_SIZE))
+        self._font = self._load(self._u(FONT_SIZE))
+        self._title_font = self._load(self._u(TITLE_SIZE))
+        self._small_font = self._load(self._u(SMALL_SIZE))
+        self._mono = self._load(self._u(FONT_SIZE), mono=True)
+        self._mono_small = self._load(self._u(SMALL_SIZE), mono=True)
 
     def _reload_fonts(self) -> None:
         """Recreate the fonts after a language switch.
@@ -510,9 +530,10 @@ class OverlayMenu:
                                      "labels": list(labels or options)}))
             cy += ctrl_h + gap
 
-        def toggle(key: str, label: str, on: bool, hint: str = "") -> None:
+        def toggle(key: str, label: str, on: bool, hint: str = "",
+                   key_text: str = "") -> None:
             nonlocal cy
-            extra = {"label": label}
+            extra = {"label": label, "key_text": key_text}
             hint_h = 0
             if hint:
                 extra["hint"] = hint
@@ -642,8 +663,8 @@ class OverlayMenu:
             section(s["sec_processing"])
             nr_on = bool(self.state.get("nr"))
             hk_nr = self.hotkeys.get("toggle", "")
-            toggle("nr", f"{s['nr_on'] if nr_on else s['nr_off']}   {hk_nr}".rstrip(),
-                   nr_on)
+            toggle("nr", s["nr_on"] if nr_on else s["nr_off"], nr_on,
+                   key_text=hk_nr)
 
             # The resolution the network runs at sits right under the
             # DLSS 5 switch, not in a section of its own further down:
@@ -1291,7 +1312,7 @@ class OverlayMenu:
         # 2026-09-08).
         ver = self.state.get("version") or ""
         if ver:
-            ver_text = self._small_font.render(f"v{ver}", True,
+            ver_text = self._mono_small.render(f"v{ver}", True,
                                                _rgb(self.c["muted"]))
             surface.blit(ver_text, (r.x + pad + title.get_width() + self._u(10),
                                     r.y + self._u(22)))
@@ -1423,8 +1444,8 @@ class OverlayMenu:
             y = rect.y + pad + ri * self._u(STAT_LINE_H)
             for ci, (name, value) in enumerate(row):
                 cx = rect.x + pad + ci * cell
-                k = self._small_font.render(name, True, _rgb(self.c["muted"]))
-                v = self._small_font.render(value, True, _rgb(self.c["accent"]))
+                k = self._mono_small.render(name, True, _rgb(self.c["muted"]))
+                v = self._mono_small.render(value, True, _rgb(self.c["accent"]))
                 surface.blit(k, (cx, y))
                 surface.blit(v, (cx + k.get_width() + self._u(6), y))
 
@@ -1515,11 +1536,25 @@ class OverlayMenu:
         text = item.extra.get("label")
         if not text:
             text = s["nr_on"] if on else s["nr_off"]
+        # The key caption is a reading, not language: it takes the
+        # monospaced face and sits after the label, so "Num1" here matches
+        # the key fields on the settings page.
+        key_text = item.extra.get("key_text") or ""
+        key_img = (self._mono.render(key_text, True, _rgb(self.c["muted"]))
+                   if key_text else None)
+        room = item.rect.right - box.right - self._u(12)
+        if key_img is not None:
+            room -= key_img.get_width() + self._u(12)
         label = self._clip(self._font, text,
                            _rgb(self.c["text"] if on else self.c["muted"]),
-                           item.rect.right - box.right - self._u(12))
+                           room)
         surface.blit(label, (box.right + self._u(12),
                              box.y + (box.h - label.get_height()) // 2))
+        if key_img is not None:
+            surface.blit(key_img,
+                         (box.right + self._u(12) + label.get_width()
+                          + self._u(12),
+                          box.y + (box.h - key_img.get_height()) // 2))
         if hint:
             y = box.bottom + self._u(8)
             for line in str(hint).split("\n"):
@@ -1534,7 +1569,7 @@ class OverlayMenu:
         # The value sits on the label line, right-aligned; a long localized
         # label (FR: "Résolution de traitement du réseau") would run under
         # it - clip the label to the space left of the value instead.
-        val = self._font.render(value_text, True, _rgb(self.c["accent"]))
+        val = self._mono.render(value_text, True, _rgb(self.c["accent"]))
         label_max = item.rect.right - val.get_width() - self._u(12) - item.rect.x
         label = self._clip(self._font, item.extra.get("label", item.key),
                            _rgb(self.c["text"]), label_max)
@@ -1828,8 +1863,8 @@ class OverlayMenu:
             pygame.draw.rect(surface,
                              _rgb(self.c["accent"] if hot else self.c["border"]),
                              field, self._u(1), border_radius=radius)
-            txt = self._small_font.render(str(item.extra.get("key", "—")), True,
-                                          _rgb(self.c["text"]))
+            txt = self._mono_small.render(str(item.extra.get("key", "—")),
+                                          True, _rgb(self.c["text"]))
         surface.blit(txt, (field.centerx - txt.get_width() // 2,
                            field.centery - txt.get_height() // 2))
         item.extra["field"] = field
