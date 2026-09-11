@@ -24,6 +24,7 @@
   "record_audio": true,
   "nr_small": false,
   "spout": false,
+  "skip_static": true,
   "menu_height": null,
   "theme": "light"
 }

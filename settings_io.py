@@ -349,6 +349,10 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # DXGI enumerates adapters - the same number the worker takes
         # in NS_GPU and prints in its "[host] adapter N" lines.
         "gpu": int(cfg.get("gpu", 0)),
+        # Skip static frames: no new frame from the capture - the network
+        # idles instead of re-running on the same picture. A per-frame flag,
+        # so it survives a restart through the config alone.
+        "skip_static": bool(cfg.get("skip_static", True)),
     }
 
 
@@ -429,6 +433,7 @@ def menu_payload(st) -> dict:
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "spout": bool(st.cfg.get("spout", False)),
+        "skip_static": bool(st.cfg.get("skip_static", True)),
         "gpus": [f"{i}: {name}" for i, name in list_adapters()],
         "gpu": next((f"{i}: {name}" for i, name in list_adapters()
                      if i == int(st.cfg.get("gpu", 0))), ""),

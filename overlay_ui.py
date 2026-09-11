@@ -189,6 +189,9 @@ class OverlayMenu:
             # in v1.6.0, so set_state dropped it in silence and the toggle
             # always drew as off while the action behind it fired normally.
             "spout": False,
+            # Skip static frames (processing section): no new capture frame -
+            # the network idles instead of re-running.
+            "skip_static": True,
             "open_on_start": True,
             "split": 0.0,
             # Which card this is and whether NR runs on it. gpu_ok:
@@ -671,6 +674,14 @@ class OverlayMenu:
             lo = float(self.state.get("work_scale_min", 0.1))
             slider("nr_res", lo, cap + 0.05, pos, s["nr_res"],
                    hint=s["nr_res_hint"], value_text=value_text)
+
+            # Idle screens: no new frame arrives (the desktop did not change,
+            # the window did not redraw) - the network waits instead of
+            # chewing the same picture again. No visual price, a real one on
+            # an idle desktop (issue #31 territory). A per-frame flag.
+            toggle("skip_static", s.get("skip_static", "Skip static frames"),
+                   bool(self.state.get("skip_static", True)),
+                   hint=s.get("skip_static_hint", ""))
 
             # The profile and the four effect sliders are their own subject -
             # what the picture looks like, not how hard the network works.

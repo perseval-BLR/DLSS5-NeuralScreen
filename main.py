@@ -131,7 +131,8 @@ from winapi import (DWMWA_EXTENDED_FRAME_BOUNDS, _RECT,  # noqa: F401
 from protocol import (  # noqa: F401
     DDA_ACK_FMT, DDA_ACK_MAGIC, DDA_FMT, DDA_MAGIC, FRAME_FLAG_BYPASS,
     FRAME_FLAG_MOTION_SMALL, FRAME_FLAG_NO_COLOR, FRAME_FLAG_SHM,
-    FRAME_FLAG_SPLIT, FRAME_FLAG_WANT_PIXELS, FRAME_FMT, FRAME_MAGIC,
+    FRAME_FLAG_SKIP_STATIC, FRAME_FLAG_SPLIT, FRAME_FLAG_WANT_PIXELS,
+    FRAME_FMT, FRAME_MAGIC,
     GRAY_ACK_FMT, GRAY_ACK_MAGIC, GRAY_FMT, GRAY_MAGIC, HEADER_FMT,
     MOTION_ACK_FMT, MOTION_ACK_MAGIC, MOTION_FMT, MOTION_MAGIC,
     OUTS_ACK_FMT, OUTS_ACK_MAGIC, OUTS_FMT, OUTS_MAGIC, OUT_BYTES_IN_SHM,
@@ -557,7 +558,8 @@ def main() -> int:
                            motion_small=st.motion_small,
                            no_color=bool(st.dda_mode),
                            bypass=bypass,
-                           split=st.split_pos)
+                           split=st.split_pos,
+                           skip_static=bool(st.cfg.get("skip_static", True)))
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
                 st.consecutive_restarts += 1

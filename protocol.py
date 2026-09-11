@@ -244,6 +244,7 @@ FRAME_FLAG_SHM = 0x1         # a bit in the reserved field of the frame header
 FRAME_FLAG_WANT_PIXELS = 0x2  # return the pixels even in window mode (for a screenshot)
 FRAME_FLAG_MOTION_SMALL = 0x4  # motion field at flow resolution, upscaled by the worker
 FRAME_FLAG_SPLIT = 0x20        # before/after wipe; position in the high 16 bits of reserved
+FRAME_FLAG_SKIP_STATIC = 0x40  # no new frame - let the worker idle instead of re-running NGX
 
 # MOTS: the motion field arrives at the optical-flow resolution (~320x180) and
 # the worker upscales it to the work resolution on the GPU. The CPU is spared
@@ -325,7 +326,7 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                shm: "SharedFrameBuffer | None" = None,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
-               split: float = 0.0) -> None:
+               split: float = 0.0, skip_static: bool = False) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -339,11 +340,16 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
     overlay (window, HUD) stays alive while the effect is off.
     split (0..1): the share of the frame on the left the worker leaves
     unprocessed - the before/after wipe. 0 means off.
+    skip_static: the capture has no new frame (Desktop Duplication timeout,
+    an idle window) - the worker answers with an empty result and does NOT
+    re-run the network on the stale picture. A screenshot/recording request
+    (want_pixels) wins over it.
     """
     flags = (FRAME_FLAG_WANT_PIXELS if want_pixels else 0) | \
             (FRAME_FLAG_MOTION_SMALL if motion_small else 0) | \
             (FRAME_FLAG_NO_COLOR if no_color else 0) | \
-            (FRAME_FLAG_BYPASS if bypass else 0)
+            (FRAME_FLAG_BYPASS if bypass else 0) | \
+            (FRAME_FLAG_SKIP_STATIC if skip_static else 0)
     if split > 0.0:
         # The wipe position rides in the high 16 bits of the same flags field:
         # there is no dedicated field in the header, and widening it for a

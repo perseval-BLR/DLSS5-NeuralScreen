@@ -1186,6 +1186,11 @@ static constexpr uint32_t FRAME_FLAG_BYPASS = 0x10u;
 // in the header, and resizing it for a single number would break the protocol
 // on both sides.
 static constexpr uint32_t FRAME_FLAG_SPLIT = 0x20u;
+// bit 6: skip static frames - the capture has no new frame (DDA
+// WAIT_TIMEOUT, WGC empty pool), so the network is NOT re-run on the stale
+// texture. An empty OUT1 is the "nothing changed" answer; WANT_PIXELS wins
+// over this bit (a screenshot or a recording wants the picture either way).
+static constexpr uint32_t FRAME_FLAG_SKIP_STATIC = 0x40u;
 
 static UINT SplitXFromFlags(uint32_t reserved, UINT width)
 {
@@ -1427,6 +1432,20 @@ struct VideoState
 
 static VideoHeader g_video_options = {};
 static uint32_t g_last_eval_result = 0;
+// Static-frame skipping (FRAME_FLAG_SKIP_STATIC): how many frames were skipped
+// since the last change, and whether the "idle" line was already written for
+// this stretch (one line per idle stretch, not per frame).
+//
+// Skipping must have no visual price, so a frame whose OUTPUT would change is
+// never skipped even on a frozen screen: a bypass toggle (NR on/off), a wipe
+// move, a fresh feature (RNSZ), a re-opened present window. The last output
+// state is kept to spot those transitions.
+static uint32_t g_skip_static_count = 0;
+static bool     g_skip_static_logged = false;
+static bool     g_last_out_bypass = false;
+static bool     g_last_out_split_on = false;
+static uint32_t g_last_out_split_x = 0;
+static bool     g_force_next_frame = false;   // render one frame even if unchanged
 static bool g_live_force = false;   // --live: treat the stream as unbounded even with frame_count > 0
 
 // Shared input frame (SHMI). Read-only view of the client's named section:
@@ -4381,6 +4400,7 @@ static int RunVideo()
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
             if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            g_force_next_frame = true;   // the new setting must be shown on the next frame
             Log("[video] RNSZ applied: feature ready at %ux%u", rc.width, rc.height);
             continue;
         }
@@ -4438,6 +4458,7 @@ static int RunVideo()
             }
             else
                 ok = OpenPresent(wc.width, wc.height, wc.flags) ? 1u : 0u;
+            if (ok) g_force_next_frame = true;   // a fresh window gets a picture at once
             VideoWindowAck ack = { WINDOW_ACK_MAGIC, ok, 0u, 0u, wc.pts };
             if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
             continue;
@@ -4499,6 +4520,7 @@ static int RunVideo()
             uint32_t ok = 0;
             if (hwnd == nullptr) { CloseWgc(); ok = 1; }
             else ok = OpenWgc(hwnd) ? 1u : 0u;
+            if (ok) g_force_next_frame = true;   // the new source shows at once
             // The size the capture really produces - physical pixels, which is
             // what the client has to size its textures for.
             VideoWgcAck ack = { WGC_ACK_MAGIC, ok, ok ? g_dda_w : 0u,
@@ -4526,6 +4548,60 @@ static int RunVideo()
                 if (!WriteExact(stdout, &empty, sizeof(empty))) return 10;
                 continue;
             }
+            if (!got)
+            {
+                // No new frame: the desktop did not change (DDA timeout) or the
+                // window did not redraw (WGC empty pool). Re-running the network
+                // on the stale texture is pure waste - an idle desktop used to be
+                // a full load. The client asks for the skip in bit 6 and does not
+                // need pixels this frame; an empty OUT1 is the "nothing changed"
+                // answer. WANT_PIXELS wins: a screenshot or a recording wants the
+                // picture even when it did not change. So does anything that
+                // changes what the picture WOULD show - see g_last_out_*.
+                const bool want_bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 ||
+                                         h.feature == nullptr;
+                const bool split_on = (fh.reserved & FRAME_FLAG_SPLIT) != 0;
+                const UINT split_cw = v.upscale ? v.full_w : v.w;
+                const uint32_t split_x = split_on
+                    ? SplitXFromFlags(fh.reserved, split_cw) : 0u;
+                const bool out_changed = want_bypass != g_last_out_bypass ||
+                                         split_on != g_last_out_split_on ||
+                                         (split_on && split_x != g_last_out_split_x) ||
+                                         g_force_next_frame;
+                const bool skip = (fh.reserved & FRAME_FLAG_SKIP_STATIC) != 0 &&
+                                  (fh.reserved & FRAME_FLAG_WANT_PIXELS) == 0 &&
+                                  !out_changed;
+                if (skip)
+                {
+                    if (!g_skip_static_logged)
+                    {
+                        g_skip_static_logged = true;
+                        Log("[skip] no new frame - the network is idle until the screen changes");
+                    }
+                    ++g_skip_static_count;
+                    // The picture itself does not change, but in one-window mode
+                    // the frame it sits in can still move - keep the overlay on it.
+                    FollowCapturedWindow();
+                    ReassertPresentTopmost();
+                    VideoResultHeader idle = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
+                    if (!WriteExact(stdout, &idle, sizeof(idle))) return 10;
+                    continue;
+                }
+            }
+            else if (g_skip_static_count != 0)
+            {
+                Log("[skip] the screen changed - %u frames skipped, the network resumes",
+                    g_skip_static_count);
+                g_skip_static_count = 0;
+                g_skip_static_logged = false;
+            }
+            // This frame is being processed: remember what it will show, so the
+            // next unchanged frame can tell whether anything differs.
+            g_last_out_bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
+            g_last_out_split_on = (fh.reserved & FRAME_FLAG_SPLIT) != 0;
+            g_last_out_split_x = g_last_out_split_on
+                ? SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : 0u;
+            g_force_next_frame = false;
             const double t_up = PhaseNow();
             const bool up_ok = UploadMotionOnly(v, mv_ptr,
                                   (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
