@@ -55,6 +55,7 @@ ABOUT = {
     "test_config.py": "the config loader validates, clamps and resolves",
     "test_theme_rebuild.py": "the chosen theme survives a pipeline rebuild",
     "test_gpu_select.py": "the GPU picker drives config, environment and restart",
+    "test_gpu_rollback.py": "a card that cannot run the network reverts itself",
     "test_monitor_resize.py": "a desktop resolution change rebuilds once, after it settles",
     "test_save_dialog.py": "the Save As struct is valid; the fallback still catches",
     "test_window_follow_size.py": "capture size vs frame size: no rebuild loop",

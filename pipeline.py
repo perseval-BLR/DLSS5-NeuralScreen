@@ -601,7 +601,8 @@ def apply_gpu(st, index: int) -> None:
     fails in the worker, with the reason in the log, rather than showing
     a black picture.
     """
-    if int(index) == int(st.cfg.get("gpu", 0)):
+    previous = int(st.cfg.get("gpu", 0))
+    if int(index) == previous:
         return
     st.cfg["gpu"] = int(index)
     os.environ["NS_GPU"] = str(int(index))
@@ -610,10 +611,59 @@ def apply_gpu(st, index: int) -> None:
     # split pipeline. That is worth one alert, and only after a deliberate
     # switch (on an Optimus laptop it is the normal state from launch).
     st.gpu_switch_pending = True
-    settings_io.save_menu_layout(st)
     print(f"[main] GPU: adapter {index} - restarting the worker")
     teardown_pipeline(st)
     rebuild_pipeline(st, UI_STRINGS[st.lang].get("gpu_switched", "GPU switched"))
+    if gpu_came_up(st):
+        # Only now: a config that remembers a card the network cannot use
+        # comes back on the same dead card at the next launch, and the menu
+        # to change it back is inside the overlay that a dead worker hides
+        # (issue #33).
+        settings_io.save_menu_layout(st)
+        return
+    print(f"[main] adapter {index} cannot run the network - back to {previous}",
+          file=sys.stderr)
+    st.cfg["gpu"] = previous
+    os.environ["NS_GPU"] = str(previous)
+    st.gpu_switch_pending = False
+    teardown_pipeline(st)
+    rebuild_pipeline(st, UI_STRINGS[st.lang].get(
+        "gpu_reverted", "That GPU cannot run the neural pass - previous card"))
+    st.display.alert(UI_STRINGS[st.lang].get(
+        "gpu_reverted", "That GPU cannot run the neural pass - previous card"))
+
+
+#: How long a fresh worker is given to say whether the network came up on
+#: the card just chosen. NGX answers in well under a second; five seconds
+#: is the margin for a cold driver, and a slower one is not called failed.
+GPU_VERDICT_TIMEOUT = 5.0
+
+
+def gpu_came_up(st, timeout: float = GPU_VERDICT_TIMEOUT) -> bool:
+    """Did the network come up on the card the worker was just started on?
+
+    The worker says so itself: "feature 18 ready" against "feature 18
+    create failed" / "NGX unavailable" - the same lines refresh_gpu_ok
+    reads - and a process that exited says it without words.
+
+    Silence is NOT failure. A card that takes its time still works, and
+    turning a slow start into an automatic revert would be worse than the
+    bug this guards against.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        worker = getattr(st, "worker", None)
+        if worker is not None and worker.poll() is not None:
+            return False
+        for line in reversed(st.worker_logs[-120:]):
+            if "feature 18 ready" in line:
+                return True
+            if ("feature 18 create failed" in line
+                    or "NGX unavailable" in line
+                    or "no NVIDIA adapter found" in line):
+                return False
+        time.sleep(0.1)
+    return True
 
 
 def follow_window(st) -> None:

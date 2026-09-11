@@ -31,8 +31,16 @@ FAKE = [(0, "NVIDIA GeForce RTX 5070 Ti"), (1, "NVIDIA GeForce RTX 4060")]
 
 
 def _state(gpu=0):
+    """The fields apply_gpu touches, including the ones it reads back.
+
+    worker/worker_logs are what the switch checks before saving: a card
+    that cannot run the network is reverted instead (test_gpu_rollback).
+    Here the card always comes up, so the switch is the whole story.
+    """
     return types.SimpleNamespace(
         cfg={"gpu": gpu, "profile": "Natural", "lang": "en"}, lang="en",
+        worker=types.SimpleNamespace(poll=lambda: None),
+        worker_logs=["[pure] feature 18 ready"], gpu_switch_pending=False,
         display=types.SimpleNamespace(alert=lambda *a, **kw: None))
 
 
