@@ -207,6 +207,8 @@ class OverlayMenu:
             # The current monitor's DXGI devicename - carried so a log or a
             # future control can name the exact display the capture is on.
             "monitor_devicename": "",
+            # True while the network is idling on an unchanged screen.
+            "idle": False,
             "gpu": "0",
             "gpus": [],
             "autostart": False,
@@ -525,7 +527,7 @@ class OverlayMenu:
             cy += label_h + ctrl_h + hint_h + gap
 
         def segmented(key: str, label: str, current: str, options: list,
-                      labels: list | None = None) -> None:
+                      labels: list | None = None, height: int | None = None) -> None:
             """A two- or three-way switch instead of a drop-down list.
 
             A list for the sake of two values is an extra click and extra
@@ -539,11 +541,12 @@ class OverlayMenu:
                 # No label, no reason to squeeze: the captions are the
                 # control. "Window mode" ran off the panel at the old width.
                 seg_w = inner_w
-            rect = pygame.Rect(pad + inner_w - seg_w, cy, seg_w, ctrl_h)
+            seg_h = height or ctrl_h
+            rect = pygame.Rect(pad + inner_w - seg_w, cy, seg_w, seg_h)
             items.append(Item("segmented", key, rect, payload=list(options),
                               extra={"label": label, "current": current,
                                      "labels": list(labels or options)}))
-            cy += ctrl_h + gap
+            cy += seg_h + gap
 
         def toggle(key: str, label: str, on: bool, hint: str = "",
                    key_text: str = "") -> None:
@@ -706,12 +709,21 @@ class OverlayMenu:
             # every position is a different resolution; above it they would all
             # be the same one, so there is exactly one position up there.
             pos = cap + 0.05 if full else float(self.state.get("work_scale", cap))
-            if full:
-                shown = str(self.state.get("screen_size")
-                            or self.stats.get("resolution") or "")
-                value_text = f"{shown} · {s['nr_res_full']}" if shown else s["nr_res_full"]
+            # Always the size the network actually runs at. At the top of
+            # the slider it used to say "3840x2160 - full", which is not
+            # true on a 4K screen: NGX is capped at 2560x1440, so the
+            # network never sees more than that and the menu was promising
+            # a resolution it cannot deliver (user, 12.09). The word stays
+            # only when the work size really is the whole screen.
+            work = str(self.state.get("work_size") or "")
+            screen = str(self.state.get("screen_size")
+                         or self.stats.get("resolution") or "")
+            if full and work and work == screen:
+                value_text = f"{work} · {s['nr_res_full']}"
+            elif work:
+                value_text = work
             else:
-                value_text = str(self.state.get("work_size") or f"{pos:.2f}")
+                value_text = s["nr_res_full"] if full else f"{pos:.2f}"
             # The lower bound follows WORK_SCALE_MIN (0.1), not a hardcoded
             # 0.30: a config value below the slider range would put the knob
             # at the bottom while the label shows a different resolution.
@@ -732,19 +744,21 @@ class OverlayMenu:
             in_window = bool(self.state.get("window_mode"))
             segmented("source", "", "window" if in_window else "fullscreen",
                       ["fullscreen", "window"],
-                      labels=[s["mode_fullscreen"], s["mode_window"]])
-            current = (str(self.state.get("window_current") or "").split(": ", 1)
-                       if in_window else [])
-            name = (current[1] if len(current) > 1 else
-                    s["mode_window"] if in_window else
-                    str(self.state.get("monitor") or "").split(" (")[0])
-            items.append(Item("info", "source_now",
-                              pygame.Rect(pad, cy, inner_w, self._u(LABEL_H)),
-                              extra={"label": name,
-                                     "value": str(self.state.get("work_size")
-                                                  or self.state.get("screen_size")
-                                                  or "")}))
-            cy += self._u(LABEL_H) + gap
+                      labels=[s["mode_fullscreen"], s["mode_window"]],
+                      height=act_h)
+            # Which window, only in window mode. On the whole screen the
+            # source is the monitor, and the monitor is chosen on the
+            # settings page - naming it here as well was the same thing
+            # said twice (user, 12.09).
+            if in_window:
+                current = str(self.state.get("window_current") or "").split(": ", 1)
+                items.append(Item("info", "source_now",
+                                  pygame.Rect(pad, cy, inner_w, self._u(LABEL_H)),
+                                  extra={"label": (current[1] if len(current) > 1
+                                                   else s["mode_window"]),
+                                         "value": str(self.state.get("work_size")
+                                                      or "")}))
+                cy += self._u(LABEL_H) + gap
 
             # The profile and the four effect sliders are their own subject -
             # what the picture looks like, not how hard the network works.
@@ -1485,8 +1499,13 @@ class OverlayMenu:
         fps = st.get("fps")
         mode = (s["mode_window"] if self.state.get("window_mode")
                 else s["mode_fullscreen"])
+        # An idle network is not a stalled one: the loop still runs at full
+        # speed, it just does not process an unchanged screen. Saying so
+        # here is the only visible sign that the skip is doing its job.
+        idling = bool(self.state.get("idle"))
         rows = (
-            (("FPS", f"{fps:.1f}" if isinstance(fps, (int, float)) else "—"),
+            (("FPS", s.get("idle_short", "idle") if idling
+              else f"{fps:.1f}" if isinstance(fps, (int, float)) else "—"),
              ("RES", str(st.get("resolution", "—"))),
              ("MODE", mode)),
             (("FRAMES", str(st.get("frames", "—"))),

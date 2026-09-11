@@ -208,9 +208,17 @@ def check_menu(failures: list) -> None:
         if ws.value <= CAP:
             failures.append(f"with the mode off the knob is at {ws.value:.2f}, "
                             f"not on the full-screen step")
-        if "3840x2160" not in str(ws.extra.get("value_text")):
-            failures.append(f"the full-screen step shows "
-                            f"{ws.extra.get('value_text')!r}, not the screen size")
+        # The step shows the size the network RUNS at, which on a 4K screen
+        # is the 2560x1440 cap, not the screen. It used to read
+        # "3840x2160 - full" there and promise a resolution NGX cannot
+        # deliver (user, 12.09).
+        shown = str(ws.extra.get("value_text"))
+        if "2560x1440" not in shown:
+            failures.append(f"the full-screen step shows {shown!r}, not the "
+                            f"work size the network runs at")
+        if "3840x2160" in shown:
+            failures.append(f"the full-screen step still promises the screen "
+                            f"size: {shown!r}")
 
         # Drag to the left end: a resolution action, and not an NR parameter.
         track = ws.extra.get("track")

@@ -443,6 +443,12 @@ def menu_payload(st) -> dict:
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "spout": bool(st.cfg.get("spout", False)),
         "skip_static": bool(st.cfg.get("skip_static", True)),
+        # Is the network idling on an unchanged screen right now? The
+        # worker says so in its log; without this the menu shows a
+        # healthy FPS while nothing is being processed, and the skip
+        # reads as "it does not work" (user, 12.09).
+        "idle": any("[skip] no new frame" in line
+                    for line in st.worker_logs[-3:]),
         "gpus": [f"{i}: {name}" for i, name in list_adapters()],
         "gpu": next((f"{i}: {name}" for i, name in list_adapters()
                      if i == int(st.cfg.get("gpu", 0))), ""),
