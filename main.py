@@ -198,6 +198,7 @@ CHANNEL_URL = "https://www.youtube.com/@perseval_BLR/videos"
 from tray import TrayController
 from taskbar import TaskbarWindow
 import dialogs
+import channels
 # The Win32 window helpers live in winapi.py now. They are re-exported here
 # on purpose: main is where the rest of the program - and the tests - look
 # them up, and moving code must not move its callers.
@@ -974,6 +975,10 @@ class _Pipeline:
         "worker_failed",
         "worker_logs",
         "worker_stop",
+        "want_dda",
+        "want_motion_small",
+        "want_out_shm",
+        "want_present",
     )
 
 
@@ -1194,11 +1199,11 @@ def main() -> int:
         guide = None  # initialised before the loop: Num1 before the first NR frame must not raise NameError
         st.output_rgba = None  # the last NR frame (for a screenshot); None until the first one
         # WNDO mode: the worker shows the frame, no pixels come back to Python.
-        want_present = bool(st.cfg.get("worker_present", True))
-        want_motion_small = bool(st.cfg.get("motion_on_gpu", True))
-        want_dda = bool(st.cfg.get("capture_in_worker", True))  # DDA: the worker takes the colour
+        st.want_present = bool(st.cfg.get("worker_present", True))
+        st.want_motion_small = bool(st.cfg.get("motion_on_gpu", True))
+        st.want_dda = bool(st.cfg.get("capture_in_worker", True))  # DDA: the worker takes the colour
         # The result pixels come back through shared memory, not the pipe.
-        want_out_shm = bool(st.cfg.get("pixels_in_shm", True))
+        st.want_out_shm = bool(st.cfg.get("pixels_in_shm", True))
         # System audio ("what you hear") as a second track in the recording.
         # A config flag rather than a menu item: it is a decision made once,
         # not something to reach for while the overlay is up.
@@ -1363,21 +1368,21 @@ def main() -> int:
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                     st.worker, st.params, new_w, new_h, RESTART_WARMUP,
                     new_full_w, new_full_h, st.worker_stop, st.shm)
-                _forget_present()
+                channels.forget_present(st)
                 # The new worker knows nothing about DDA/gray: reset the flags
                 # so the main loop sends DDA1/GRAY again. Otherwise the frames
                 # go out with NO_COLOR to a worker that is not capturing - a
                 # desync and a restart loop.
-                _forget_dda()
-                _forget_out()
+                channels.forget_dda(st)
+                channels.forget_out(st)
 
             # The order matters: work_w/work_h and guides change TOGETHER,
             # otherwise the motion size drifts away from what the worker
             # expects (see the docstring).
             st.work_w, st.work_h = new_w, new_h
             st.guides = TemporalGuideGenerator(st.work_w, st.work_h, emit_small=st.motion_small)
-            _sync_motion_size()  # the flow resolution may have changed
-            _sync_gray()         # the gray channel lives in the worker, size = guides flow
+            channels.sync_motion_size(st)  # the flow resolution may have changed
+            channels.sync_gray(st)         # the gray channel lives in the worker, size = guides flow
             st.frame_index = 0
             st.pts = 0
             st.work_frame = None  # the indices are reset - a fresh grab is needed
@@ -1577,7 +1582,7 @@ def main() -> int:
             worker is asked first (WGCW answers with the real size), and the
             pipeline is rebuilt for exactly that.
             """
-            if hwnd and not want_dda:
+            if hwnd and not st.want_dda:
                 st.display.alert(UI_STRINGS[st.lang]["win_fail"])
                 print("[main] window mode needs capture in the worker "
                       "(capture_in_worker is off)", file=sys.stderr)
@@ -1590,7 +1595,7 @@ def main() -> int:
             st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
             if hwnd:
                 try:
-                    aw, ah = _probe_window_capture(hwnd)
+                    aw, ah = channels.probe_window_capture(st, hwnd)
                 except Exception as exc:
                     # The probe left the worker inside a WGCW session that
                     # may be half-open: put the source back on the desktop
@@ -1691,200 +1696,17 @@ def main() -> int:
             else:
                 st.follow_resize = None
 
-        def _probe_window_capture(hwnd: int) -> tuple:
-            """Ask the CURRENT worker for the capture size of a window.
 
-            It switches that worker's source as a side effect, which is
-            harmless: the caller tears it down immediately afterwards.
-            """
-            send_wgc(st.worker, hwnd)
-            return st.reader.wait_wgak(timeout=15.0)
 
-        def _enable_out_shm() -> None:
-            """OUTS: agree that the result pixels will go through a section.
 
-            Called after every worker start: the command lives inside its
-            process and a new one knows nothing about it. A refusal is not
-            fatal - the pixels travel down the pipe as before.
-            """
-            st.out_attempted = True
-            if not want_out_shm:
-                return
-            try:
-                st.shm.open_out(st.width, st.height)
-                send_out(st.worker, st.width, st.height, st.shm.out_name)
-                st.reader.wait_oak(timeout=15.0)
-                st.out_shm = True
-                print(f"[main] result pixels through shared memory "
-                      f"({st.width}x{st.height}, {st.shm.out_bytes / 1024 / 1024:.0f} MB)")
-            except Exception as exc:
-                st.out_shm = False
-                print(f"[main] shared memory for pixels unavailable ({exc}) - "
-                      f"they go through the pipe", file=sys.stderr)
 
-        def _sync_motion_size() -> None:
-            """MOTS: agree the motion field resolution with the worker.
 
-            Called after guides is created and after every worker start: the
-            command lives inside the worker process and a new one knows
-            nothing about it. A refusal is not fatal - we do the upscale on
-            the CPU, as before.
-            """
-            st.motion_attempted = True
-            if not want_motion_small:
-                return
-            st.guides.emit_small = True
-            try:
-                send_motion_size(st.worker, st.guides.motion_width, st.guides.motion_height)
-                st.reader.wait_mack(timeout=15.0)
-                st.motion_small = True
-                print(f"[main] motion field {st.guides.motion_width}x{st.guides.motion_height} - "
-                      f"upscaled by the worker on the GPU")
-            except Exception as exc:
-                st.guides.emit_small = False
-                st.motion_small = False
-                print(f"[main] GPU motion upscale unavailable ({exc}) - doing it on the CPU",
-                      file=sys.stderr)
 
-        def _enable_present() -> None:
-            """Ask the worker to present the frame itself (WNDO).
 
-            A refusal is not fatal: we stay on returning pixels to Python and
-            drawing them in pygame - that path has not gone anywhere.
-            """
-            st.present_attempted = True
-            try:
-                send_window(st.worker, st.width, st.height, 0)
-                st.reader.wait_wack(timeout=15.0)
-                st.present_mode = True
-                st.display.set_hud_only(True)
-                st.display.raise_topmost()  # the HUD must be ABOVE the worker's window
-                print("[main] presenting in the worker window: no frame comes back to Python")
-            except Exception as exc:
-                st.present_mode = False
-                st.display.set_hud_only(False)
-                print(f"[main] worker window unavailable ({exc}) - output through pygame",
-                      file=sys.stderr)
 
-        def _disable_present() -> None:
-            """Close the worker window and go back to drawing in pygame."""
-            if not st.present_mode:
-                return
-            try:
-                send_window(st.worker, 0, 0, WINDOW_FLAG_DISABLE)
-                st.reader.wait_wack(timeout=10.0)
-            except Exception as exc:
-                print(f"[main] could not close the worker window: {exc}", file=sys.stderr)
-            st.present_mode = False
-            st.present_attempted = False  # after a pause the window can be raised again
-            st.display.set_hud_only(False)
 
-        def _forget_present() -> None:
-            """The worker restarted - its window and settings died with the process."""
-            st.present_mode = False
-            st.present_attempted = False
-            st.motion_small = False
-            st.motion_attempted = False
-            st.display.set_hud_only(False)
 
-        def _sync_gray() -> None:
-            """GRAY: renegotiate the reverse luminance channel for guides.
 
-            The worker writes exactly the flow size of guides into the
-            mapping. The channel changes together with guides (flow may
-            change after RNSZ), so a resync is needed in _enable_dda and
-            after apply. A refusal is not fatal - guides stay on dxcam.
-            """
-            if not st.dda_mode:
-                return
-            try:
-                gw, gh = st.guides.flow_width, st.guides.flow_height
-                st.shm.open_gray(gw, gh)
-                send_gray(st.worker, gw, gh, st.shm.gray_name)
-                st.reader.wait_gak(timeout=15.0)
-                st.gray_active = True
-                print(f"[main] gray channel {gw}x{gh}: guides take luminance from the worker")
-            except Exception as exc:
-                st.gray_active = False
-                print(f"[main] gray channel unavailable ({exc}) - guides through dxcam",
-                      file=sys.stderr)
-
-        def _enable_dda() -> None:
-            """Ask the worker to capture the screen itself (DDA1).
-
-            While it is active FRM1 frames carry FRAME_FLAG_NO_COLOR - no
-            colour goes down the pipe, the worker takes it from Desktop
-            Duplication straight on the GPU. Together with DDA we activate
-            the reverse gray channel: the worker writes luminance there (the
-            flow field size), guides read it and no longer depend on dxcam.
-            A refusal is not fatal: we stay on sending frames from Python.
-            """
-            st.dda_attempted = True
-            try:
-                # In DDA mode guides still need the frame (motion), so dxcam
-                # keeps running - we simply stop sending colour to the worker.
-                send_dda(st.worker, st.width, st.height, 0)
-                st.reader.wait_dack(timeout=15.0)
-                st.dda_mode = True
-                _sync_gray()
-                print("[main] screen capture inside the worker (DDA1): no colour through the pipe")
-            except Exception as exc:
-                st.dda_mode = False
-                print(f"[main] capture inside the worker unavailable ({exc}) - frames through Python",
-                      file=sys.stderr)
-
-        def _enable_wgc() -> None:
-            """Ask the worker to capture the target WINDOW (WGCW).
-
-            The same deal as DDA1 - the colour stops going down the pipe and
-            the reverse gray channel feeds the guides - except the source is
-            one window, which is why the overlay will not have to hide from
-            screen capture. If the window has gone (closed, minimised) we drop
-            back to the whole screen rather than freezing on the last frame.
-            """
-            st.dda_attempted = True
-            if st.window_hwnd is None:
-                return
-            if not ctypes.windll.user32.IsWindow(st.window_hwnd):
-                print("[main] the captured window is gone - back to full screen",
-                      file=sys.stderr)
-                _switch_window(0)
-                return
-            try:
-                send_wgc(st.worker, st.window_hwnd)
-                aw, ah = st.reader.wait_wgak(timeout=15.0)
-                st.dda_mode = True
-                _sync_gray()
-                print(f"[main] window capture inside the worker (WGCW): "
-                      f"{aw}x{ah}, no colour through the pipe")
-            except Exception as exc:
-                st.dda_mode = False
-                print(f"[main] window capture unavailable ({exc}) - back to full screen",
-                      file=sys.stderr)
-                st.display.alert(UI_STRINGS[st.lang]["win_fail"])
-                _switch_window(0)
-
-        def _disable_dda() -> None:
-            """Turn off capture in the worker and send the frame from Python again."""
-            if not st.dda_mode:
-                return
-            try:
-                send_dda(st.worker, 0, 0, 0)
-                st.reader.wait_dack(timeout=10.0)
-            except Exception as exc:
-                print(f"[main] could not turn off capture in the worker: {exc}", file=sys.stderr)
-            st.dda_mode = False
-
-        def _forget_dda() -> None:
-            """The worker restarted - its DDA capture died with the process."""
-            st.dda_mode = False
-            st.dda_attempted = False
-            st.gray_active = False
-
-        def _forget_out() -> None:
-            """The worker restarted - it knows nothing about the OUTS section."""
-            st.out_shm = False
-            st.out_attempted = False
 
         def _save_menu_layout() -> bool:
             """Remember the panel size and position in config.json.
@@ -2380,10 +2202,10 @@ def main() -> int:
                                         st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                                         st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                                         st.worker_stop, st.shm)
-                                    _forget_present()
-                                    _forget_dda()
-                                    _forget_out()
-                                    _sync_motion_size()
+                                    channels.forget_present(st)
+                                    channels.forget_dda(st)
+                                    channels.forget_out(st)
+                                    channels.sync_motion_size(st)
                                     st.frame_index = 0
                                     st.pts = 0
                                 except Exception as exc:
@@ -2502,10 +2324,10 @@ def main() -> int:
                             st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                             st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                             st.worker_stop, st.shm)
-                        _forget_present()
-                        _forget_dda()
-                        _forget_out()
-                        _sync_motion_size()
+                        channels.forget_present(st)
+                        channels.forget_dda(st)
+                        channels.forget_out(st)
+                        channels.sync_motion_size(st)
                         st.frame_index = 0
                         st.pts = 0
                         st.paused = False
@@ -2541,8 +2363,8 @@ def main() -> int:
             # The answer from the "Save as" dialog (it runs in its own thread).
             _drain_save_dialog()
 
-            if want_present and not st.present_mode and not st.present_attempted:
-                _enable_present()
+            if st.want_present and not st.present_mode and not st.present_attempted:
+                channels.enable_present(st)
             # Who has the focus, for the window-mode hotkey: by the time it
             # is pressed the menu may be in front, so the last window that was
             # not ours is remembered continuously.
@@ -2576,16 +2398,20 @@ def main() -> int:
                     _switch_window(0)
                     continue
                 _follow_window()
-            if want_dda and not st.dda_mode and not st.dda_attempted:
+            if st.want_dda and not st.dda_mode and not st.dda_attempted:
                 if st.window_hwnd is not None:
-                    _enable_wgc()
+                    # The channel module opens channels; deciding that the
+                    # window is gone and the whole screen comes back is the
+                    # pipeline's call, and it lives here.
+                    if not channels.enable_wgc(st):
+                        _switch_window(0)
                 else:
-                    _enable_dda()
-            if want_motion_small and not st.motion_small and not st.motion_attempted:
+                    channels.enable_dda(st)
+            if st.want_motion_small and not st.motion_small and not st.motion_attempted:
                 st.motion_attempted = True
-                _sync_motion_size()
-            if want_out_shm and not st.out_shm and not st.out_attempted:
-                _enable_out_shm()
+                channels.sync_motion_size(st)
+            if st.want_out_shm and not st.out_shm and not st.out_attempted:
+                channels.enable_out_shm(st)
 
             # --- Input for the overlay menu --------------------------
             # Events are read only while the menu is open: the rest of the
@@ -2710,10 +2536,10 @@ def main() -> int:
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.worker_stop, st.shm)
-                _forget_present()
-                _forget_dda()
-                _forget_out()
-                _sync_motion_size()
+                channels.forget_present(st)
+                channels.forget_dda(st)
+                channels.forget_out(st)
+                channels.sync_motion_size(st)
                 st.frame_index = 0
                 st.pts = 0
                 st.work_frame = None
@@ -2813,10 +2639,10 @@ def main() -> int:
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.worker_stop, st.shm)
-                _forget_present()
-                _forget_dda()
-                _forget_out()
-                _sync_motion_size()
+                channels.forget_present(st)
+                channels.forget_dda(st)
+                channels.forget_out(st)
+                channels.sync_motion_size(st)
                 st.frame_index = 0
                 st.pts = 0
                 st.work_frame = None
