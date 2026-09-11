@@ -206,9 +206,8 @@ def main() -> int:
     total = sum(r["took"] for r in results)
     if SETTLES:
         worst_label, worst = max(SETTLES, key=lambda x: x[1])
-        total = sum(s for _, s in SETTLES)
-        print(f"settle: {total:.1f}s total, longest {worst:.1f}s "
-              f"before {worst_label}")
+        print(f"settle: {sum(s for _, s in SETTLES):.1f}s total, "
+              f"longest {worst:.1f}s before {worst_label}")
     print("=" * 70)
     if failed:
         print(f"RESULT: {len(failed)} of {len(results)} FAILED in {total:.0f}s - {failed}")
