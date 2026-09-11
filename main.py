@@ -217,6 +217,7 @@ class _Pipeline:
         "display",
         "follow_pos",
         "follow_resize",
+        "follow_size",
         "frame_index",
         "gpu_ok",
         "gray_active",

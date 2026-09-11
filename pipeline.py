@@ -459,6 +459,12 @@ def switch_window(st, hwnd: int) -> None:
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
     st.follow_pos = None        # a fresh overlay starts at (0,0)
     st.follow_resize = None
+    # The window size this pipeline was built for, as WE measure it. It is
+    # NOT st.width/height: that is the size the WORKER's capture reported,
+    # and on Windows 10 the two are different numbers for the same window
+    # (see follow_window).
+    rect = window_frame_rect(hwnd) if hwnd else None
+    st.follow_size = rect[2:] if rect else None
     rebuild_pipeline(st, note)
 
 
@@ -530,7 +536,19 @@ def follow_window(st) -> None:
     # changed 0% of what an outside capture saw.
     if moved or st.frame_index % 30 == 0:
         st.display.raise_topmost()
-    if (w, h) != (st.width, st.height):
+    # Against the size WE measured when the pipeline was built - not
+    # against st.width/height, which is what the worker's capture
+    # reported. On Windows 10 those are two different numbers for one
+    # window: WGC hands back the GetWindowRect size, including the
+    # invisible resize border, while this is the DWM extended frame.
+    # A user's log (issue #30) showed capture 1354x853 against frame
+    # 1340x846 - 14 and 7 pixels of border - so the comparison was never
+    # equal, the pipeline rebuilt every half second, and the screen blinked
+    # once every two seconds until window mode was turned off. On Windows 11
+    # the two agree, which is why it never showed up here.
+    if st.follow_size is None:
+        st.follow_size = (w, h)
+    if (w, h) != st.follow_size:
         now = time.monotonic()
         if st.follow_resize is None or st.follow_resize[0] != (w, h):
             st.follow_resize = ((w, h), now)

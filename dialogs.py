@@ -60,6 +60,36 @@ class _BROWSEINFO(ctypes.Structure):
     ]
 
 
+def _save_dialog_struct(parent_hwnd: int, default_name: str,
+                        initial_dir: str | None):
+    """The OPENFILENAME for "Save as", and the buffer the path comes back in.
+
+    Separate from the call because this is the part that was broken and
+    nobody saw it: `ofn.lpstrFile = buf` assigns a c_wchar array to an
+    LPWSTR field, and ctypes refuses - "incompatible types,
+    c_wchar_Array_1024 instance instead of c_wchar_p instance". The
+    TypeError was caught by the wrapper below, which quietly fell back to
+    the screenshots folder, so the dialog never opened for anyone and the
+    only trace was one line in the log. The array has to be cast to the
+    pointer type. As a function it can be tested without a modal dialog
+    on screen (tests/test_save_dialog.py).
+    """
+    buf = ctypes.create_unicode_buffer(1024)
+    buf.value = default_name
+    ofn = _OPENFILENAME()
+    ofn.lStructSize = ctypes.sizeof(_OPENFILENAME)
+    ofn.hwndOwner = parent_hwnd or None
+    ofn.lpstrFilter = ("JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0"
+                       "*.png\0All files (*.*)\0*.*\0")
+    ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
+    ofn.nMaxFile = 1024
+    ofn.lpstrDefExt = "jpg"
+    ofn.lpstrInitialDir = initial_dir or None
+    # OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST
+    ofn.Flags = 0x00000002 | 0x00000008
+    return ofn, buf
+
+
 def ask_save_path(parent_hwnd: int, default_name: str,
                   initial_dir: str | None = None,
                   fallback_dir: Path | None = None) -> Path | None:
@@ -73,19 +103,7 @@ def ask_save_path(parent_hwnd: int, default_name: str,
     answer is then a timestamped name inside fallback_dir.
     """
     try:
-        buf = ctypes.create_unicode_buffer(1024)
-        buf.value = default_name
-        ofn = _OPENFILENAME()
-        ofn.lStructSize = ctypes.sizeof(_OPENFILENAME)
-        ofn.hwndOwner = parent_hwnd or None
-        ofn.lpstrFilter = ("JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0"
-                           "*.png\0All files (*.*)\0*.*\0")
-        ofn.lpstrFile = buf
-        ofn.nMaxFile = 1024
-        ofn.lpstrDefExt = "jpg"
-        ofn.lpstrInitialDir = initial_dir or None
-        # OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST
-        ofn.Flags = 0x00000002 | 0x00000008
+        ofn, buf = _save_dialog_struct(parent_hwnd, default_name, initial_dir)
         if not ctypes.windll.comdlg32.GetSaveFileNameW(ctypes.byref(ofn)):
             return None
         path = Path(buf.value.strip())
