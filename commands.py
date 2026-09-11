@@ -232,6 +232,15 @@ def apply_menu_action(st, action: tuple) -> None:
         # (overlay_ui); here we only remember it for config.json -
         # settings_io.save_menu_layout(st) runs on menu close and on exit.
         print(f"[main] menu theme -> {action[1]}")
+    elif kind == "gpu":
+        # The value arrives as "N: NVIDIA GeForce ..." - the index is the
+        # identity here (it is what NS_GPU takes), the name is the label.
+        try:
+            index = int(str(action[1]).split(":")[0])
+        except (ValueError, IndexError):
+            print(f"[main] invalid GPU: {action[1]!r}", file=sys.stderr)
+            return
+        pipeline.apply_gpu(st, index)
     elif kind == "monitor":
         # The value arrives as "N: WxH (\\\\.\\DISPLAY1)" - the
         # devicename is the identity, the index is only a label.

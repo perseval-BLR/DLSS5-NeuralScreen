@@ -114,6 +114,52 @@ def devicename_for_output_idx(output_idx: int) -> str | None:
     return None
 
 
+#: The adapter list, enumerated once (see list_adapters).
+_ADAPTERS: list | None = None
+
+
+def list_adapters() -> list[tuple[int, str]]:
+    """NVIDIA cards as [(dxgi_index, name), ...], in EnumAdapters1 order.
+
+    The index is what matters: it is what the worker's NS_GPU takes and what
+    its "[host] adapter N: ..." lines print, so the menu and the log agree on
+    which card is which.
+
+    Only NVIDIA, and never the software renderer: the network cannot run
+    anywhere else, and the capture has to sit on the same card as the network
+    (the frame reaches D3D12 through a shared handle, which does not cross
+    adapters). A machine with one card gets a one-item list, and the menu
+    hides the choice.
+
+    Enumerated once per process and kept: menu_payload runs on every frame
+    while the menu is open, and two DXGI enumerations per frame cost more
+    than the network does (measured: 29 -> 13.6 FPS). Cards are not
+    hot-plugged, and moving the worker to another one restarts it anyway.
+    """
+    global _ADAPTERS
+    if _ADAPTERS is not None:
+        return _ADAPTERS
+    try:
+        from dxcam.core.device import Device
+        from dxcam.util.io import enum_dxgi_adapters
+    except Exception:
+        return []
+    out: list[tuple[int, str]] = []
+    try:
+        for idx, adapter in enumerate(enum_dxgi_adapters()):
+            desc = Device(adapter).desc
+            # 0x10DE is NVIDIA; flag 2 is DXGI_ADAPTER_FLAG_SOFTWARE.
+            if desc.VendorId != 0x10DE or (getattr(desc, "Flags", 0) & 2):
+                continue
+            out.append((idx, str(desc.Description).strip()))
+    except Exception as exc:
+        print(f"[capture] could not enumerate the adapters: {exc}",
+              file=sys.stderr)
+        return []
+    _ADAPTERS = out
+    return out
+
+
 def list_monitors() -> list[tuple[int, int, int, str]]:
     """Monitors as [(idx, w, h, devicename), ...].
 

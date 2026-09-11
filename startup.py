@@ -93,6 +93,22 @@ def _apply_spout_env(cfg: dict) -> None:
     os.environ["NS_SPOUT"] = "1" if cfg.get("spout") else "0"
 
 
+def _apply_gpu_env(cfg: dict) -> None:
+    """Which card the worker runs on, through the environment.
+
+    NS_GPU is read once per worker process - the adapter is chosen before
+    the device exists - so the config flag becomes the environment before
+    the first worker is launched, and again on every restart (see
+    pipeline.apply_gpu). Unset means the worker's own default: the first
+    NVIDIA adapter for the network, adapter 0 for the capture.
+    """
+    gpu = cfg.get("gpu")
+    if gpu is None:
+        os.environ.pop("NS_GPU", None)
+    else:
+        os.environ["NS_GPU"] = str(int(gpu))
+
+
 def _log_environment(cfg: dict) -> None:
     """Print the environment header into the log: version, OS, HDR, driver.
 
@@ -211,6 +227,8 @@ def configure(st) -> None:
     # the bridge costs a full-frame GPU copy on every Present, and it is
     # only useful to someone recording through OBS.
     _apply_spout_env(st.cfg)
+    # The same for the card: NS_GPU is read once per worker process.
+    _apply_gpu_env(st.cfg)
     st.lang = str(st.cfg["lang"])
 
     # The output resolution comes FROM THE REAL MONITOR, not from a stale

@@ -488,6 +488,30 @@ def apply_spout(st, enabled: bool) -> None:
         "Spout2 output ON" if enabled else "Spout2 output OFF"))
 
 
+def apply_gpu(st, index: int) -> None:
+    """Run the worker on another card: a restart, like the Spout toggle.
+
+    The adapter is chosen before the D3D12 device exists, so there is no
+    way to move a running worker - NS_GPU is read once at process start.
+    The frame size does not change, so the overlay, the menu and the
+    capture source survive the restart.
+
+    Both the network and the capture move together: the captured frame
+    reaches D3D12 through an NT-shared texture, and a shared handle does
+    not cross adapters. Choosing a card that drives no display therefore
+    fails in the worker, with the reason in the log, rather than showing
+    a black picture.
+    """
+    if int(index) == int(st.cfg.get("gpu", 0)):
+        return
+    st.cfg["gpu"] = int(index)
+    os.environ["NS_GPU"] = str(int(index))
+    settings_io.save_menu_layout(st)
+    print(f"[main] GPU: adapter {index} - restarting the worker")
+    teardown_pipeline(st)
+    rebuild_pipeline(st, UI_STRINGS[st.lang].get("gpu_switched", "GPU switched"))
+
+
 def follow_window(st) -> None:
     """Keep the HUD layer on the window being processed.
 

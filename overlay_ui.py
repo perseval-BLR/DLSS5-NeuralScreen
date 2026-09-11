@@ -191,6 +191,8 @@ class OverlayMenu:
             "window_mode": False,
             "monitor": "0",
             "monitors": [],
+            "gpu": "0",
+            "gpus": [],
             "autostart": False,
             "windows": [],
             "window_current": "",
@@ -531,6 +533,13 @@ class OverlayMenu:
             if monitors:
                 choice("monitor", s.get("monitor", "Monitor"),
                        str(self.state.get("monitor", "0")), monitors)
+            # The card the network and the capture run on. Shown only when
+            # there is something to choose: on one card the row would be a
+            # control that cannot do anything.
+            gpus = self.state.get("gpus") or []
+            if len(gpus) > 1:
+                choice("gpu", s.get("gpu", "GPU"),
+                       str(self.state.get("gpu", gpus[0])), gpus)
             # The screenshot folder: a plain button that opens the folder
             # picker (issue #20). The current value is shown as the caption
             # so the user sees what is configured.
@@ -1108,6 +1117,8 @@ class OverlayMenu:
             return [("theme", value)]
         if key == "monitor":
             return [("monitor", value)]
+        if key == "gpu":
+            return [("gpu", value)]
         if key == "window":
             return [("window", value)]
         return []

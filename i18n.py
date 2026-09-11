@@ -28,6 +28,8 @@ STRINGS = {
     "en": {
         "theme": "Theme",
         "monitor": "Monitor",
+        "gpu": "GPU",
+        "gpu_switched": "GPU switched - the worker restarted",
         "shot_dir_btn": "Screenshot folder...",
         "autostart": "Autostart with Windows",
         "rec_indicator": "Recording indicator",
@@ -133,6 +135,8 @@ STRINGS = {
     "ru": {
         "theme": "Тема",
         "monitor": "Монитор",
+        "gpu": "Видеокарта",
+        "gpu_switched": "Видеокарта переключена - воркер перезапущен",
         "shot_dir_btn": "Папка скриншотов...",
         "autostart": "Автозапуск с Windows",
         "rec_indicator": "Индикатор записи",
@@ -238,6 +242,8 @@ STRINGS = {
     "fr": {
         "theme": "Thème",
         "monitor": "Moniteur",
+        "gpu": "GPU",
+        "gpu_switched": "GPU changé - le worker a redémarré",
         "shot_dir_btn": "Dossier de captures...",
         "autostart": "Démarrer avec Windows",
         "rec_indicator": "Indicateur d'enregistrement",
@@ -343,6 +349,8 @@ STRINGS = {
     "de": {
         "theme": "Design",
         "monitor": "Monitor",
+        "gpu": "GPU",
+        "gpu_switched": "GPU gewechselt - der Worker wurde neu gestartet",
         "shot_dir_btn": "Screenshot-Ordner...",
         "autostart": "Mit Windows starten",
         "rec_indicator": "Aufnahmeindikator",
@@ -448,6 +456,8 @@ STRINGS = {
     "es": {
         "theme": "Tema",
         "monitor": "Monitor",
+        "gpu": "GPU",
+        "gpu_switched": "GPU cambiada - el worker se reinició",
         "shot_dir_btn": "Carpeta de capturas...",
         "autostart": "Iniciar con Windows",
         "rec_indicator": "Indicador de grabación",
@@ -553,6 +563,8 @@ STRINGS = {
     "it": {
         "theme": "Tema",
         "monitor": "Monitor",
+        "gpu": "GPU",
+        "gpu_switched": "GPU cambiata - il worker è stato riavviato",
         "shot_dir_btn": "Cartella screenshot...",
         "autostart": "Avvio con Windows",
         "rec_indicator": "Indicatore di registrazione",
@@ -658,6 +670,8 @@ STRINGS = {
     "pt": {
         "theme": "Tema",
         "monitor": "Monitor",
+        "gpu": "GPU",
+        "gpu_switched": "GPU alterada - o worker reiniciou",
         "shot_dir_btn": "Pasta de capturas...",
         "autostart": "Iniciar com o Windows",
         "rec_indicator": "Indicador de gravação",
@@ -763,6 +777,8 @@ STRINGS = {
     "pl": {
         "theme": "Motyw",
         "monitor": "Monitor",
+        "gpu": "GPU",
+        "gpu_switched": "GPU zmieniona - worker uruchomiony ponownie",
         "shot_dir_btn": "Folder zrzutów...",
         "autostart": "Uruchamiaj z Windows",
         "rec_indicator": "Wskaźnik nagrywania",
@@ -868,6 +884,8 @@ STRINGS = {
     "uk": {
         "theme": "Тема",
         "monitor": "Монітор",
+        "gpu": "Відеокарта",
+        "gpu_switched": "Відеокарту змінено - воркер перезапущено",
         "shot_dir_btn": "Папка скріншотів...",
         "autostart": "Автозапуск з Windows",
         "rec_indicator": "Індикатор запису",
@@ -973,6 +991,8 @@ STRINGS = {
     "zh": {
         "theme": "主题",
         "monitor": "显示器",
+        "gpu": "显卡",
+        "gpu_switched": "已切换显卡 - 工作进程已重启",
         "shot_dir_btn": "截图文件夹...",
         "autostart": "随 Windows 启动",
         "rec_indicator": "录制指示器",
@@ -1078,6 +1098,8 @@ STRINGS = {
     "ja": {
         "theme": "テーマ",
         "monitor": "モニター",
+        "gpu": "GPU",
+        "gpu_switched": "GPU を切り替えました - ワーカーを再起動しました",
         "shot_dir_btn": "スクリーンショットフォルダー...",
         "autostart": "Windows と一緒に起動",
         "rec_indicator": "録画インジケーター",
@@ -1183,6 +1205,8 @@ STRINGS = {
     "ko": {
         "theme": "테마",
         "monitor": "모니터",
+        "gpu": "GPU",
+        "gpu_switched": "GPU 전환됨 - 워커가 재시작되었습니다",
         "shot_dir_btn": "스크린샷 폴더...",
         "autostart": "Windows와 함께 시작",
         "rec_indicator": "녹화 표시기",

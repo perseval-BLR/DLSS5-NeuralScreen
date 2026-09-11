@@ -801,6 +801,38 @@ static void PumpPresent()
     h.swap->Present(0, 0);
 }
 
+// NS_GPU: which DXGI adapter the worker runs on, by the index EnumAdapters1
+// uses - the same number the "[host] adapter N: ..." lines print, so the log
+// of one run tells the user what to set.
+//
+// Unset is the default and stays the default. Two different defaults are
+// deliberate: NGX picks the first NVIDIA adapter (on a hybrid laptop the
+// integrated GPU is usually adapter 0 and NGX would refuse it), while the
+// capture stays on adapter 0, which is where the display normally hangs.
+//
+// When it IS set, it applies to BOTH: the network and the capture have to
+// live on one adapter, since the captured frame reaches D3D12 through an
+// NT-shared texture and a shared handle does not cross adapters. Picking a
+// card that drives no display therefore fails at DuplicateOutput, with the
+// reason in the log, rather than producing a black picture.
+//
+// Returns -1 when unset or unusable.
+static int SelectedAdapterIndex()
+{
+    char buf[16] = {};
+    const DWORD got = GetEnvironmentVariableA("NS_GPU", buf, sizeof(buf));
+    if (got == 0 || got >= sizeof(buf)) return -1;
+    char *end = nullptr;
+    const long value = strtol(buf, &end, 10);
+    if (end == buf || *end != '\0' || value < 0 || value > 63)
+    {
+        Log("[host] NS_GPU=%s is not an adapter index - ignored", buf);
+        return -1;
+    }
+    return static_cast<int>(value);
+}
+
+
 static bool InitDisguise()
 {
     // Pure D3D12 setup. No window, swapchain, ReShade, RenoDX, or DLSS carrier.
@@ -816,7 +848,11 @@ static bool InitDisguise()
 
     // Hybrid laptops/desktops commonly expose the integrated adapter first. NGX initialization
     // then fails even when a supported RTX card is present, so explicitly select NVIDIA.
+    // The whole list is logged either way: the index printed here is what
+    // NS_GPU takes, so one run tells the user what to choose.
+    const int want = SelectedAdapterIndex();
     IDXGIAdapter1 *nvidia = nullptr;
+    IDXGIAdapter1 *chosen = nullptr;
     for (UINT i = 0; ; ++i)
     {
         IDXGIAdapter1 *candidate = nullptr;
@@ -824,9 +860,21 @@ static bool InitDisguise()
         DXGI_ADAPTER_DESC1 desc = {};
         candidate->GetDesc1(&desc);
         Log("[host] adapter %u: %ls vendor=0x%04X", i, desc.Description, desc.VendorId);
-        if (desc.VendorId == 0x10DE && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
-        { nvidia = candidate; break; }
+        const bool usable = desc.VendorId == 0x10DE &&
+                            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE);
+        if (want >= 0 && static_cast<int>(i) == want && usable)
+        { chosen = candidate; continue; }
+        if (nvidia == nullptr && usable) { nvidia = candidate; continue; }
         candidate->Release();
+    }
+    if (want >= 0 && chosen == nullptr)
+        Log("[host] NS_GPU=%d is not a usable NVIDIA adapter - using the first one",
+            want);
+    if (chosen != nullptr)
+    {
+        if (nvidia != nullptr) nvidia->Release();
+        nvidia = chosen;
+        Log("[host] adapter %d selected by NS_GPU", want);
     }
     if (nvidia == nullptr) { factory->Release(); Log("[host] no NVIDIA adapter found"); return false; }
 
@@ -3085,9 +3133,14 @@ static bool EnsureCaptureDevice()
     IDXGIFactory1 *factory = nullptr;
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&factory)))
     { Log("[cap] DXGI factory failed"); return false; }
+    // Adapter 0 unless NS_GPU says otherwise: the display normally hangs off
+    // the first adapter, and the capture has to be on the same card as the
+    // network (the frame crosses to D3D12 through a shared handle).
+    const int want = SelectedAdapterIndex();
     IDXGIAdapter1 *adapter = nullptr;
-    if (FAILED(factory->EnumAdapters1(0, &adapter)))
-    { Log("[cap] no adapter"); factory->Release(); return false; }
+    if (FAILED(factory->EnumAdapters1(want >= 0 ? (UINT)want : 0, &adapter)))
+    { Log("[cap] no adapter %d", want >= 0 ? want : 0); factory->Release(); return false; }
+    if (want >= 0) Log("[cap] adapter %d selected by NS_GPU", want);
     D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0;
     const HRESULT hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                                          D3D11_CREATE_DEVICE_BGRA_SUPPORT, &fl, 1,
@@ -3110,8 +3163,12 @@ static bool OpenDda(UINT w, UINT hgt)
     IDXGIFactory1 *factory = nullptr;
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&factory);
     if (FAILED(hr)) { Log("[dda] factory failed 0x%08X", hr); return false; }
+    // Same adapter as the capture device, or DuplicateOutput would be asked
+    // to duplicate an output that belongs to another card.
+    const int want_dda = SelectedAdapterIndex();
     IDXGIAdapter1 *adapter = nullptr;
-    if (FAILED(factory->EnumAdapters1(0, &adapter))) { Log("[dda] no adapter"); factory->Release(); return false; }
+    if (FAILED(factory->EnumAdapters1(want_dda >= 0 ? (UINT)want_dda : 0, &adapter)))
+    { Log("[dda] no adapter %d", want_dda >= 0 ? want_dda : 0); factory->Release(); return false; }
     IDXGIOutput *output = nullptr;
     if (FAILED(adapter->EnumOutputs(0, &output))) { Log("[dda] no output"); adapter->Release(); factory->Release(); return false; }
     IDXGIOutput1 *output1 = nullptr;

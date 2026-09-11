@@ -53,6 +53,7 @@ ABOUT = {
     "test_adaptive_exposure.py": "adaptive exposure brightens dark scenes, lit scenes untouched",
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
+    "test_gpu_select.py": "the GPU picker drives config, environment and restart",
     "test_save_dialog.py": "the Save As struct is valid; the fallback still catches",
     "test_window_follow_size.py": "capture size vs frame size: no rebuild loop",
     "test_module_layers.py": "no module imports main, no dangling names, all import clean",
