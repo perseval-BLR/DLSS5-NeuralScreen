@@ -156,8 +156,7 @@ every time.
 - **OBS (recommended):** turn on **Spout2 output (OBS)** in the settings
   (RECORDING section). The worker publishes the output as a Spout2 shared
   texture - add a **Spout2 Capture** source in OBS (free plugin) and record
-  in AV1 / HEVC / H.264 through NVENC. Works in full-screen mode too.
-  Off by default.
+  in AV1 / HEVC / H.264 through NVENC, in any mode. Off by default.
 - **NVIDIA App / OBS display capture:** use one-window mode - pick the
   window in the menu (or point at it and press **Num5**), record, then
   switch back to **Fullscreen** when done. The NVIDIA App has no Spout
