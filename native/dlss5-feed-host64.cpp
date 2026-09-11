@@ -1478,6 +1478,11 @@ static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource *r, D3D12_RESOURCE_STATE
                                          D3D12_RESOURCE_STATES after);
 
 static HWND                       g_present_hwnd;
+// Where the overlay window belongs on the virtual desktop: the origin of the
+// chosen monitor (the client puts it in NS_WINDOW_POS as "x,y"). Read on
+// every OpenPresent - a monitor switch restarts the worker anyway.
+static int                        g_present_x = 0;
+static int                        g_present_y = 0;
 static bool                       g_present_shown = false;      // visible right now (minimised target hides it)
 static bool                       g_present_revealed = false;   // the first Present already happened
 static RECT                       g_present_follow = {};   // where the target window was last seen
@@ -1536,6 +1541,21 @@ static LRESULT CALLBACK PresentWndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 // The window lives on its own thread with its own message loop: the main thread
 // spends its life blocked in ReadExact on stdin and would never pump messages,
 // which Windows reports as a hung window after a few seconds.
+// NS_WINDOW_POS: where to put the overlay window, "x,y" in virtual-desktop
+// pixels. Without it the window was created at (0,0) - the primary monitor -
+// while the chosen monitor can sit at a nonzero origin: the picture landed on
+// the wrong screen (#28, #33).
+static void ReadPresentOrigin()
+{
+    g_present_x = 0;
+    g_present_y = 0;
+    char buf[32] = {};
+    const DWORD got = GetEnvironmentVariableA("NS_WINDOW_POS", buf, sizeof(buf));
+    if (got == 0 || got >= sizeof(buf)) return;
+    int x = 0, y = 0;
+    if (sscanf_s(buf, "%d,%d", &x, &y) == 2) { g_present_x = x; g_present_y = y; }
+}
+
 static DWORD WINAPI PresentWindowThread(LPVOID)
 {
     WNDCLASSEXW wc = {};
@@ -1551,7 +1571,7 @@ static DWORD WINAPI PresentWindowThread(LPVOID)
     g_present_hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
         wc.lpszClassName, L"NeuralScreen", WS_POPUP,
-        0, 0, static_cast<int>(g_present_w), static_cast<int>(g_present_h),
+        g_present_x, g_present_y, static_cast<int>(g_present_w), static_cast<int>(g_present_h),
         nullptr, nullptr, wc.hInstance, nullptr);
     if (g_present_hwnd == nullptr)
     {
@@ -1607,6 +1627,7 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     }
     g_present_w = width;
     g_present_h = height;
+    ReadPresentOrigin();
     g_present_capturable = (flags & WINDOW_FLAG_CAPTURABLE) != 0;
     g_present_state = 0;
     g_present_thread = CreateThread(nullptr, 0, PresentWindowThread, nullptr, 0, &g_present_tid);
@@ -3172,6 +3193,41 @@ static bool EnsureCaptureDevice()
 
 static void CloseWgc();
 
+// NS_OUTPUT: which OUTPUT of the chosen adapter to duplicate, by DXGI device
+// name ("\\\\.\\DISPLAY2"). Without it the worker duplicated output 0 - on a
+// multi-monitor machine that is the primary one, while the client was built
+// for the chosen monitor and showed an empty picture on it (#28, #33). The
+// name is the identity: it survives a reorder, an unplug or a dock change.
+// A name that is not on this adapter falls back to output 0 with a line in
+// the log - the capture is never taken down over it.
+static IDXGIOutput *EnumCaptureOutput(IDXGIAdapter1 *adapter)
+{
+    wchar_t want[64] = {};
+    const DWORD got = GetEnvironmentVariableW(L"NS_OUTPUT", want, 64);
+    UINT index = 0;
+    if (got > 0 && got < _countof(want))
+    {
+        bool found = false;
+        for (UINT i = 0; ; ++i)
+        {
+            IDXGIOutput *candidate = nullptr;
+            if (adapter->EnumOutputs(i, &candidate) == DXGI_ERROR_NOT_FOUND) break;
+            DXGI_OUTPUT_DESC desc = {};
+            candidate->GetDesc(&desc);
+            const bool match = wcscmp(desc.DeviceName, want) == 0;
+            candidate->Release();
+            if (match) { index = i; found = true; break; }
+        }
+        if (found)
+            Log("[dda] output %u selected by NS_OUTPUT (%ls)", index, want);
+        else
+            Log("[dda] NS_OUTPUT=%ls is not an output of this adapter - using output 0", want);
+    }
+    IDXGIOutput *output = nullptr;
+    if (FAILED(adapter->EnumOutputs(index, &output))) return nullptr;
+    return output;
+}
+
 static bool OpenDda(UINT w, UINT hgt)
 {
     CloseWgc();              // one source at a time; this also frees the bridge
@@ -3188,8 +3244,8 @@ static bool OpenDda(UINT w, UINT hgt)
     IDXGIAdapter1 *adapter = nullptr;
     if (FAILED(factory->EnumAdapters1(want_dda >= 0 ? (UINT)want_dda : 0, &adapter)))
     { Log("[dda] no adapter %d", want_dda >= 0 ? want_dda : 0); factory->Release(); return false; }
-    IDXGIOutput *output = nullptr;
-    if (FAILED(adapter->EnumOutputs(0, &output))) { Log("[dda] no output"); adapter->Release(); factory->Release(); return false; }
+    IDXGIOutput *output = EnumCaptureOutput(adapter);
+    if (output == nullptr) { Log("[dda] no output"); adapter->Release(); factory->Release(); return false; }
     IDXGIOutput1 *output1 = nullptr;
     if (FAILED(output->QueryInterface(__uuidof(IDXGIOutput1), (void **)&output1)))
     { Log("[dda] no Output1"); output->Release(); adapter->Release(); factory->Release(); return false; }

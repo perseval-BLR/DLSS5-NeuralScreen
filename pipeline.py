@@ -305,6 +305,9 @@ def rebuild_pipeline(st, note: str) -> None:
         except Exception:
             pass
         st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+        # A fresh window starts at (0,0) - the primary monitor. The origin
+        # belongs to the CHOSEN monitor and must survive the rebuild.
+        st.display.set_origin(*getattr(st, "mon_origin", (0, 0)))
         recreated = True
     # In one-window mode the overlay stops hiding from screen capture:
     # the input is that window, not the desktop, so there is no
@@ -404,7 +407,7 @@ def switch_monitor(st, new_monitor: int | str) -> None:
         st.capture.close()
     except Exception:
         pass
-    # The new monitor: its real resolution.
+    # The new monitor: its real resolution, and where it sits.
     st.monitor = new_monitor
     st.cfg["monitor"] = st.monitor
     try:
@@ -422,6 +425,12 @@ def switch_monitor(st, new_monitor: int | str) -> None:
         st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
     st.width, st.height = st.capture.resolution
     st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
+    # The worker reads NS_OUTPUT / NS_WINDOW_POS at every OpenDda/OpenPresent,
+    # and the overlay is rebuilt below - so the new monitor's identity goes
+    # out before the rebuild (issues #28, #33).
+    from startup import _apply_monitor_env
+    st.mon_origin = _apply_monitor_env(st.capture)
+    st.display.set_origin(*st.mon_origin)
     rebuild_pipeline(st, f"Monitor {st.monitor}: {st.width}x{st.height}")
 
 

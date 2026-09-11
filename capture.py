@@ -160,6 +160,34 @@ def list_adapters() -> list[tuple[int, str]]:
     return out
 
 
+def monitor_origin(devicename: str) -> tuple[int, int] | None:
+    """The chosen monitor's top-left corner on the virtual desktop, or None.
+
+    Windows places every monitor on one virtual desktop whose origin is the
+    PRIMARY monitor's corner - a second monitor can sit at x=1920 or even
+    x=-1080. The overlay (pygame layer) and the worker's output window were
+    both created at (0,0) regardless of which monitor was chosen, so the
+    picture landed on the primary screen while the capture ran on the
+    chosen one (issues #28, #33).
+    """
+    found: list[tuple[int, int]] = []
+
+    def _cb(hmon, _hdc, lprect, _lparam) -> bool:
+        info = _MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(_MONITORINFOEXW)
+        if ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            if "".join(info.szDevice).rstrip("\x00") == devicename:
+                r = lprect.contents
+                found.append((r.left, r.top))
+        return True
+
+    MONITORENUMPROC = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    ctypes.windll.user32.EnumDisplayMonitors(0, 0, MONITORENUMPROC(_cb), 0)
+    return found[0] if found else None
+
+
 def monitor_size(devicename: str) -> tuple[int, int] | None:
     """The CURRENT size of one monitor, by DXGI devicename, or None.
 

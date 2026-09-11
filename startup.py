@@ -93,6 +93,38 @@ def _apply_spout_env(cfg: dict) -> None:
     os.environ["NS_SPOUT"] = "1" if cfg.get("spout") else "0"
 
 
+def _apply_monitor_env(capture) -> tuple[int, int]:
+    """Publish the chosen monitor to the worker and return its origin.
+
+    Two separate hand-offs for the same subject:
+
+    * NS_OUTPUT - which DXGI output the worker's Desktop Duplication should
+      duplicate, by device name. Without it the worker duplicated output 0
+      (the primary monitor) while the client was built for the chosen one
+      (issues #28, #33).
+    * the origin - where the chosen monitor's corner sits on the virtual
+      desktop. The overlay is created at (0,0), which IS the primary: on a
+      second monitor the picture landed on the wrong screen. The caller
+      feeds it to Display.set_origin.
+
+    A monitor whose name cannot be resolved keeps both defaults - the old
+    behaviour - and says so in the log.
+    """
+    from capture import monitor_origin
+    name = getattr(capture, "devicename", "") or ""
+    if name:
+        os.environ["NS_OUTPUT"] = name
+        origin = monitor_origin(name)
+        if origin is not None:
+            os.environ["NS_WINDOW_POS"] = f"{origin[0]},{origin[1]}"
+            return origin
+    os.environ.pop("NS_OUTPUT", None)
+    os.environ.pop("NS_WINDOW_POS", None)
+    print(f"[main] monitor identity unknown ({name!r}) - "
+          f"output 0 and the primary position stay", file=sys.stderr)
+    return (0, 0)
+
+
 def _apply_gpu_env(cfg: dict) -> None:
     """Which card the worker runs on, through the environment.
 
@@ -241,6 +273,9 @@ def configure(st) -> None:
         print(f"[main] monitor {st.monitor} is {st.mon_w}x{st.mon_h} (config: {st.width}x{st.height}), "
               f"taking the real resolution")
         st.width, st.height = st.mon_w, st.mon_h
+    # The worker and the overlay both need to know WHERE the chosen monitor
+    # is; the resolution alone does not place anything.
+    st.mon_origin = _apply_monitor_env(st.capture)
 
     print(f"[main] NeuralScreen - profile {st.cfg['profile']!r}, "
           f"resolution {st.width}x{st.height}, monitor {st.monitor}")
@@ -308,6 +343,9 @@ def bring_up(st) -> None:
     print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 
     st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+    # The overlay is the size of one monitor and must sit ON it: created at
+    # (0,0) it covered the primary screen while the capture ran elsewhere.
+    st.display.set_origin(*st.mon_origin)
     st.display.set_lang(st.lang)
     # The program draws over the desktop and gives no sign of itself -
     # without this it is unclear after launch whether it is running.

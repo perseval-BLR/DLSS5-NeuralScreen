@@ -199,6 +199,10 @@ class Display:
             ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
         except Exception:
             pass
+        # Where this monitor's top-left corner is on the virtual desktop.
+        # (0,0) is the primary monitor; a second one can sit anywhere. Set
+        # through set_origin() once the monitor is known (main owns that).
+        self._origin = (0, 0)
         self._move_to_origin()
         # Force the physical window size: even if DPI awareness did not apply
         # (a 3072x1728 window instead of 3840x2160), we stretch the window to
@@ -363,16 +367,32 @@ class Display:
         except Exception as exc:
             print(f"Display: WARNING could not move the overlay: {exc}")
 
+    def set_origin(self, x: int, y: int) -> None:
+        """Where this monitor's top-left corner sits on the virtual desktop.
+
+        The overlay is the size of ONE monitor; only the primary has its
+        corner at (0,0). A window created at (0,0) while the capture runs
+        on a second monitor covers the PRIMARY screen - the user sees
+        nothing where they are looking (issues #28, #33).
+        """
+        self._origin = (int(x), int(y))
+        self._move_to_origin()
+
     def _move_to_origin(self) -> None:
-        """Move the window to (0,0) - the monitor's top left corner."""
+        """Move the window to the monitor's top-left corner (self._origin)."""
         try:
             hwnd = pygame.display.get_wm_info()["window"]
+            x, y = getattr(self, "_origin", (0, 0))
             # NO SWP_SHOWWINDOW here: the window is created hidden
             # (SDL_WINDOW_HIDDEN) and revealed only after the first real
             # frame - otherwise the blank window flashes over the desktop
             # during the NGX warm-up.
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                                              0x0001 | 0x0002 | 0x0010)  # SWP_NOSIZE|NOMOVE|NOACTIVATE
+            flags = 0x0001 | 0x0010  # SWP_NOSIZE | SWP_NOACTIVATE
+            if (x, y) == (0, 0):
+                # The primary monitor: SDL already placed it there, and the
+                # pre-multi-monitor behaviour (no move at all) stays intact.
+                flags |= 0x0002  # SWP_NOMOVE
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0, flags)
         except Exception:
             pass
 
@@ -553,6 +573,9 @@ class Display:
             return
         self.screen = pygame.display.set_mode((w, h), self._flags)
         self.width, self.height = w, h
+        # A set_mode can recreate the physical window; put it back on the
+        # chosen monitor (the origin belongs to the pipeline, not to SDL).
+        self._move_to_origin()
         self.set_hud_only(self._hud_only, force=True)
         self.set_menu_opaque(self.menu.visible)
         self.set_excluded_from_capture(self._excluded)
@@ -585,9 +608,11 @@ class Display:
             self.screen = pygame.display.set_mode((full_w, full_h), self._flags)
             self.width, self.height = full_w, full_h
             # set_mode alone does NOT resize the physical window in SDL2 -
-            # force it, exactly like __init__ does (SWP_NOZORDER, with size).
+            # force it, exactly like __init__ does (SWP_NOZORDER, with size),
+            # at the chosen monitor's origin.
             hwnd = pygame.display.get_wm_info()['window']
-            user32.SetWindowPos(hwnd, 0, 0, 0, full_w, full_h, 0x0004)
+            x, y = getattr(self, "_origin", (0, 0))
+            user32.SetWindowPos(hwnd, 0, x, y, full_w, full_h, 0x0004)
             self._set_topmost()
             # The recreated window lost EVERYTHING: the layered attributes
             # (colorkey + alpha), the capture affinity and the input styles.
@@ -737,7 +762,8 @@ class Display:
         try:
             self.screen = pygame.display.set_mode((fw, fh), self._flags)
             hwnd = pygame.display.get_wm_info()["window"]
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, fw, fh, 0x0004)
+            x, y = getattr(self, "_origin", (0, 0))
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, fw, fh, 0x0004)
             self._set_topmost()
             user32.SetLayeredWindowAttributes(hwnd, 0, SWITCH_ALPHA, LWA_ALPHA)
             # set_mode re-created the window: every exstyle bit is gone

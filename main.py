@@ -226,6 +226,7 @@ class _Pipeline:
         "gpu_alerted",
         "gpu_switch_pending",
         "gray_active",
+        "mon_origin",
         "guide_fails",
         "guides",
         "height",
@@ -802,6 +803,9 @@ def main() -> int:
                 except Exception:
                     pass
                 st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+                # A fresh window starts at (0,0): put it back on the chosen
+                # monitor (the origin belongs to the pipeline, not to SDL).
+                st.display.set_origin(*getattr(st, "mon_origin", (0, 0)))
                 st.display.set_lang(st.lang)
                 # In one-window mode the overlay must stay visible to outside
                 # recorders: the NEW window comes up with the WDA flag set
