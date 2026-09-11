@@ -17,7 +17,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 os.chdir(BASE)
 
-VERSION = "1.5.6"
+VERSION = "1.5.7"
 # The bundle is architecture-agnostic by design: the dcc0dc24 runtime and
 # the 0x1B0 spoof work on RTX 30/40/50 (v1.3.0 behaviour). The manifest
 # still records what is inside so a mismatch is catchable.

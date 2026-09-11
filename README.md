@@ -187,7 +187,6 @@ second per frame; a press may feel lost.
 ## Known limitations
 
 - **True fullscreen games** cannot have the overlay drawn over them — a Windows rule. Borderless or windowed only.
-- **A second instance is not guarded** — close the first one first.
 - **The window list** shows every visible window; Num5 takes the one under the cursor. **A second monitor** works but was not tested with a window between them.
 - **HDR displays** are not supported: switch to SDR (Win+Alt+B).
 - **Pipeline latency** is 40–60 ms — fine interactively, not competitively; **processing resolution is capped at 2560×1440** (the network refuses 4K), output is always your full native resolution.
