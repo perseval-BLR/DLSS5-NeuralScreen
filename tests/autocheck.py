@@ -59,6 +59,10 @@ def zip_integrity():
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
         "native/nvngx.dll", "native/nvngx_dlssnr.dll",
+        # Loaded at run time, and both have a silent fallback: left out
+        # of the archive the program ships with the wrong icons and says
+        # nothing about it.
+        "native/neuralscreen.ico", "native/neuralscreen-tray.png",
         "runtime/pythonw.exe", "VERSION.txt",
     ]
     with zipfile.ZipFile(zpath) as z:

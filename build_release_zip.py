@@ -145,7 +145,12 @@ def _skip(path: str) -> bool:
     # not be rebuilt from the archive in any case - spout_bridge.cpp is
     # dev-only - so shipping half a source tree only invited the question.
     # The repository has all of it.
-    if norm.startswith("native/") and not norm.endswith(".dll"):
+    # ... except the two images the program LOADS at run time: the tray icon
+    # (tray.py) and the window icon (taskbar.py). Excluded, they do not crash
+    # anything - both have a fallback - so a build would ship with the wrong
+    # icons and nothing would say why.
+    if norm.startswith("native/") and not norm.endswith(
+            (".dll", ".ico", ".png")):
         return True
     if "/test/" in norm or "/tests/" in norm or "/testing/" in norm:
         return True
