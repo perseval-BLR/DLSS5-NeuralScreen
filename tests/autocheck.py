@@ -59,6 +59,9 @@ def zip_integrity():
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
         "native/nvngx.dll", "native/nvngx_dlssnr.dll",
+        # Neural Rendering does not start without it: the NGX calls
+        # have to leave a module whose path carries "nvngx.dll".
+        "native/nvngx.dll_ns-forwarder.dll",
         # Loaded at run time, and both have a silent fallback: left out
         # of the archive the program ships with the wrong icons and says
         # nothing about it.

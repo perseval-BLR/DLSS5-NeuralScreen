@@ -30,6 +30,9 @@ extra = [
     "NeuralScreen-diag.vbs",
     "README.ru.md",
     "native/nvngx.dll",
+    # The module the NGX calls leave from. Its file name is what the
+    # feature library checks; without it Neural Rendering does not start.
+    "native/nvngx.dll_ns-forwarder.dll",
     "native/nvngx_dlssnr.dll",
 ]
 # tcl/tk stays out of the archive: the tkinter settings window is gone and the

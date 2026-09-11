@@ -9,6 +9,9 @@ __pycache__/
 *.obj
 native/nvngx.dll
 native/nvngx.dll.manifest
+native/nvngx.dll_ns-forwarder.dll
+native/nvngx.dll_ns-forwarder.exp
+native/nvngx.dll_ns-forwarder.lib
 native/launcher.res
 NeuralScreen.exe
 

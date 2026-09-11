@@ -139,6 +139,13 @@ static const char *NgxResultName(NVSDK_NGX_Result r)
     switch (static_cast<unsigned>(r))
     {
     case 0x1:        return "Success";
+    case 0xBAD00001: return "FeatureNotSupported";
+    // What the feature library answers when the call did not leave a module
+    // whose path contains "nvngx.dll" - the commonest way for a broken
+    // install to fail, and it used to print as "?".
+    case 0xBAD00002: return "PlatformError";
+    case 0xBAD00003: return "FeatureAlreadyExists";
+    case 0xBAD00004: return "FeatureNotFound";
     case 0xBAD00005: return "InvalidParameter";
     case 0xBAD00007: return "NotInitialized";
     case 0xBAD00008: return "UnsupportedInputFormat";
@@ -403,6 +410,63 @@ static int SetupArchSpoof()
     return 1;
 }
 
+// Point the four NGX pointers at our forwarder instead of at the feature
+// library itself.
+//
+// nvngx_dlssnr.dll decides whether to serve a call by the path of the module
+// the call returns to: it must contain the substring "nvngx.dll". The process
+// name is not looked at - measured, see native/ns_forwarder.cpp. That is the
+// only reason this executable is named nvngx.dll today, and routing the calls
+// through a module that carries the substring in its own file name removes it.
+//
+// On failure this returns false and the caller falls back to the direct path,
+// which works only while the executable itself is named nvngx.dll. The reason
+// always goes to the log - a missing forwarder must not look like "Neural
+// Rendering is not supported on this card".
+static bool LoadNrForwarder(const wchar_t *dll_name)
+{
+    // NS_FORWARDER=<path> points at a different module. It exists for the
+    // test that proves the rule: the same binary copied to a name without the
+    // substring must be refused. Without a way to aim the worker at that copy
+    // the rule could only be asserted in a comment.
+    wchar_t path[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"NS_FORWARDER", path, MAX_PATH) == 0)
+    {
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        if (wchar_t *s = wcsrchr(path, L'\\')) *(s + 1) = L'\0';
+        wcsncat_s(path, L"nvngx.dll_ns-forwarder.dll", _TRUNCATE);
+    }
+
+    const HMODULE fwd = LoadLibraryW(path);
+    if (fwd == nullptr)
+    { Log("[pure] forwarder %ls did not load, err=%lu", path, GetLastError()); return false; }
+
+    const auto load = reinterpret_cast<int (*)(const wchar_t *)>(GetProcAddress(fwd, "NsFwdLoad"));
+    const auto where = reinterpret_cast<void (*)(wchar_t *, unsigned int)>(GetProcAddress(fwd, "NsFwdPath"));
+    const auto init_ext = reinterpret_cast<PFN_NR_InitExt>(GetProcAddress(fwd, "NsFwdInitExt"));
+    const auto create = reinterpret_cast<PFN_NR_Create>(GetProcAddress(fwd, "NsFwdCreate"));
+    const auto evaluate = reinterpret_cast<PFN_NR_Evaluate>(GetProcAddress(fwd, "NsFwdEvaluate"));
+    const auto release = reinterpret_cast<PFN_NR_Release>(GetProcAddress(fwd, "NsFwdRelease"));
+    if (load == nullptr || init_ext == nullptr || create == nullptr
+        || evaluate == nullptr || release == nullptr)
+    { Log("[pure] the forwarder is missing exports - is it an old build?"); return false; }
+
+    const int lr = load(dll_name);
+    if (lr != 0)
+    { Log("[pure] the forwarder could not load %ls (%d)", dll_name, lr); return false; }
+
+    g_nr_module = fwd;
+    g_nr_init_ext = init_ext;
+    g_nr_create = create;
+    g_nr_evaluate = evaluate;
+    g_nr_release = release;
+
+    wchar_t actual[MAX_PATH] = {};
+    if (where != nullptr) where(actual, MAX_PATH);
+    Log("[pure] NGX calls go through %ls", actual[0] != L'\0' ? actual : path);
+    return true;
+}
+
 static bool InitDirectNr(const wchar_t *data_path)
 {
     // Before the NVIDIA library is loaded: it asks for the architecture when
@@ -412,14 +476,13 @@ static bool InitDirectNr(const wchar_t *data_path)
     // NS_NGX_CORE=<path to the driver's nvngx.dll>: load NGX Core before the
     // feature DLL.
     //
-    // This process has to be named nvngx.dll or Init_Ext answers
-    // FAIL_PlatformError - which is why the worker is a separate process at
-    // all. The suspicion is that nvngx_dlssnr.dll does not care about the
-    // process name as such, it only wants a module called nvngx.dll present:
-    // in a game that is the real NGX Core, and here it is our own image, which
-    // is listed under its own file name. If preloading the real core lets a
-    // differently named process through, Neural Rendering can run inside a
-    // game process and the naming constraint disappears.
+    // Historical: this experiment asked whether preloading the real NGX core
+    // would let a differently named process through, on the suspicion that the
+    // feature library only wanted a module called nvngx.dll to be PRESENT. It
+    // never worked, and now we know why - the library wants the module that
+    // CALLS it, not one that happens to be loaded. See LoadNrForwarder above;
+    // the flag is kept because the preload costs nothing and the core is worth
+    // having loaded first.
     wchar_t core[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"NS_NGX_CORE", core, MAX_PATH) > 0)
     {
@@ -430,11 +493,11 @@ static bool InitDirectNr(const wchar_t *data_path)
     // NS_NGX_VIA_CORE=1: create and evaluate feature 18 through NGX Core
     // instead of calling the feature DLL directly.
     //
-    // The direct path is the only reason this process must be named
-    // nvngx.dll. NGX Core itself initialises from any process name (measured:
-    // "[host] NVSDK_NGX_D3D12_Init -> Success" out of nsprobe.exe), so if the
-    // core will hand us feature 18, the naming constraint is gone - and with
-    // it the reason the worker has to be a separate process at all.
+    // This was the other way out of the naming constraint, back when the
+    // constraint looked like it was on the process. It is not needed for that
+    // any more - the forwarder answers it - and creating feature 18 through
+    // the core fails anyway (FAIL_UnableToInitializeFeature, every time). Kept
+    // as a switch because the comparison is occasionally useful.
     char via[8] = {};
     const DWORD via_got = GetEnvironmentVariableA("NS_NGX_VIA_CORE", via, sizeof(via));
     if (via_got > 0 && via_got < sizeof(via) && via[0] == '1')
@@ -458,19 +521,32 @@ static bool InitDirectNr(const wchar_t *data_path)
         dll_name = dll_path;
         Log("[pure] NS_NR_DLL=%ls", dll_name);
     }
-    g_nr_module = LoadLibraryW(dll_name);
-    if (!g_nr_module) { Log("[pure] LoadLibrary(%ls) failed %lu", dll_name, GetLastError()); return false; }
-    g_nr_init_ext = reinterpret_cast<PFN_NR_InitExt>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_Init_Ext"));
-    g_nr_create = reinterpret_cast<PFN_NR_Create>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_CreateFeature"));
-    g_nr_evaluate = reinterpret_cast<PFN_NR_Evaluate>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_EvaluateFeature"));
-    g_nr_release = reinterpret_cast<PFN_NR_Release>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_ReleaseFeature"));
-    if (!g_nr_init_ext || !g_nr_create || !g_nr_evaluate || !g_nr_release)
-    { Log("[pure] missing direct exports in nvngx_dlssnr.dll: Init_Ext=%s Create=%s Evaluate=%s Release=%s (GetLastError=%lu)",
-         g_nr_init_ext ? "ok" : "MISSING", g_nr_create ? "ok" : "MISSING",
-         g_nr_evaluate ? "ok" : "MISSING", g_nr_release ? "ok" : "MISSING",
-         GetLastError()); return false; }
+    // NS_NO_FORWARDER=1 keeps the old shape, where the calls leave this
+    // executable - which the feature library serves only while the executable
+    // is named nvngx.dll. Kept for comparison, and as a way out on a machine
+    // that will not load the forwarder for some reason of its own.
+    char nofwd[8] = {};
+    const DWORD nofwd_got = GetEnvironmentVariableA("NS_NO_FORWARDER", nofwd, sizeof(nofwd));
+    const bool asked_direct = nofwd_got > 0 && nofwd_got < sizeof(nofwd) && nofwd[0] == '1';
+    if (asked_direct) Log("[pure] NS_NO_FORWARDER=1: calling the feature library from the worker");
+    const bool direct = asked_direct || !LoadNrForwarder(dll_name);
+    if (direct)
+    {
+        g_nr_module = LoadLibraryW(dll_name);
+        if (!g_nr_module) { Log("[pure] LoadLibrary(%ls) failed %lu", dll_name, GetLastError()); return false; }
+        g_nr_init_ext = reinterpret_cast<PFN_NR_InitExt>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_Init_Ext"));
+        g_nr_create = reinterpret_cast<PFN_NR_Create>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_CreateFeature"));
+        g_nr_evaluate = reinterpret_cast<PFN_NR_Evaluate>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_EvaluateFeature"));
+        g_nr_release = reinterpret_cast<PFN_NR_Release>(GetProcAddress(g_nr_module, "NVSDK_NGX_D3D12_ReleaseFeature"));
+        if (!g_nr_init_ext || !g_nr_create || !g_nr_evaluate || !g_nr_release)
+        { Log("[pure] missing direct exports in nvngx_dlssnr.dll: Init_Ext=%s Create=%s Evaluate=%s Release=%s (GetLastError=%lu)",
+             g_nr_init_ext ? "ok" : "MISSING", g_nr_create ? "ok" : "MISSING",
+             g_nr_evaluate ? "ok" : "MISSING", g_nr_release ? "ok" : "MISSING",
+             GetLastError()); return false; }
+    }
     const auto r = g_nr_init_ext(0x1000000ULL, data_path, h.dev, NVSDK_NGX_Version_API, h.params);
-    Log("[pure] direct DLSSNR Init_Ext -> 0x%08X (%s)", r, NgxResultName(r));
+    Log("[pure] DLSSNR Init_Ext (%s) -> 0x%08X (%s)",
+        direct ? "from the worker" : "through the forwarder", r, NgxResultName(r));
     return NVSDK_NGX_SUCCEED(r);
 }
 
