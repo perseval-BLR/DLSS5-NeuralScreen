@@ -73,6 +73,7 @@ ABOUT = {
     "test_monitor_switch.py": "a monitor switch cannot crash the capture - stale indices fall back",
     "test_mss_fallback.py": "the GDI fallback (mss) opens when dxcam cannot (Optimus)",
     "test_menu_scroll.py": "the menu scrolls and the wheel lands where it should",
+    "test_menu_state_keys.py": "every key menu_payload produces reaches the menu",
     "test_overlay_toolwindow.py": "the overlay is a tool window - one taskbar button only",
     "test_motion_small.py": "the downscaled motion field is upscaled on the GPU",
     "test_mv_validation.py": "noise-floor motion vectors are zeroed, real motion survives",

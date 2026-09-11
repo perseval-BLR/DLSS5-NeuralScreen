@@ -170,6 +170,9 @@ class OverlayMenu:
             # knows the screen size. The slider runs one step past it, and that
             # last step means "the whole screen" - the reduced mode off.
             "work_scale_cap": 1.0,
+            # The bottom of the resolution slider (WORK_SCALE_MIN), sent by
+            # main so a config value below the range cannot misplace the knob.
+            "work_scale_min": 0.1,
             "nr_small": False,
             "screen_size": "",
             "profile": "",
@@ -182,6 +185,10 @@ class OverlayMenu:
             "rec_seconds": 0.0,
             "rec_indicator": True,
             "screenshot_dir": "",
+            # The Spout2 bridge flag (RECORDING section). It was missing here
+            # in v1.6.0, so set_state dropped it in silence and the toggle
+            # always drew as off while the action behind it fired normally.
+            "spout": False,
             "open_on_start": True,
             "split": 0.0,
             # Which card this is and whether NR runs on it. gpu_ok:
@@ -191,6 +198,9 @@ class OverlayMenu:
             "window_mode": False,
             "monitor": "0",
             "monitors": [],
+            # The current monitor's DXGI devicename - carried so a log or a
+            # future control can name the exact display the capture is on.
+            "monitor_devicename": "",
             "gpu": "0",
             "gpus": [],
             "autostart": False,
