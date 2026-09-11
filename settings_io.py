@@ -18,7 +18,42 @@ import winreg
 from pathlib import Path
 
 from capture import devicename_for_output_idx, list_monitors
+# The work caps are the worker's contract, not a setting: the same two
+# numbers size the shared motion buffer in the SHMI handshake.
+from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
 from winapi import list_capturable_windows
+
+
+def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
+    """The NGX work resolution: scale of full, but no larger than
+    WORK_MAX_W/H (NGX goes silent at 4K - the limit verified in isolation).
+
+    Two rules that come from being bitten:
+
+    At 1:1 the answer is the frame itself, with no rounding. Rounding to the
+    nearest even number turned a 539-pixel-high window (900x500 plus its title
+    bar) into a 540-high work size - larger than the frame - and the worker
+    died on the header. An odd size at 1:1 stays on the legacy path, which is
+    known to work (test_odd_frame_size).
+
+    And a downscale rounds DOWN, never up: the work resolution must never
+    exceed the frame it came from.
+    """
+    if scale >= 1.0:
+        w, h = int(width), int(height)
+    else:
+        w = max(64, int(width * scale) // 2 * 2)
+        h = max(64, int(height * scale) // 2 * 2)
+    if w > WORK_MAX_W or h > WORK_MAX_H:
+        k = min(WORK_MAX_W / w, WORK_MAX_H / h)
+        w = max(64, int(w * k) // 2 * 2)
+        h = max(64, int(h * k) // 2 * 2)
+    return min(w, int(width)), min(h, int(height))
+
+
+def hotkey_labels(bindings: dict) -> dict:
+    """Bindings -> {command: "Num1"} for the captions on the menu buttons."""
+    return {cmd: name for _mods, _vk, cmd, name in bindings.values()}
 
 from i18n import STRINGS as UI_STRINGS
 
@@ -44,15 +79,6 @@ PROFILES = {
     "Extreme / Overdrive": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
                                 intensity=2.50, local_tone=2.00, local_structure=2.00, skin_structure=1.5),
 }
-
-
-# NGX feature 18 goes silent at 3840x2160 (verified in isolation: the worker
-# hangs on frame 0 with work=4K, both in legacy and in upscale mode).
-# We cap the work resolution at 2560x1440 - that is known to work.
-WORK_MAX_W = 2560
-
-
-WORK_MAX_H = 1440
 
 
 WORK_SCALE_MIN = 0.1

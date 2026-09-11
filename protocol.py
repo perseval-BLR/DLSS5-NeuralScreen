@@ -12,13 +12,210 @@ the other is a build error now, not a runtime desync.
 """
 from __future__ import annotations
 
+import mmap
+import os
 import queue
 import struct
 import subprocess
+import sys
 import threading
 import time
+import uuid
 
 import numpy as np
+
+from paths import BASE_DIR  # noqa: F401
+
+
+# NGX feature 18 goes silent at 3840x2160 (verified in isolation: the worker
+# hangs on frame 0 with work=4K, both in legacy and in upscale mode).
+# We cap the work resolution at 2560x1440 - that is known to work.
+WORK_MAX_W = 2560
+
+
+WORK_MAX_H = 1440
+
+
+class SharedFrameBuffer:
+    """Shared memory for the worker's input frame (the SHMI command).
+
+    The layout is fixed and does NOT depend on work_scale:
+        [0 .. color_capacity)                - RGBA8 full-res
+        [color_capacity .. +motion_capacity) - motion float16 work-res
+    The motion offset is constant, so a resolution change (RNSZ) needs no
+    renegotiation of SHMI - only the used length changes.
+
+    INVARIANT: there is one slot. Frame N+1 must not be placed until the
+    worker has returned the result for frame N, otherwise we overwrite the
+    pixels under its hands. The main loop is strictly paired (send -> recv),
+    so the invariant holds. Add pipelining and a second slot will be needed.
+    """
+
+    def __init__(self, full_w: int, full_h: int,
+                 max_work_w: int = WORK_MAX_W, max_work_h: int = WORK_MAX_H):
+        self.color_capacity = full_w * full_h * 4
+        self.motion_capacity = max_work_w * max_work_h * 4
+        self.size = self.color_capacity + self.motion_capacity
+        # The section name: ASCII, unique per process - the worker opens it
+        # through OpenFileMappingA in the same Windows session.
+        self.name = f"NeuralScreen_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+        self._mm = mmap.mmap(-1, self.size, tagname=self.name)
+        self._buf = np.ndarray((self.size,), dtype=np.uint8, buffer=self._mm)
+        self.negotiated = False  # set by start_worker after SACK
+
+        # --- Reverse channel: gray (luminance) for guides in DDA mode ---
+        # The worker writes a downsample of the screen here (320x180 = the
+        # flow size) and Python reads it instead of the dxcam grab for
+        # DISOpticalFlow.
+        self.gray_w, self.gray_h = 0, 0
+        self.gray_bytes = 0
+        self.gray_name = f"NeuralScreenGray_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        self._gray_mm: mmap.mmap | None = None
+        self._gray_buf: np.ndarray | None = None  # (gray_bytes,) uint8
+
+        # --- Reverse channel: the result pixels (recording/screenshot) ---
+        self.out_w, self.out_h = 0, 0
+        self.out_bytes = 0
+        self.out_name = ""
+        self._out_mm: mmap.mmap | None = None
+        self._out_buf: np.ndarray | None = None  # (h, w, 4) uint8
+
+    def open_gray(self, w: int, h: int) -> None:
+        """Open a gray section of w*h bytes (create it if there was none).
+
+        On a size change the section name CHANGES: the worker holds the old
+        handle and CreateFileMapping with the same name would return the old
+        section - a larger mmap would fail and the channel would die quietly
+        (audit H2). send_gray() passes the fresh name to the worker after
+        open_gray().
+        """
+        if self._gray_mm is not None and self.gray_w == w and self.gray_h == h:
+            return
+        self.close_gray()
+        self.gray_w, self.gray_h = w, h
+        self.gray_bytes = w * h
+        self.gray_name = f"NeuralScreenGray_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        self._gray_mm = mmap.mmap(-1, self.gray_bytes, tagname=self.gray_name)
+        self._gray_buf = np.ndarray((self.gray_bytes,), dtype=np.uint8, buffer=self._gray_mm)
+
+    def open_out(self, w: int, h: int) -> None:
+        """Open the section for the returned pixels (RGBA8 w*h).
+
+        The name changes on every open - just like gray: the worker holds the
+        old handle and CreateFileMapping with the same name would return the
+        old section, at its old size. The first 8 bytes are a seqlock written
+        by the worker (odd while writing, even when done).
+        """
+        if self._out_mm is not None and self.out_w == w and self.out_h == h:
+            return
+        self.close_out()
+        self.out_w, self.out_h = w, h
+        self.out_bytes = w * h * 4 + 8  # + seqlock
+        self.out_name = f"NeuralScreenOut_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        self._out_mm = mmap.mmap(-1, self.out_bytes, tagname=self.out_name)
+        self._out_buf = np.ndarray((h, w, 4), dtype=np.uint8, buffer=self._out_mm, offset=8)
+
+    def read_out(self) -> np.ndarray | None:
+        """A copy of the frame from the section, guarded by the seqlock.
+
+        The copy is mandatory: there is one slot, the worker overwrites it
+        with the next frame, and the frame outlives that - it goes into the
+        encoder queue. The seqlock (first 8 bytes) detects a torn frame: if
+        the worker is mid-write (odd) or the sequence changed while we
+        copied, we retry a few times and then fall back to None (the caller
+        skips the frame).
+        """
+        if self._out_buf is None:
+            return None
+        for _ in range(4):
+            seq1 = int.from_bytes(self._out_mm[0:8], "little")
+            if seq1 & 1:
+                continue  # worker is writing - not ready yet
+            buf = self._out_buf.copy()
+            seq2 = int.from_bytes(self._out_mm[0:8], "little")
+            if seq1 == seq2:
+                return buf
+        return None  # torn after retries - caller skips the frame
+
+    def close_out(self) -> None:
+        if self._out_buf is not None:
+            self._out_buf = None
+        if self._out_mm is not None:
+            try:
+                self._out_mm.close()
+            except Exception:
+                pass
+            self._out_mm = None
+        self.out_bytes = 0
+        self.out_w = self.out_h = 0
+
+    def read_gray(self) -> np.ndarray | None:
+        """Return a copy of the gray frame (320x180 uint8), or None if it is
+        not open.
+
+        The worker writes with memcpy and no shared barrier - a tear is
+        theoretically possible. At 320x180 that is microseconds; one torn
+        optical-flow frame is not critical (guides survive it and the next
+        frame fixes it). An accepted risk - a seqlock would be overengineering.
+        """
+        if self._gray_buf is None:
+            return None
+        return self._gray_buf.copy()
+
+    def close_gray(self) -> None:
+        if self._gray_buf is not None:
+            self._gray_buf = None
+        if self._gray_mm is not None:
+            try:
+                self._gray_mm.close()
+            except Exception:
+                pass
+            self._gray_mm = None
+
+    def put(self, rgba: np.ndarray, motion: np.ndarray) -> None:
+        """Put the frame and motion into the mapping (one memcpy each)."""
+        color = rgba.reshape(-1)
+        if color.nbytes > self.color_capacity:
+            raise ValueError(f"a frame of {color.nbytes} B does not fit into "
+                             f"{self.color_capacity} B of shared memory")
+        mv = motion.reshape(-1).view(np.uint8)
+        if mv.nbytes > self.motion_capacity:
+            raise ValueError(f"motion of {mv.nbytes} B does not fit into "
+                             f"{self.motion_capacity} B of shared memory")
+        np.copyto(self._buf[:color.nbytes], color)
+        off = self.color_capacity
+        np.copyto(self._buf[off:off + mv.nbytes], mv)
+
+    def close(self) -> None:
+        self.negotiated = False
+        self.close_gray()
+        self._buf = None  # numpy holds the buffer: without the reset mmap.close() raises BufferError
+        try:
+            self._mm.close()
+        except Exception as exc:
+            print(f"[main] could not close the shared memory: {exc}", file=sys.stderr)
+
+
+def _negotiate_shm(worker: subprocess.Popen, reader: "WorkerReader",
+                   shm: SharedFrameBuffer, timeout: float = 10.0) -> None:
+    """Hand the shared memory name to the worker (SHMI) and wait for SACK.
+
+    A refusal is not fatal: if the worker could not open the mapping we stay
+    on sending the frame down the pipe - that path is still there and works.
+    """
+    shm.negotiated = False
+    try:
+        worker.stdin.write(struct.pack(
+            SHM_FMT, SHM_MAGIC, shm.color_capacity, shm.motion_capacity, 0, 0,
+            shm.name.encode("ascii")))
+        worker.stdin.flush()
+        reader.wait_sack(timeout)
+        shm.negotiated = True
+        print(f"[main] shared memory agreed: {shm.size / 1e6:.1f} MB, "
+              f"the frame does not go through the pipe")
+    except Exception as exc:
+        print(f"[main] shared memory unavailable ({exc}) - frames through the pipe",
+              file=sys.stderr)
 
 
 # --- Worker protocol (matches dlss5_converter/core.py) -------------------

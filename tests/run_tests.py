@@ -47,6 +47,7 @@ ABOUT = {
     "test_adaptive_exposure.py": "adaptive exposure brightens dark scenes, lit scenes untouched",
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
+    "test_module_layers.py": "no module imports main, no dangling names, all import clean",
     "test_config_atomic.py": "the config write is atomic and persists profile/params/monitor",
     "test_dred_diag.py": "the worker logs DRED/device-removed diagnostics at startup",
     "test_env_header.py": "the log header carries version/OS/HDR and survives broken probes",

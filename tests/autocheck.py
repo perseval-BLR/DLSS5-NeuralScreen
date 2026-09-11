@@ -53,7 +53,7 @@ def zip_integrity():
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
         "audio.py", "protocol.py", "winapi.py", "dialogs.py", "channels.py",
-        "settings_io.py",
+        "settings_io.py", "paths.py", "pipeline.py",
         "NeuralScreen.exe",
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
@@ -80,6 +80,7 @@ def zip_integrity():
         # non-committed rebuild slips through (audit #4, C1/C2).
         for name in ("main.py", "hotkeys.py", "display.py", "recorder.py",
                      "overlay_ui.py", "i18n.py", "protocol.py", "winapi.py",
+                     "pipeline.py", "settings_io.py", "channels.py",
                      "README.md", "README.ru.md"):
             try:
                 head = subprocess.check_output(["git", "show", f"HEAD:{name}"],
