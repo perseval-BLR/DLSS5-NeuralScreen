@@ -2086,6 +2086,9 @@ static const char kScaleHlsl4[] =
 //   edit   = nr_out(up) - nr_in(up)   -- what the network changed
 //   result = native + edit * strength  -- the native frame stays the anchor,
 //                                        so text/edges keep full sharpness
+// The arithmetic is in DISPLAY space (the textures are UNORM and the network
+// works on those values, so the delta matches its input). Not linear light:
+// deliberate, and the place to look first if shadows ever misbehave.
 // while the cheap low-res network does the relighting.
 static const char kResidualHlsl[] =
     "Texture2D<float4>   gNative : register(t0);\n"
@@ -3013,11 +3016,25 @@ static void UpdateAdaptiveExposure()
         g_pw_exposure = 1.0f;
         return;
     }
-    const float dark = PwEnvFloat("NS_PW_DARK", 0.10f);
-    const float lit  = PwEnvFloat("NS_PW_LIT", 0.40f);
-    const float mn   = PwEnvFloat("NS_PW_MIN", 1.00f);
-    const float mx   = PwEnvFloat("NS_PW_MAX", 1.10f);
-    const float tau  = PwEnvFloat("NS_PW_TAU", 0.50f);
+    // The tuning values are read ONCE: they come from the process
+    // environment, which cannot change while we run, and this function is
+    // called for every captured frame - six GetEnvironmentVariable calls per
+    // frame bought nothing.
+    static float dark = 0.0f, lit = 0.0f, mn = 0.0f, mx = 0.0f, tau = 0.0f;
+    static bool  env_read = false;
+    if (!env_read)
+    {
+        dark = PwEnvFloat("NS_PW_DARK", 0.10f);
+        lit  = PwEnvFloat("NS_PW_LIT", 0.40f);
+        mn   = PwEnvFloat("NS_PW_MIN", 1.00f);
+        mx   = PwEnvFloat("NS_PW_MAX", 1.10f);
+        tau  = PwEnvFloat("NS_PW_TAU", 0.50f);
+        // A zero-wide window would divide by zero below and hand NGX a NaN
+        // exposure. Fall back to the default spread around the given dark
+        // point rather than refusing to work.
+        if (lit <= dark) lit = dark + 0.30f;
+        env_read = true;
+    }
     if (!g_pw_logged)
     {
         Log("[pw] adaptive exposure on (dark=%.2f lit=%.2f min=%.2f max=%.2f tau=%.2f)",
@@ -3025,11 +3042,14 @@ static void UpdateAdaptiveExposure()
         g_pw_logged = true;
     }
 
-    // Average luminance of the AREA frame (0..1).
-    double sum = 0.0;
+    // Average luminance of the AREA frame (0..1). The bytes are summed as
+    // integers and scaled once: a division per pixel was 57 600 of them per
+    // frame for a number that is the same either way.
+    uint64_t sum = 0;
     const size_t n = static_cast<size_t>(g_gray_w) * g_gray_h;
-    for (size_t i = 0; i < n; ++i) sum += g_gray_map[i] / 255.0;
-    const float avg = static_cast<float>(sum / static_cast<double>(n));
+    for (size_t i = 0; i < n; ++i) sum += g_gray_map[i];
+    const float avg = static_cast<float>(
+        static_cast<double>(sum) / (255.0 * static_cast<double>(n)));
 
     // smoothstep(dark, lit, avg): 0 in dark scenes, 1 in lit ones. The
     // exposure goes UP in dark scenes (the network sees a brighter frame

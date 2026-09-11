@@ -252,7 +252,11 @@ class ScreenCapture:
         """Open the GDI fallback (mss) for the given monitor index."""
         import mss
 
-        self._mss = mss.mss()
+        # mss 10 deprecated the lowercase factory ("will be removed in a
+        # future release"); the bundled runtime already warns about it. Use
+        # the new name where it exists so a runtime bump does not take the
+        # fallback down with it.
+        self._mss = (mss.MSS if hasattr(mss, "MSS") else mss.mss)()
         # mss.monitors[0] is the virtual all-in-one screen; the physical
         # monitors start at index 1 (the stas2192 pattern, issue #26).
         real_idx = monitor_idx + 1
@@ -284,14 +288,16 @@ class ScreenCapture:
         """
         if self._camera is not None:
             return self._camera.grab()
-        # The mss (GDI) fallback: BGRA -> RGBA, own copy (the raw buffer is
-        # reused by mss).
+        # The mss (GDI) fallback: BGRA -> RGBA in one indexed copy (the raw
+        # buffer belongs to mss and is reused). GDI leaves the alpha byte at
+        # 0; the pipeline treats the frame as opaque RGBA8, so alpha is
+        # forced to 255 rather than left as a trap for whatever reads it
+        # next (a screenshot encoder, a texture upload).
         raw = self._mss.grab(self._monitor)
         img = np.frombuffer(raw.raw, dtype=np.uint8).reshape(
             (raw.height, raw.width, 4))
-        rgba = img.copy()
-        rgba[:, :, 0] = img[:, :, 2]
-        rgba[:, :, 2] = img[:, :, 0]
+        rgba = img[:, :, [2, 1, 0, 3]]      # one copy, channels in place
+        rgba[:, :, 3] = 255
         return rgba
 
     def close(self) -> None:

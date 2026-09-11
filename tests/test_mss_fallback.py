@@ -19,6 +19,8 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
+
 BASE = Path(__file__).resolve().parent.parent  # the project root
 sys.path.insert(0, str(BASE))  # the project modules (main.py, capture.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
@@ -85,6 +87,14 @@ def main() -> int:
             # RGBA, not BGRA: the red channel must not be swapped.
             if frame[..., 0].mean() == frame[..., 2].mean():
                 failures.append("mss frame looks like BGRA (R==B)")
+            if frame.dtype != np.uint8:
+                failures.append(f"mss frame is {frame.dtype}, want uint8")
+            # GDI leaves the alpha byte at 0. The pipeline treats a captured
+            # frame as opaque RGBA8, so the fallback has to say so - an
+            # all-zero alpha is a trap for whatever reads it next.
+            if int(frame[..., 3].min()) != 255:
+                failures.append(
+                    f"mss frame alpha is {int(frame[..., 3].min())}, want 255")
         cap.close()
         if cap._mss is not None:
             failures.append("close() left the mss session open")

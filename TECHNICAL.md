@@ -333,6 +333,14 @@ Laplacian detail 983 with the composite vs 88 with the plain bilinear
 upscale (input 951), and a hard edge 87.8 vs 59.1. `strength` is fixed at
 1.0; `NS_NR_RESIDUAL=0` forces the plain upscale path for the tests.
 
+The delta is added in **display space**, not in linear light: the textures are
+`R8G8B8A8_UNORM` and the network itself works on those values, so the
+composite is consistent with its input. It is worth knowing where to look if
+shadows ever misbehave - a delta that is linear in code is not linear in
+light, and the error is largest in the darkest pixels. Moving the composite to
+linear would change the look of every scene, so it is a deliberate choice, not
+an oversight.
+
 
 ## Before / after wipe
 
