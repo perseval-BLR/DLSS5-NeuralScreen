@@ -183,17 +183,55 @@ def main() -> int:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
 
-    # 6. Both save sites in main.py go through the atomic helper and the
-    #    menu layout save uses the payload builder (source-level check - the
-    #    closures are not importable without launching the program).
-    src = (BASE / "main.py").read_text(encoding="utf-8")
-    if "_atomic_write_json(args.config, data)" not in src:
-        failures.append("a save site does not use _atomic_write_json")
-    if src.count("_atomic_write_json(args.config, data)") != 2:
-        failures.append(f"expected 2 atomic save sites, found "
-                        f"{src.count('_atomic_write_json(args.config, data)')}")
-    if "_menu_layout_payload(" not in src:
-        failures.append("_save_menu_layout does not use _menu_layout_payload")
+    # 6. Both save sites go through the atomic writer, and the menu-layout
+    #    save goes through the payload builder.
+    #
+    #    This used to grep main.py for a literal call, because "the closures
+    #    are not importable without launching the program". They are plain
+    #    functions in settings_io now, so the check calls them and watches
+    #    what they do - which is what it wanted to know all along.
+    import types
+
+    import settings_io
+
+    target = Path(tempfile.mkdtemp()) / "config.json"
+    target.write_text(json.dumps(GOOD), encoding="utf-8")
+    seen = {"atomic": 0, "payload": 0}
+    real_atomic = settings_io._atomic_write_json
+    real_payload = settings_io._menu_layout_payload
+
+    def spy_atomic(path, data):
+        seen["atomic"] += 1
+        return real_atomic(path, data)
+
+    def spy_payload(*a, **kw):
+        seen["payload"] += 1
+        return real_payload(*a, **kw)
+
+    st = types.SimpleNamespace(
+        cfg_path=target, cfg=dict(GOOD), params=resolve_params(GOOD),
+        monitor=1, lang="en", work_scale=0.65, split_pos=0.5,
+        startup_menu=True, nr_small=False,
+        display=types.SimpleNamespace(menu=_Menu()))
+    settings_io._atomic_write_json = spy_atomic
+    settings_io._menu_layout_payload = spy_payload
+    try:
+        if not settings_io.save_menu_layout(st):
+            failures.append("save_menu_layout reported failure")
+        if not settings_io.save_hotkeys(st, {"toggle": "Num1"}):
+            failures.append("save_hotkeys reported failure")
+    finally:
+        settings_io._atomic_write_json = real_atomic
+        settings_io._menu_layout_payload = real_payload
+
+    if seen["atomic"] != 2:
+        failures.append(f"expected 2 atomic save sites, saw {seen['atomic']}")
+    if seen["payload"] != 1:
+        failures.append("save_menu_layout does not use the payload builder")
+    written = json.loads(target.read_text(encoding="utf-8"))
+    if written.get("hotkeys") != {"toggle": "Num1"}:
+        failures.append(f"the hotkeys did not reach the file: "
+                        f"{written.get('hotkeys')!r}")
 
     for f in failures:
         print("FAIL:", f)

@@ -48,13 +48,7 @@ from pathlib import Path
 # this file).
 LOG_PATH = Path(__file__).resolve().parent / "NeuralScreen.log"
 
-# The version shown in the menu header. Kept in sync with native/launcher.rc
-# (FileVersion/ProductVersion) and build_release_zip.py at release time.
-APP_VERSION = "1.5.6"
 
-# The channel label: the header shows the version, the channel lives in the
-# settings page (user rule 2026-09-08).
-CHANNEL_LABEL = "@perseval_BLR"
 
 
 def _init_logging() -> None:
@@ -199,6 +193,11 @@ from tray import TrayController
 from taskbar import TaskbarWindow
 import dialogs
 import channels
+import settings_io
+# The settings layer owns these now; re-exported because the rest
+# of the program and the tests look them up in main.
+from settings_io import (  # noqa: F401
+    APP_VERSION, CHANNEL_LABEL, PROFILES, WORK_MAX_W, WORK_MAX_H, WORK_SCALE_MIN, _atomic_write_json, _autostart_enabled, _menu_layout_payload)
 # The Win32 window helpers live in winapi.py now. They are re-exported here
 # on purpose: main is where the rest of the program - and the tests - look
 # them up, and moving code must not move its callers.
@@ -228,17 +227,6 @@ from protocol import (  # noqa: F401
     _read_exact, send_dda, send_frame, send_gray, send_motion_size,
     send_out, send_resize, send_wgc, send_window)
 
-# --- DLSS 5 NR profiles (field order as in the converter) -----------------
-PROFILES = {
-    "Faithful": dict(profile=0, preset=0, style=0, auto_mask=0, ui_correction=0,
-                     intensity=0.70, local_tone=0.75, local_structure=0.75, skin_structure=-1.0),
-    "Natural": dict(profile=1, preset=0, style=1, auto_mask=0, ui_correction=0,
-                    intensity=1.00, local_tone=1.00, local_structure=1.00, skin_structure=-1.0),
-    "Strong / Cinematic": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
-                               intensity=1.65, local_tone=1.40, local_structure=1.50, skin_structure=1.0),
-    "Extreme / Overdrive": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
-                                intensity=2.50, local_tone=2.00, local_structure=2.00, skin_structure=1.5),
-}
 
 # The four sliders a user preset stores. The same keys as PROFILES carries,
 # minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
@@ -262,13 +250,7 @@ PERF_KEYS = ("grab", "resize_full", "guides", "send", "recv", "show")
 # The global hotkeys live in hotkeys.py (RegisterHotKey). The layout and the
 # reasons behind the combinations are in that module's docstring.
 WORK_SCALE_STEP = 0.05
-WORK_SCALE_MIN = 0.1
 WORK_SCALE_MAX = 1.0
-# NGX feature 18 goes silent at 3840x2160 (verified in isolation: the worker
-# hangs on frame 0 with work=4K, both in legacy and in upscale mode).
-# We cap the work resolution at 2560x1440 - that is known to work.
-WORK_MAX_W = 2560
-WORK_MAX_H = 1440
 
 DEFAULT_LANG = "en"
 
@@ -580,65 +562,8 @@ def resolve_params(cfg: dict) -> dict:
     return params
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write data to path atomically: a temp file in the same directory,
-    flushed and fsynced, then os.replace() over the target.
-
-    A crash mid-write used to truncate config.json in place and the program
-    lost the user's settings. The temp file lives next to the target so the
-    replace is a rename within one volume - atomic on Windows. On failure the
-    temp file is removed and the original is left untouched.
-    """
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
 
 
-def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
-                         work_scale: float, split_pos: float,
-                         startup_menu: bool, nr_small: bool, menu) -> dict:
-    """The settings _save_menu_layout persists into config.json.
-
-    Everything the user can change in the menu: the panel geometry, the
-    processing settings and the NR parameters. profile/params/monitor are
-    included because the menu changes them in memory only (cfg/params are
-    updated live) - without this save they would be lost on the next launch.
-
-    monitor is saved as the DXGI devicename (e.g. '\\\\.\\DISPLAY1') so the
-    saved monitor keeps pointing at the same physical display when the
-    arrangement changes; old configs with a positional int still load.
-    """
-    monitor_name = devicename_for_output_idx(int(monitor))
-    return {
-        "menu_scale": round(menu.user_scale, 2),
-        "menu_height": (None if menu.user_height is None
-                        else int(menu.user_height)),
-        "open_menu_on_start": startup_menu,
-        "split": round(split_pos, 2),
-        "nr_small": bool(nr_small),
-        "work_scale": round(work_scale, 2),
-        "theme": menu.state.get("theme", "light"),
-        "lang": lang,
-        "menu_offset": [int(menu.offset[0]), int(menu.offset[1])],
-        "profile": cfg["profile"],
-        "intensity": params["intensity"],
-        "local_tone": params["local_tone"],
-        "local_structure": params["local_structure"],
-        "skin_structure": params["skin_structure"],
-        "monitor": monitor_name if monitor_name is not None else int(monitor),
-        "rec_indicator": bool(cfg.get("rec_indicator", True)),
-        "screenshot_dir": cfg.get("screenshot_dir") or "",
-    }
 
 
 
@@ -858,22 +783,6 @@ def hotkey_labels(bindings: dict) -> dict:
     return {cmd: name for _mods, _vk, cmd, name in bindings.values()}
 
 
-def _autostart_enabled() -> bool:
-    """Is autostart currently on? (HKCU Run, the NeuralScreen value)."""
-    import winreg
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run",
-                             0, winreg.KEY_READ)
-        try:
-            winreg.QueryValueEx(key, "NeuralScreen")
-            return True
-        except FileNotFoundError:
-            return False
-        finally:
-            winreg.CloseKey(key)
-    except Exception:
-        return False
 
 
 def _set_autostart(enabled: bool) -> bool:
@@ -979,6 +888,9 @@ class _Pipeline:
         "want_motion_small",
         "want_out_shm",
         "want_present",
+        "cfg_path",
+        "gpu_text",
+        "warmup",
     )
 
 
@@ -1002,7 +914,10 @@ def main() -> int:
         print("[main] another NeuralScreen is already running - this copy exits", file=sys.stderr)
         return 1
 
-    st.cfg = load_config(args.config)
+    # The config file's path, kept in the state: the settings module writes
+    # back into it and has no business knowing what argparse is.
+    st.cfg_path = args.config
+    st.cfg = load_config(st.cfg_path)
     st.params = resolve_params(st.cfg)
     st.presets = load_presets(st.cfg)
     _apply_nr_dll(st.cfg)
@@ -1020,7 +935,7 @@ def main() -> int:
     else:
         # Old configs store the positional index.
         st.monitor = int(monitor_cfg)
-    warmup = int(st.cfg["warmup"])
+    st.warmup = int(st.cfg["warmup"])
     st.work_scale = float(st.cfg["work_scale"])
     # The worker reads NS_NR_SMALL once, at startup: with it on, Neural
     # Rendering runs at the work resolution and the result is scaled back up
@@ -1073,9 +988,9 @@ def main() -> int:
         # nvapi, but the support verdict comes from the worker rather than the
         # architecture: only it knows whether feature 18 was created.
         gpu_info = gpu_probe()
-        gpu_text = gpu_describe(gpu_info)
+        st.gpu_text = gpu_describe(gpu_info)
         st.gpu_ok: bool | None = None
-        print(f"[main] GPU: {gpu_text or 'unknown'} "
+        print(f"[main] GPU: {st.gpu_text or 'unknown'} "
               f"(group 0x{gpu_info['arch_group']:X}, officially supported: "
               f"{'yes' if gpu_info['official'] else 'no'})")
         # The stock warm-up is 120 discarded evaluations. On a fast Blackwell
@@ -1085,10 +1000,10 @@ def main() -> int:
         # on RTX 3060 Ti at ~18 FPS). Unsupported/pre-Blackwell cards get a
         # short warm-up; the actual effect is still evaluated normally
         # afterwards.
-        effective_warmup = warmup
-        if not gpu_info["official"] and warmup > 4:
+        effective_warmup = st.warmup
+        if not gpu_info["official"] and st.warmup > 4:
             effective_warmup = 4
-            print(f"[main] pre-Blackwell GPU: warmup {warmup} -> "
+            print(f"[main] pre-Blackwell GPU: warmup {st.warmup} -> "
                   f"{effective_warmup} to avoid a false frame-0 watchdog "
                   f"timeout")
         st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
@@ -1342,7 +1257,7 @@ def main() -> int:
                 # The environment is what a freshly started worker reads; the
                 # live one is told through the resize below.
                 os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
-                _save_menu_layout()
+                settings_io.save_menu_layout(st)
             new_w, new_h = _work_size(st.width, st.height, st.work_scale)
             new_full_w = st.width if (new_w != st.width or new_h != st.height) else 0
             new_full_h = st.height if (new_w != st.width or new_h != st.height) else 0
@@ -1478,7 +1393,7 @@ def main() -> int:
             full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
             st.shm = SharedFrameBuffer(st.width, st.height)
             st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-                st.params, st.work_w, st.work_h, warmup, full_w, full_h, st.shm)
+                st.params, st.work_w, st.work_h, st.warmup, full_w, full_h, st.shm)
             # The window and the menu are rebuilt, keeping the user settings.
             # A soft resize instead of close()+recreate: the old code went
             # through pygame.quit() and built a fresh window - the screen went
@@ -1533,7 +1448,7 @@ def main() -> int:
                 if isinstance(saved_height, (int, float)) and saved_height > 0:
                     st.display.menu.user_height = int(saved_height)
             if menu_was_open:
-                st.display.menu.set_state(_menu_payload())
+                st.display.menu.set_state(settings_io.menu_payload(st))
                 st.display.menu.visible = True
                 st.display.set_menu_opaque(True)
                 st.display.set_menu_input(True)
@@ -1563,7 +1478,7 @@ def main() -> int:
             # Without the reset a screenshot right after the switch would
             # save it.
             st.output_rgba = None
-            _save_menu_layout()
+            settings_io.save_menu_layout(st)
             print(f"[main] pipeline rebuilt: {st.width}x{st.height}, "
                   f"work {st.work_w}x{st.work_h} - {note}")
             # The mode-change alert must survive a rebuild: the pipeline
@@ -1708,48 +1623,7 @@ def main() -> int:
 
 
 
-        def _save_menu_layout() -> bool:
-            """Remember the panel size and position in config.json.
 
-            We write on menu close and on exit rather than on every mouse
-            move: dragging would otherwise hammer the file dozens of times
-            per second. Returns False when the write failed - the callers
-            that promise the user something (presets, hotkeys) show an
-            alert then.
-            """
-            try:
-                data = json.loads(args.config.read_text(encoding="utf-8"))
-                data.update(_menu_layout_payload(
-                    st.cfg, st.params, st.monitor, st.lang, st.work_scale, st.split_pos,
-                    st.startup_menu, st.nr_small, st.display.menu))
-                _atomic_write_json(args.config, data)
-                return True
-            except Exception as exc:
-                print(f"[main] could not save the menu layout: {exc}", file=sys.stderr)
-                return False
-
-        def _refresh_gpu_ok() -> None:
-            """Whether NR works - from the worker's answer, not the architecture.
-
-            Only the worker knows for sure: it calls CreateFeature and gets
-            the NGX code back. The architecture only tells us what NVIDIA
-            promises. Once decided, the answer is not revisited - worker
-            restarts add lines but the verdict does not change.
-            """
-            if st.gpu_ok is not None:
-                return
-            for line in reversed(st.worker_logs[-80:]):
-                if "feature 18 ready" in line:
-                    st.gpu_ok = True
-                    return
-                # The real refusal line from the worker is "[pure] direct
-                # feature 18 create failed"; "Unsupported GPU architecture"
-                # lives inside nvngx_dlssnr.dll and never reaches its stderr.
-                # SAFE PASSTHROUGH (the worker stays alive and shows the raw
-                # frame) is the same verdict: no feature, no NR.
-                if "feature 18 create failed" in line or "NR feature unavailable" in line:
-                    st.gpu_ok = False
-                    return
 
         def _open_save_dialog() -> None:
             """Show "Save as" without stalling the pipeline.
@@ -1797,7 +1671,7 @@ def main() -> int:
                         # and let the next screenshot go there without a
                         # dialog (issue #20).
                         st.cfg["screenshot_dir"] = str(shot_path)
-                        _save_menu_layout()
+                        settings_io.save_menu_layout(st)
                         st.display.menu.set_state({"screenshot_dir": str(shot_path)})
                         print(f"[main] screenshot folder -> {shot_path}")
                         st.display.alert(f"Screenshot folder: {shot_path}")
@@ -1812,81 +1686,8 @@ def main() -> int:
             except queue.Empty:
                 pass
 
-        def _save_hotkeys(mapping: dict) -> bool:
-            """Write the assignments into config.json.
 
-            Separate from _save_menu_layout: that one runs on menu close,
-            while the user expects a key to be saved right away. Returns
-            False when the write failed - the caller shows an alert.
-            """
-            try:
-                data = json.loads(args.config.read_text(encoding="utf-8"))
-                data["hotkeys"] = dict(mapping)
-                _atomic_write_json(args.config, data)
-                return True
-            except Exception as exc:
-                print(f"[main] could not save the hotkeys: {exc}",
-                      file=sys.stderr)
-                return False
 
-        def _work_scale_cap() -> float:
-            """The scale above which the work size just hits the NGX cap.
-
-            Rounded down to the slider's own step so the value is reachable:
-            a cap the slider cannot land on exactly would leave the top of the
-            range doing nothing, which is the whole thing being fixed here.
-            """
-            raw = min(1.0, WORK_MAX_W / max(1, st.width), WORK_MAX_H / max(1, st.height))
-            return max(0.35, int(raw / 0.05) * 0.05)
-
-        def _menu_payload() -> dict:
-            """The current state for the menu - a single source of truth."""
-            _refresh_gpu_ok()
-            wins = list_capturable_windows()
-            # The devicename is the stable identity: the menu hands it back
-            # on a switch, so a reorder cannot redirect the capture.
-            monitor_entries = [f"{i}: {w}x{h} ({dev})"
-                               for i, w, h, dev in list_monitors()]
-            return {
-                "nr": not st.paused,
-                "work_scale": st.work_scale,
-                # Where the work size hits the 2560x1440 cap. Everything above
-                # it lands on the same resolution, so the slider puts "the whole
-                # screen" there instead of a dead stretch.
-                "work_scale_cap": _work_scale_cap(),
-                "work_scale_min": WORK_SCALE_MIN,
-                "nr_small": st.nr_small,
-                "screen_size": f"{st.width}x{st.height}",
-                "profile": st.cfg["profile"],
-                "profiles": list(PROFILES) + list(st.presets),
-                "preset_active": st.cfg["profile"] in st.presets,
-                "params": {k: st.params[k] for k in
-                           ("intensity", "local_tone",
-                            "local_structure", "skin_structure")},
-                "lang": st.lang,
-                "recording": st.recorder is not None,
-                "work_size": f"{st.work_w}x{st.work_h}",
-                "rec_seconds": (st.recorder.duration_ms / 1000.0) if st.recorder else 0.0,
-                "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
-                "screenshot_dir": st.cfg.get("screenshot_dir") or "",
-                "open_on_start": st.startup_menu,
-                "autostart": _autostart_enabled(),
-                "split": st.split_pos,
-                "gpu_text": gpu_text,
-                "gpu_ok": st.gpu_ok,
-                "window_mode": st.window_hwnd is not None,
-                "monitor_devicename": st.capture.devicename,
-                "monitors": monitor_entries,
-                "monitor": next(
-                    (m for m in monitor_entries
-                     if m.startswith(f"{st.monitor}: ")),
-                    str(st.monitor)),
-                "windows": [f"{h:X}: {t}" for h, t in wins],
-                "window_current": next(
-                    (f"{h:X}: {t}" for h, t in wins if h == st.window_hwnd), ""),
-                "version": APP_VERSION,
-                "channel": CHANNEL_LABEL,
-            }
 
         def _apply_menu_action(action: tuple) -> None:
             """A menu action -> a real setting.
@@ -1903,7 +1704,7 @@ def main() -> int:
                 # end of the slider is "the whole screen" - which is the same
                 # thing as the reduced mode being off.
                 want = float(action[1])
-                cap = _work_scale_cap()
+                cap = settings_io.work_scale_cap(st)
                 if want > cap + 1e-6:
                     request_apply(1.0, st.cfg["profile"], st.params, new_small=False)
                 else:
@@ -1914,7 +1715,7 @@ def main() -> int:
                 st.split_pos = min(1.0, max(0.0, float(action[1])))
             elif kind == "toggle" and action[1] == "open_on_start":
                 st.startup_menu = not st.startup_menu
-                _save_menu_layout()
+                settings_io.save_menu_layout(st)
                 print(f"[main] menu at startup: {'yes' if st.startup_menu else 'no'}")
             elif kind == "toggle" and action[1] == "autostart":
                 # Autostart with Windows (HKCU Run). The state lives in the
@@ -1931,7 +1732,7 @@ def main() -> int:
                 # The recording indicator outside the menu: a config flag,
                 # the HUD reads it on every redraw.
                 st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
-                _save_menu_layout()
+                settings_io.save_menu_layout(st)
                 print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
             elif kind == "param":
                 new_params = dict(st.params)
@@ -1973,7 +1774,7 @@ def main() -> int:
                     st.hotkey_bindings = build_bindings(over)
                     st.hotkeys.rebind(st.hotkey_bindings)
                     st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
-                    if not _save_hotkeys(over):
+                    if not settings_io.save_hotkeys(st, over):
                         # The assignment works for this session but will not
                         # survive a restart - the user must know.
                         st.display.alert(UI_STRINGS[st.lang]["save_fail"])
@@ -1983,7 +1784,7 @@ def main() -> int:
             elif kind == "theme":
                 # The menu has already applied the theme to itself
                 # (overlay_ui); here we only remember it for config.json -
-                # _save_menu_layout() runs on menu close and on exit.
+                # settings_io.save_menu_layout(st) runs on menu close and on exit.
                 print(f"[main] menu theme -> {action[1]}")
             elif kind == "monitor":
                 # The value arrives as "N: WxH (\\\\.\\DISPLAY1)" - the
@@ -2022,7 +1823,7 @@ def main() -> int:
                     st.display.menu.visible = False
                     st.display.set_menu_opaque(False)
                     st.display.set_menu_input(False)
-                    _save_menu_layout()
+                    settings_io.save_menu_layout(st)
                 elif name == "exit":
                     print(f"[main] exit: button in the overlay menu "
                           f"(frames processed {st.frame_index})")
@@ -2079,7 +1880,7 @@ def main() -> int:
                     name = _next_preset_name(st.presets)
                     st.presets[name] = dict(st.params)
                     st.cfg["presets"] = st.presets
-                    if not _save_menu_layout():
+                    if not settings_io.save_menu_layout(st):
                         # The preset lives in memory but not on disk - the
                         # user must know it will not survive a restart.
                         del st.presets[name]
@@ -2096,7 +1897,7 @@ def main() -> int:
                     if st.cfg["profile"] in st.presets:
                         del st.presets[st.cfg["profile"]]
                         st.cfg["presets"] = st.presets
-                        if not _save_menu_layout():
+                        if not settings_io.save_menu_layout(st):
                             st.display.alert(UI_STRINGS[st.lang]["save_fail"])
                             return
                         st.display.menu.set_state(
@@ -2150,7 +1951,7 @@ def main() -> int:
                     elif cmd == "settings":
                         # Num2 and a left click on the tray open the overlay
                         # menu - the only place the settings live.
-                        st.display.menu.set_state(_menu_payload())
+                        st.display.menu.set_state(settings_io.menu_payload(st))
                         opened = st.display.menu.toggle()
                         st.display.set_menu_opaque(opened)
                         st.display.set_menu_input(opened)
@@ -2184,7 +1985,7 @@ def main() -> int:
                                 rect = window_frame_rect(st.window_hwnd)
                                 if rect is not None:
                                     st.display.set_window_layer(*rect)
-                            _save_menu_layout()
+                            settings_io.save_menu_layout(st)
                         print(f"[main] overlay menu {'opened' if opened else 'closed'}")
                     elif cmd == "toggle":
                         st.paused = not st.paused
@@ -2198,7 +1999,7 @@ def main() -> int:
                                 print("[main] reviving the worker after the failure")
                                 try:
                                     st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
-                                        st.worker, st.params, st.work_w, st.work_h, warmup,
+                                        st.worker, st.params, st.work_w, st.work_h, st.warmup,
                                         st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                                         st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                                         st.worker_stop, st.shm)
@@ -2320,7 +2121,7 @@ def main() -> int:
                     print("[main] auto-reviving the worker after the transient failure")
                     try:
                         st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
-                            st.worker, st.params, st.work_w, st.work_h, warmup,
+                            st.worker, st.params, st.work_w, st.work_h, st.warmup,
                             st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                             st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                             st.worker_stop, st.shm)
@@ -2422,7 +2223,7 @@ def main() -> int:
                     for action in st.display.menu.handle_event(ev):
                         _apply_menu_action(action)
                 if not st.display.menu.dragging:
-                    st.display.menu.set_state(_menu_payload())
+                    st.display.menu.set_state(settings_io.menu_payload(st))
 
             # --- Grab ahead: while NGX computes frame N we grab N+1 -------
             # work_frame == None happens on the first frame, after a worker
@@ -2787,7 +2588,7 @@ def main() -> int:
                 # window that is not filled yet flashes black.
                 startup_pending = False
                 if st.startup_menu:
-                    st.display.menu.set_state(_menu_payload())
+                    st.display.menu.set_state(settings_io.menu_payload(st))
                     st.display.menu.visible = True
                     st.display.set_menu_opaque(True)
                     st.display.set_menu_input(True)
@@ -2840,7 +2641,7 @@ def main() -> int:
         if st.shm is not None:
             st.shm.close()
         try:
-            _save_menu_layout()
+            settings_io.save_menu_layout(st)
         except Exception:
             pass
         if st.capture is not None:

@@ -53,6 +53,7 @@ def zip_integrity():
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
         "audio.py", "protocol.py", "winapi.py", "dialogs.py", "channels.py",
+        "settings_io.py",
         "NeuralScreen.exe",
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
