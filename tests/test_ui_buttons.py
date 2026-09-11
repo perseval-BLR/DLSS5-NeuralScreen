@@ -304,22 +304,9 @@ def main() -> int:
         if out != [("button", "exit")]:
             failures.append(f"exit: expected [('button', 'exit')], got {out}")
 
-    # 6. The sliders emit their commands. The four parameter sliders and the
-    #    preset buttons live behind the fine-tuning fold - open it first,
-    #    which is also the check that the fold works.
+    # 6. The sliders emit their commands.
     menu.layout(3840, 2160)
     paint(menu)
-    fold = find(menu, "disclose", "tuning")
-    if fold is None:
-        failures.append("no fine-tuning fold on the main page")
-    else:
-        if find(menu, "slider", "intensity") is not None:
-            failures.append("the parameter sliders are visible while folded")
-        click(menu, fold)
-        menu.layout(3840, 2160)
-        paint(menu)
-        if find(menu, "slider", "intensity") is None:
-            failures.append("the fold did not open the parameter sliders")
     for key, want_prefix in (("intensity", "param"), ("split", "split"),
                              ("nr_res", "nr_res")):
         sl = find(menu, "slider", key)

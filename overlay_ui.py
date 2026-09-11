@@ -295,9 +295,6 @@ class OverlayMenu:
         self.hotkeys: dict = {}
         self._sections: list = []
         self._hint_rel = pygame.Rect(0, 0, 0, 0)
-        #: Is the fine-tuning fold open? The menu's own state - it never
-        #: leaves and is not worth a line in config.json.
-        self.tuning_open = False
         self._rule_rel = pygame.Rect(0, 0, 0, 0)
         # What is under the cursor: "title" (draggable) or "grip" (resizable).
         # Without the highlight these zones are invisible and impossible to
@@ -628,6 +625,14 @@ class OverlayMenu:
                    bool(self.state.get("rec_indicator", True)))
 
             section(s["sec_behaviour"])
+            # Idle screens: no new frame arrives (the desktop did not change,
+            # the window did not redraw) - the network waits instead of
+            # chewing the same picture again. No visual price, a real one on
+            # an idle desktop. Set once and forgotten, which is why it lives
+            # here and not on the main page.
+            toggle("skip_static", s.get("skip_static", "Skip static frames"),
+                   bool(self.state.get("skip_static", True)),
+                   hint=s.get("skip_static_hint", ""))
             toggle("open_on_start", s["open_on_start"],
                    bool(self.state.get("open_on_start")))
             toggle("autostart", s.get("autostart", "Autostart with Windows"),
@@ -719,14 +724,6 @@ class OverlayMenu:
                    value_text=value_text,
                    ends=(s.get("nr_res_low", ""), s.get("nr_res_high", "")))
 
-            # Idle screens: no new frame arrives (the desktop did not change,
-            # the window did not redraw) - the network waits instead of
-            # chewing the same picture again. No visual price, a real one on
-            # an idle desktop (issue #31 territory). A per-frame flag.
-            toggle("skip_static", s.get("skip_static", "Skip static frames"),
-                   bool(self.state.get("skip_static", True)),
-                   hint=s.get("skip_static_hint", ""))
-
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
             # sends what the Actions buttons used to send; the list of
@@ -754,17 +751,9 @@ class OverlayMenu:
             section(s["sec_effect"])
             choice("profile", s["profile"], str(self.state.get("profile", "")),
                    list(self.state.get("profiles") or []))
-            # The four sliders and the preset buttons fold away. Most
-            # sessions pick a profile and never touch them, and open they
-            # cost a third of the page.
-            items.append(Item("disclose", "tuning",
-                              pygame.Rect(pad, cy, inner_w, ctrl_h),
-                              value=1.0 if self.tuning_open else 0.0,
-                              extra={"label": s["tuning"]}))
-            cy += ctrl_h + gap
             params = self.state.get("params") or {}
             defaults = self.state.get("param_defaults") or {}
-            for key in (PARAM_KEYS if self.tuning_open else ()):
+            for key in PARAM_KEYS:
                 lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
                 val = float(params.get(key, 0.0))
                 slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}",
@@ -776,8 +765,7 @@ class OverlayMenu:
             bw = (inner_w - bgap) // 2
             for idx, (key, label) in enumerate((
                     ("save_preset", s["save_preset"]),
-                    ("delete_preset", s["delete_preset"])) if self.tuning_open
-                    else ()):
+                    ("delete_preset", s["delete_preset"]))):
                 items.append(Item("button", key,
                                   pygame.Rect(pad + idx * (bw + bgap),
                                               cy, bw, act_h),
@@ -785,8 +773,7 @@ class OverlayMenu:
                                          "filled": False,
                                          "disabled": key == "delete_preset"
                                          and not self.state.get("preset_active")}))
-            if self.tuning_open:
-                cy += act_h + self._u(8)
+            cy += act_h + self._u(8)
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
@@ -832,13 +819,12 @@ class OverlayMenu:
                                      "filled": False}))
             cy += act_h + pad
         else:
-            exit_h = self._u(EXIT_H)
+            # The name and nothing else, centred: the key and the
+            # explanation under it turned one button into a paragraph.
             items.append(Item("action", "exit",
-                              pygame.Rect(pad, cy, inner_w, exit_h),
-                              extra={"label": s["exit_full"],
-                                     "hotkey": self.hotkeys.get("quit", ""),
-                                     "note": s["exit_note"], "danger": True}))
-            cy += exit_h + pad
+                              pygame.Rect(pad, cy, inner_w, act_h),
+                              extra={"label": s["exit_full"], "danger": True}))
+            cy += act_h + pad
 
         # The content height is known. The panel may be shorter - then the
         # content scrolls: at 1080p a full panel took up almost the whole
@@ -1111,9 +1097,6 @@ class OverlayMenu:
                     if cr.collidepoint(event.pos) and idx < len(item.payload or []):
                         out.extend(self._pick(item.key, str(item.payload[idx])))
                         break
-            elif item.kind == "disclose":
-                # A fold is the menu's own business: nothing leaves it.
-                self.tuning_open = not self.tuning_open
             elif item.kind == "toggle":
                 out.append(("nr",) if item.key == "nr" else ("toggle", item.key))
             elif item.kind == "button":
@@ -1430,7 +1413,6 @@ class OverlayMenu:
             {"toggle": self._draw_toggle, "slider": self._draw_slider,
              "choice": self._draw_choice, "button": self._draw_button,
              "segmented": self._draw_segmented,
-             "disclose": self._draw_disclose,
              "info": self._draw_info,
              "action": self._draw_action,
              "hotkey": self._draw_hotkey,
@@ -1825,25 +1807,6 @@ class OverlayMenu:
                                           _rgb(self.c["muted"]))
             surface.blit(img, (hint.x, hint.y))
 
-
-    def _draw_disclose(self, surface, item: Item, s: dict) -> None:
-        """A fold: a triangle and a label, no state beyond open/closed."""
-        open_ = item.value > 0.5
-        col = self.c["text"] if open_ else self.c["muted"]
-        size = self._u(8)
-        cx = item.rect.x + size
-        cy = item.rect.centery
-        if open_:
-            points = [(cx - size, cy - size // 2), (cx + size, cy - size // 2),
-                      (cx, cy + size)]
-        else:
-            points = [(cx - size // 2, cy - size), (cx + size, cy),
-                      (cx - size // 2, cy + size)]
-        pygame.draw.polygon(surface, _rgb(col), points)
-        label = self._clip(self._font, item.extra.get("label", ""), _rgb(col),
-                           item.rect.w - self._u(28))
-        surface.blit(label, (item.rect.x + self._u(28),
-                             cy - label.get_height() // 2))
 
     def _draw_info(self, surface, item: Item, s: dict) -> None:
         """A read-only line: what on the left, how big on the right."""
