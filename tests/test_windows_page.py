@@ -73,16 +73,22 @@ def main() -> int:
     menu = build()
     menu.layout(3840, 2160)
 
-    # 1. The main page holds the "Windows..." button.
-    btn = next((i for i in menu.items
-                if i.kind == "button" and i.key == "windows"), None)
-    if btn is None:
-        failures.append("no Windows... button on the main page")
+    # 1. The window list opens from the source segment on the main page -
+    #    the "Windows..." button moved there with the rest of the source.
+    menu.draw(pygame.Surface((3840, 2160)))
+    seg = next((i for i in menu.items
+                if i.kind == "segmented" and i.key == "source"), None)
+    cells = (seg.extra.get("cells") or []) if seg else []
+    if len(cells) < 2:
+        failures.append("no source segment on the main page")
     else:
-        out = click(menu, btn)
-        print(f"windows button click -> {out}, page now {menu.page}")
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": cells[1].center, "button": 1}))
+        menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, {"pos": cells[1].center, "button": 1}))
+        print(f"one-window cell -> {out}, page now {menu.page}")
         if menu.page != "windows":
-            failures.append("the Windows... button should open the windows page")
+            failures.append("the one-window cell should open the windows page")
 
     # 2. The windows page lists every window as an option row.
     menu.layout(3840, 2160)

@@ -223,9 +223,7 @@ def main() -> int:
             out = click(menu, opts[1])
             if out != [("profile", "Strong / Cinematic")]:
                 failures.append(f"profile pick: expected Strong, got {out}")
-    for key, want in (("windows", [("capture", None)]),
-                      ("fullscreen", [("button", "window_mode")]),
-                      ("screenshot", [("button", "screenshot")]),
+    for key, want in (("screenshot", [("button", "screenshot")]),
                       ("record", [("button", "record")])):
         btn = find(menu, "button", key)
         if btn is None:
@@ -234,9 +232,48 @@ def main() -> int:
         out = click(menu, btn)
         if out != want:
             failures.append(f"button {key}: expected {want}, got {out}")
-        if key == "windows":
-            if menu.page != "windows":
-                failures.append("the windows button should open the windows page")
+
+    # 3b. The source segment carries what the Actions buttons used to: the
+    #     left cell returns to the whole screen (nothing to do when it is
+    #     already there), the right cell opens the window list.
+    seg = find(menu, "segmented", "source")
+    if seg is None:
+        failures.append("no source segment on the main page")
+    else:
+        cells = seg.extra.get("cells") or []
+        if len(cells) != 2:
+            failures.append(f"the source segment has {len(cells)} cells")
+        else:
+            out = menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"pos": cells[0].center, "button": 1}))
+            menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONUP, {"pos": cells[0].center, "button": 1}))
+            if out != []:
+                failures.append(f"whole screen while already there: {out}")
+            out = menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                {"pos": cells[1].center, "button": 1}))
+            menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONUP, {"pos": cells[1].center, "button": 1}))
+            if out != [("capture", None)] or menu.page != "windows":
+                failures.append(f"one window: expected the window page, got {out}")
+        # And from window mode the left cell is the way back out.
+        menu.page = "main"
+        menu.state["window_mode"] = True
+        menu.layout(3840, 2160)
+        paint(menu)
+        seg = find(menu, "segmented", "source")
+        cells = (seg.extra.get("cells") or []) if seg else []
+        if cells:
+            out = menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, {"pos": cells[0].center, "button": 1}))
+            menu.handle_event(pygame.event.Event(
+                pygame.MOUSEBUTTONUP, {"pos": cells[0].center, "button": 1}))
+            if out != [("button", "window_mode")]:
+                failures.append(f"leaving window mode: got {out}")
+        menu.state["window_mode"] = False
+        menu.page = "windows"
 
     # 4. The windows page: a window row and the back button.
     menu.layout(3840, 2160)
@@ -267,9 +304,22 @@ def main() -> int:
         if out != [("button", "exit")]:
             failures.append(f"exit: expected [('button', 'exit')], got {out}")
 
-    # 6. The sliders emit their commands.
+    # 6. The sliders emit their commands. The four parameter sliders and the
+    #    preset buttons live behind the fine-tuning fold - open it first,
+    #    which is also the check that the fold works.
     menu.layout(3840, 2160)
     paint(menu)
+    fold = find(menu, "disclose", "tuning")
+    if fold is None:
+        failures.append("no fine-tuning fold on the main page")
+    else:
+        if find(menu, "slider", "intensity") is not None:
+            failures.append("the parameter sliders are visible while folded")
+        click(menu, fold)
+        menu.layout(3840, 2160)
+        paint(menu)
+        if find(menu, "slider", "intensity") is None:
+            failures.append("the fold did not open the parameter sliders")
     for key, want_prefix in (("intensity", "param"), ("split", "split"),
                              ("nr_res", "nr_res")):
         sl = find(menu, "slider", key)

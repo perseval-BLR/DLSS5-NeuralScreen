@@ -101,18 +101,26 @@ def main() -> int:
     if "collapse" in keys:
         failures.append("the collapse button should be gone from the footer")
 
-    # 4. The fullscreen button lives in the Actions section and emits the
-    #    window_mode command.
-    fs_btn = next((i for i in menu.items
-                   if i.kind == "button" and i.key == "fullscreen"), None)
-    if fs_btn is None:
-        failures.append("no fullscreen button in the Actions section")
+    # 4. Leaving window mode is the left cell of the source segment now -
+    #    the Actions button moved there with the rest of the source.
+    menu.state["window_mode"] = True
+    menu.layout(3840, 2160)
+    menu.draw(pygame.Surface((3840, 2160)))
+    seg = next((i for i in menu.items
+                if i.kind == "segmented" and i.key == "source"), None)
+    cells = (seg.extra.get("cells") or []) if seg else []
+    if not cells:
+        failures.append("no source segment on the main page")
     else:
-        out = click(menu, fs_btn)
-        print(f"fullscreen click -> {out}")
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": cells[0].center, "button": 1}))
+        menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, {"pos": cells[0].center, "button": 1}))
+        print(f"whole-screen cell -> {out}")
         if ("button", "window_mode") not in out:
-            failures.append(f"the fullscreen button should emit "
+            failures.append(f"the whole-screen cell should emit "
                             f"(button, window_mode), got {out}")
+    menu.state["window_mode"] = False
 
     # 5. The settings page: only the back (close) icon, no min.
     menu.page = "settings"

@@ -190,6 +190,16 @@ def main() -> int:
         import dxcam
         cam = dxcam.create(output_idx=0, output_color="RGB")
         try:
+            # A baseline with the menu hidden: whatever is already on the
+            # desktop - a light window, a pale wallpaper - appears in BOTH
+            # captures, and only the panel appears in the second. Without it
+            # the colour match alone called a cream-coloured window at the
+            # screen edge "the menu jumped there" (seen on a 4K desktop).
+            autocheck.send_key(VK_NUMPAD2)   # menu off
+            pump(0.6)
+            baseline = grab_region(cam, None)
+            autocheck.send_key(VK_NUMPAD2)   # menu on again
+            pump(0.6)
             frame = grab_region(cam, None)
             if frame is None:
                 failures.append("no capture frame to inspect the menu")
@@ -207,6 +217,12 @@ def main() -> int:
                     return d
                 strip = frame[max(0, fh - 700):fh, max(0, fw - 100):fw]
                 light = panel_mask(strip)
+                if baseline is not None and baseline.shape == frame.shape:
+                    # Panel-coloured pixels that were NOT there before the
+                    # menu was raised.
+                    was = panel_mask(baseline[max(0, fh - 700):fh,
+                                              max(0, fw - 100):fw])
+                    light = light & ~was
                 share = float(light.mean())
                 print(f"right-edge strip: {share * 100:.1f}% panel-coloured "
                       f"({fw}x{fh} screen)")

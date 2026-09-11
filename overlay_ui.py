@@ -295,6 +295,9 @@ class OverlayMenu:
         self.hotkeys: dict = {}
         self._sections: list = []
         self._hint_rel = pygame.Rect(0, 0, 0, 0)
+        #: Is the fine-tuning fold open? The menu's own state - it never
+        #: leaves and is not worth a line in config.json.
+        self.tuning_open = False
         self._rule_rel = pygame.Rect(0, 0, 0, 0)
         # What is under the cursor: "title" (draggable) or "grip" (resizable).
         # Without the highlight these zones are invisible and impossible to
@@ -532,7 +535,13 @@ class OverlayMenu:
             expand/collapse machinery; here both options are visible at once.
             """
             nonlocal cy
-            seg_w = min(inner_w - self._u(150), self._u(60) * len(options) + self._u(60))
+            if label:
+                seg_w = min(inner_w - self._u(150),
+                            self._u(60) * len(options) + self._u(60))
+            else:
+                # No label, no reason to squeeze: the captions are the
+                # control. "Window mode" ran off the panel at the old width.
+                seg_w = inner_w
             rect = pygame.Rect(pad + inner_w - seg_w, cy, seg_w, ctrl_h)
             items.append(Item("segmented", key, rect, payload=list(options),
                               extra={"label": label, "current": current,
@@ -718,14 +727,44 @@ class OverlayMenu:
                    bool(self.state.get("skip_static", True)),
                    hint=s.get("skip_static_hint", ""))
 
+            # What is being processed - the first question anyone has, and
+            # until now the only one answered on another page. The segment
+            # sends what the Actions buttons used to send; the list of
+            # windows still opens on its own page.
+            section(s["sec_source"])
+            in_window = bool(self.state.get("window_mode"))
+            segmented("source", "", "window" if in_window else "fullscreen",
+                      ["fullscreen", "window"],
+                      labels=[s["mode_fullscreen"], s["mode_window"]])
+            current = (str(self.state.get("window_current") or "").split(": ", 1)
+                       if in_window else [])
+            name = (current[1] if len(current) > 1 else
+                    s["mode_window"] if in_window else
+                    str(self.state.get("monitor") or "").split(" (")[0])
+            items.append(Item("info", "source_now",
+                              pygame.Rect(pad, cy, inner_w, self._u(LABEL_H)),
+                              extra={"label": name,
+                                     "value": str(self.state.get("work_size")
+                                                  or self.state.get("screen_size")
+                                                  or "")}))
+            cy += self._u(LABEL_H) + gap
+
             # The profile and the four effect sliders are their own subject -
             # what the picture looks like, not how hard the network works.
             section(s["sec_effect"])
             choice("profile", s["profile"], str(self.state.get("profile", "")),
                    list(self.state.get("profiles") or []))
+            # The four sliders and the preset buttons fold away. Most
+            # sessions pick a profile and never touch them, and open they
+            # cost a third of the page.
+            items.append(Item("disclose", "tuning",
+                              pygame.Rect(pad, cy, inner_w, ctrl_h),
+                              value=1.0 if self.tuning_open else 0.0,
+                              extra={"label": s["tuning"]}))
+            cy += ctrl_h + gap
             params = self.state.get("params") or {}
             defaults = self.state.get("param_defaults") or {}
-            for key in PARAM_KEYS:
+            for key in (PARAM_KEYS if self.tuning_open else ()):
                 lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
                 val = float(params.get(key, 0.0))
                 slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}",
@@ -737,7 +776,8 @@ class OverlayMenu:
             bw = (inner_w - bgap) // 2
             for idx, (key, label) in enumerate((
                     ("save_preset", s["save_preset"]),
-                    ("delete_preset", s["delete_preset"]))):
+                    ("delete_preset", s["delete_preset"])) if self.tuning_open
+                    else ()):
                 items.append(Item("button", key,
                                   pygame.Rect(pad + idx * (bw + bgap),
                                               cy, bw, act_h),
@@ -745,7 +785,8 @@ class OverlayMenu:
                                          "filled": False,
                                          "disabled": key == "delete_preset"
                                          and not self.state.get("preset_active")}))
-            cy += act_h + self._u(8)
+            if self.tuning_open:
+                cy += act_h + self._u(8)
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))
@@ -759,9 +800,10 @@ class OverlayMenu:
             # together in one section, the footer keeps only Exit).
             bgap = self._u(BTN_GAP)
             bw = (inner_w - bgap) // 2
+            # Select window and Fullscreen left this section for the source
+            # segment above: picking what to process is not an action, it is
+            # a setting, and it belongs where the source is named.
             rows = (
-                (("windows", s["windows_btn"]),
-                 ("fullscreen", s["fullscreen"])),
                 (("screenshot", s["screenshot"]),
                  ("record", s["record_stop_short"] if self.state.get("recording")
                   else s["record"])),
@@ -1069,6 +1111,9 @@ class OverlayMenu:
                     if cr.collidepoint(event.pos) and idx < len(item.payload or []):
                         out.extend(self._pick(item.key, str(item.payload[idx])))
                         break
+            elif item.kind == "disclose":
+                # A fold is the menu's own business: nothing leaves it.
+                self.tuning_open = not self.tuning_open
             elif item.kind == "toggle":
                 out.append(("nr",) if item.key == "nr" else ("toggle", item.key))
             elif item.kind == "button":
@@ -1201,6 +1246,16 @@ class OverlayMenu:
             return [("monitor", value)]
         if key == "gpu":
             return [("gpu", value)]
+        if key == "source":
+            # The same two commands the Actions buttons sent: back to the
+            # whole screen, or the window list page.
+            if value == "window":
+                self.page = "windows"
+                self.scroll = 0
+                self.capturing = None
+                return [("capture", None)]
+            return ([("button", "window_mode")]
+                    if self.state.get("window_mode") else [])
         if key == "window":
             return [("window", value)]
         return []
@@ -1375,6 +1430,8 @@ class OverlayMenu:
             {"toggle": self._draw_toggle, "slider": self._draw_slider,
              "choice": self._draw_choice, "button": self._draw_button,
              "segmented": self._draw_segmented,
+             "disclose": self._draw_disclose,
+             "info": self._draw_info,
              "action": self._draw_action,
              "hotkey": self._draw_hotkey,
              # The header icons sit above the scroll area - we draw them after
@@ -1767,6 +1824,40 @@ class OverlayMenu:
             img = self._small_font.render(s["hotkey_hint"], True,
                                           _rgb(self.c["muted"]))
             surface.blit(img, (hint.x, hint.y))
+
+
+    def _draw_disclose(self, surface, item: Item, s: dict) -> None:
+        """A fold: a triangle and a label, no state beyond open/closed."""
+        open_ = item.value > 0.5
+        col = self.c["text"] if open_ else self.c["muted"]
+        size = self._u(8)
+        cx = item.rect.x + size
+        cy = item.rect.centery
+        if open_:
+            points = [(cx - size, cy - size // 2), (cx + size, cy - size // 2),
+                      (cx, cy + size)]
+        else:
+            points = [(cx - size // 2, cy - size), (cx + size, cy),
+                      (cx - size // 2, cy + size)]
+        pygame.draw.polygon(surface, _rgb(col), points)
+        label = self._clip(self._font, item.extra.get("label", ""), _rgb(col),
+                           item.rect.w - self._u(28))
+        surface.blit(label, (item.rect.x + self._u(28),
+                             cy - label.get_height() // 2))
+
+    def _draw_info(self, surface, item: Item, s: dict) -> None:
+        """A read-only line: what on the left, how big on the right."""
+        value = str(item.extra.get("value") or "")
+        val = self._mono_small.render(value, True, _rgb(self.c["muted"]))
+        room = item.rect.w - val.get_width() - self._u(12)
+        label = self._clip(self._font, str(item.extra.get("label") or ""),
+                           _rgb(self.c["text"]), room)
+        y = item.rect.centery
+        surface.blit(label, (item.rect.x, y - label.get_height() // 2))
+        if value:
+            surface.blit(val, (item.rect.right - val.get_width(),
+                               y - val.get_height() // 2))
+
 
     def _draw_segmented(self, surface, item: Item, s: dict) -> None:
         """Two or three options side by side: the chosen one is accent-filled."""
