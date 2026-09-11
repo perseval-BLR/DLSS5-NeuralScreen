@@ -148,9 +148,12 @@ def _skip(path: str) -> bool:
     # ... except the two images the program LOADS at run time: the tray icon
     # (tray.py) and the window icon (taskbar.py). Excluded, they do not crash
     # anything - both have a fallback - so a build would ship with the wrong
-    # icons and nothing would say why.
-    if norm.startswith("native/") and not norm.endswith(
-            (".dll", ".ico", ".png")):
+    # icons and nothing would say why. Named one by one rather than by
+    # extension: the rule is "these two files", and a .png dropped into
+    # native/ tomorrow is still developer baggage.
+    RUNTIME_ASSETS = ("native/neuralscreen.ico", "native/neuralscreen-tray.png")
+    if (norm.startswith("native/") and not norm.endswith(".dll")
+            and norm not in RUNTIME_ASSETS):
         return True
     if "/test/" in norm or "/tests/" in norm or "/testing/" in norm:
         return True
