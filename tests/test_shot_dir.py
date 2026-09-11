@@ -65,8 +65,11 @@ def main() -> int:
     #    SHAPE of the call, not on its text: the previous version grepped
     #    main.py for one exact line and broke the moment the dialog moved
     #    into dialogs.py, which told us nothing about the wiring.
+    #
+    #    The flow lives in commands.py now - opening the dialog is an answer
+    #    to what the user asked for, and dialogs.py stayed a leaf.
     import ast
-    src = (BASE / "main.py").read_text(encoding="utf-8")
+    src = (BASE / "commands.py").read_text(encoding="utf-8")
     passes_initial_dir = False
     for node in ast.walk(ast.parse(src)):
         if not isinstance(node, ast.Call):
@@ -83,8 +86,8 @@ def main() -> int:
             passes_initial_dir = True
     if not passes_initial_dir:
         failures.append("the dialog does not receive the initial dir")
-    if "screenshot_dir" not in src.split("def _open_save_dialog")[1][:800]:
-        failures.append("_open_save_dialog does not read screenshot_dir")
+    if "screenshot_dir" not in src.split("def open_save_dialog")[1][:800]:
+        failures.append("open_save_dialog does not read screenshot_dir")
 
     print("=" * 60)
     if failures:

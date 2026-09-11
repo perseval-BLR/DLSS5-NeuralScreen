@@ -17,6 +17,7 @@ import sys
 import winreg
 from pathlib import Path
 
+from paths import BASE_DIR
 from capture import devicename_for_output_idx, list_monitors
 # The work caps are the worker's contract, not a setting: the same two
 # numbers size the shared motion buffer in the SHMI handshake.
@@ -56,6 +57,59 @@ def hotkey_labels(bindings: dict) -> dict:
     return {cmd: name for _mods, _vk, cmd, name in bindings.values()}
 
 from i18n import STRINGS as UI_STRINGS
+
+
+# The project page: README, hotkeys, requirements. Opened from the menu.
+REPO_URL = "https://github.com/perseval-BLR/DLSS5-NeuralScreen"
+
+
+CHANNEL_URL = "https://www.youtube.com/@perseval_BLR/videos"
+
+
+PRESET_NAME_PREFIX = "Preset"
+
+
+# The global hotkeys live in hotkeys.py (RegisterHotKey). The layout and the
+# reasons behind the combinations are in that module's docstring.
+WORK_SCALE_STEP = 0.05
+
+
+WORK_SCALE_MAX = 1.0
+
+
+def _next_preset_name(presets: dict) -> str:
+    """The first free "Preset N" name (Preset 1, Preset 2, ...)."""
+    n = 1
+    while f"{PRESET_NAME_PREFIX} {n}" in presets:
+        n += 1
+    return f"{PRESET_NAME_PREFIX} {n}"
+
+
+def _set_autostart(enabled: bool) -> bool:
+    """Enable/disable autostart with Windows (HKCU Run).
+
+    We launch NeuralScreen.vbs through wscript - a hidden launcher with no
+    console. Returns True on success.
+    """
+    import winreg
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_SET_VALUE)
+        if enabled:
+            vbs = str(BASE_DIR / "NeuralScreen.vbs")
+            winreg.SetValueEx(key, "NeuralScreen", 0, winreg.REG_SZ,
+                              f'wscript.exe "{vbs}"')
+        else:
+            try:
+                winreg.DeleteValue(key, "NeuralScreen")
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+        return True
+    except Exception as exc:
+        print(f"[main] autostart not configured: {exc}", file=sys.stderr)
+        return False
 
 
 # The version shown in the menu header. Kept in sync with native/launcher.rc

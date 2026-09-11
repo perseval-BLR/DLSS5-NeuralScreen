@@ -53,7 +53,7 @@ def zip_integrity():
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
         "audio.py", "protocol.py", "winapi.py", "dialogs.py", "channels.py",
-        "settings_io.py", "paths.py", "pipeline.py",
+        "settings_io.py", "paths.py", "pipeline.py", "commands.py",
         "NeuralScreen.exe",
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
@@ -81,6 +81,7 @@ def zip_integrity():
         for name in ("main.py", "hotkeys.py", "display.py", "recorder.py",
                      "overlay_ui.py", "i18n.py", "protocol.py", "winapi.py",
                      "pipeline.py", "settings_io.py", "channels.py",
+                     "commands.py", "paths.py",
                      "README.md", "README.ru.md"):
             try:
                 head = subprocess.check_output(["git", "show", f"HEAD:{name}"],
