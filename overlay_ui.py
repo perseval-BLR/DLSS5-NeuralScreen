@@ -619,30 +619,12 @@ class OverlayMenu:
             hk_nr = self.hotkeys.get("toggle", "")
             toggle("nr", f"{s['nr_on'] if nr_on else s['nr_off']}   {hk_nr}".rstrip(),
                    nr_on)
-            choice("profile", s["profile"], str(self.state.get("profile", "")),
-                   list(self.state.get("profiles") or []))
-            params = self.state.get("params") or {}
-            for key in PARAM_KEYS:
-                lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
-                val = float(params.get(key, 0.0))
-                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
-            # Save / Delete preset: the user presets live in the same list
-            # as the built-in profiles. Delete is only offered while a user
-            # preset is active - the built-in profiles are not deletable.
-            bgap = self._u(BTN_GAP)
-            bw = (inner_w - bgap) // 2
-            for idx, (key, label) in enumerate((
-                    ("save_preset", s["save_preset"]),
-                    ("delete_preset", s["delete_preset"]))):
-                items.append(Item("button", key,
-                                  pygame.Rect(pad + idx * (bw + bgap),
-                                              cy, bw, act_h),
-                                  extra={"label": label,
-                                         "filled": False,
-                                         "disabled": key == "delete_preset"
-                                         and not self.state.get("preset_active")}))
-            cy += act_h + self._u(8)
 
+            # The resolution the network runs at sits right under the
+            # DLSS 5 switch, not in a section of its own further down:
+            # it is the one control that trades quality for frames, and
+            # users did not connect it with the network at all (user
+            # report, 11.09).
             section(s["sec_resolution"])
             # One slider, not a toggle plus a slider. The two used to be
             # separate, and with the toggle off the slider still moved, still
@@ -667,6 +649,33 @@ class OverlayMenu:
             lo = float(self.state.get("work_scale_min", 0.1))
             slider("nr_res", lo, cap + 0.05, pos, s["nr_res"],
                    hint=s["nr_res_hint"], value_text=value_text)
+
+            # The profile and the four effect sliders are their own subject -
+            # what the picture looks like, not how hard the network works.
+            section(s["sec_effect"])
+            choice("profile", s["profile"], str(self.state.get("profile", "")),
+                   list(self.state.get("profiles") or []))
+            params = self.state.get("params") or {}
+            for key in PARAM_KEYS:
+                lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
+                val = float(params.get(key, 0.0))
+                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
+            # Save / Delete preset: the user presets live in the same list
+            # as the built-in profiles. Delete is only offered while a user
+            # preset is active - the built-in profiles are not deletable.
+            bgap = self._u(BTN_GAP)
+            bw = (inner_w - bgap) // 2
+            for idx, (key, label) in enumerate((
+                    ("save_preset", s["save_preset"]),
+                    ("delete_preset", s["delete_preset"]))):
+                items.append(Item("button", key,
+                                  pygame.Rect(pad + idx * (bw + bgap),
+                                              cy, bw, act_h),
+                                  extra={"label": label,
+                                         "filled": False,
+                                         "disabled": key == "delete_preset"
+                                         and not self.state.get("preset_active")}))
+            cy += act_h + self._u(8)
 
             section(s["sec_compare"])
             split_val = float(self.state.get("split", 0.0))

@@ -160,6 +160,34 @@ def list_adapters() -> list[tuple[int, str]]:
     return out
 
 
+def monitor_size(devicename: str) -> tuple[int, int] | None:
+    """The CURRENT size of one monitor, by DXGI devicename, or None.
+
+    Asked live, straight from EnumDisplayMonitors: st.capture.resolution is
+    what the monitor was when the capture session opened, and the desktop
+    resolution can change under a running pipeline (the user switching
+    1440p -> 4K, a game changing the mode, a dock). This is the cheap check
+    the loop can afford between frames; the dxcam factory is not consulted
+    because its cached outputs are exactly what goes stale.
+    """
+    found: list[tuple[int, int]] = []
+
+    def _cb(hmon, _hdc, lprect, _lparam) -> bool:
+        info = _MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(_MONITORINFOEXW)
+        if ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+            if "".join(info.szDevice).rstrip("\x00") == devicename:
+                r = lprect.contents
+                found.append((r.right - r.left, r.bottom - r.top))
+        return True
+
+    MONITORENUMPROC = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    ctypes.windll.user32.EnumDisplayMonitors(0, 0, MONITORENUMPROC(_cb), 0)
+    return found[0] if found else None
+
+
 def list_monitors() -> list[tuple[int, int, int, str]]:
     """Monitors as [(idx, w, h, devicename), ...].
 

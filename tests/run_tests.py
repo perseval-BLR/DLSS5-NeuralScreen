@@ -54,6 +54,7 @@ ABOUT = {
     "test_capture_visibility.py": "outside capture sees the overlay only without WDA",
     "test_config.py": "the config loader validates, clamps and resolves",
     "test_gpu_select.py": "the GPU picker drives config, environment and restart",
+    "test_monitor_resize.py": "a desktop resolution change rebuilds once, after it settles",
     "test_save_dialog.py": "the Save As struct is valid; the fallback still catches",
     "test_window_follow_size.py": "capture size vs frame size: no rebuild loop",
     "test_module_layers.py": "no module imports main, no dangling names, all import clean",

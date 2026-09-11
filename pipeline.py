@@ -31,7 +31,8 @@ import numpy as np
 
 import channels
 import settings_io
-from capture import (ScreenCapture, devicename_for_output_idx,
+from capture import (ScreenCapture, _refresh_dxcam_factory,
+                     devicename_for_output_idx, monitor_size,
                      resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator
@@ -418,6 +419,13 @@ def switch_window(st, hwnd: int) -> None:
     # enter_switch_mode is idempotent and covers the rebuild too.
     st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
     if hwnd:
+        # A minimised window has nothing to capture: WGC would answer with
+        # the last size it had and then go silent. The list offers them
+        # (a menu showing one of five open programs reads as broken), so
+        # picking one restores it first and lets the frame arrive.
+        if ctypes.windll.user32.IsIconic(ctypes.c_void_p(hwnd)):
+            ctypes.windll.user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+            time.sleep(0.25)  # the window has to be drawn before it is measured
         try:
             aw, ah = channels.probe_window_capture(st, hwnd)
         except Exception as exc:
@@ -486,6 +494,61 @@ def apply_spout(st, enabled: bool) -> None:
     rebuild_pipeline(st, UI_STRINGS[st.lang].get(
         "spout_on" if enabled else "spout_off",
         "Spout2 output ON" if enabled else "Spout2 output OFF"))
+
+
+def follow_monitor(st) -> None:
+    """Rebuild when the desktop resolution changes under a running pipeline.
+
+    Everything downstream of the size is built once: the worker's NGX
+    feature, the shared memory, the overlay window. Nothing was watching
+    the monitor itself, so switching the desktop from 1440p to 4K left the
+    program processing a 2560x1440 island in the corner of a 4K screen,
+    with the overlay unable to grow past its old bounds (user report).
+
+    st.capture.resolution is no help - it is what the monitor was when the
+    capture session opened. The size is asked of Windows directly, and the
+    rebuild waits half a second for it to settle: a mode change goes
+    through intermediate sizes, and rebuilding on each one would mean
+    several worker restarts for one switch.
+
+    Window mode is not affected: there the frame follows the window, and
+    follow_window already owns that.
+    """
+    if st.window_hwnd is not None or st.worker_failed or not st.running:
+        return
+    size = monitor_size(st.capture.devicename)
+    if size is None or size == (st.width, st.height):
+        st.mon_resize = None
+        return
+    now = time.monotonic()
+    if st.mon_resize is None or st.mon_resize[0] != size:
+        st.mon_resize = (size, now)
+        return
+    if now - st.mon_resize[1] < 0.5:
+        return
+    st.mon_resize = None
+    print(f"[main] the monitor is now {size[0]}x{size[1]} "
+          f"(was {st.width}x{st.height}) - rebuilding the pipeline")
+    teardown_pipeline(st)
+    # The dxcam factory caches the outputs it enumerated at import, and a
+    # mode change is exactly what makes that cache wrong - a fresh capture
+    # built on it would come back at the old size.
+    try:
+        st.capture.close()
+    except Exception:
+        pass
+    _refresh_dxcam_factory()
+    try:
+        st.capture = ScreenCapture(monitor_idx=st.monitor)
+    except Exception as exc:
+        print(f"[main] the capture did not survive the mode change: {exc}",
+              file=sys.stderr)
+        st.capture = ScreenCapture(monitor_idx=0)
+        st.monitor = st.capture.monitor_idx
+    st.width, st.height = st.capture.resolution
+    st.mon_w, st.mon_h = st.width, st.height
+    st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
+    rebuild_pipeline(st, f"{st.width}x{st.height}")
 
 
 def apply_gpu(st, index: int) -> None:

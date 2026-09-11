@@ -219,6 +219,7 @@ class _Pipeline:
         "follow_pos",
         "follow_resize",
         "follow_size",
+        "mon_resize",
         "frame_index",
         "gpu_ok",
         "gray_active",
@@ -452,6 +453,11 @@ def main() -> int:
                     pipeline.switch_window(st, 0)
                     continue
                 pipeline.follow_window(st)
+            elif st.frame_index % 30 == 0:
+                # Not in window mode: watch the monitor instead. Every
+                # 30 frames - a mode change is not a per-frame event and
+                # the query walks the monitor list.
+                pipeline.follow_monitor(st)
             if st.want_dda and not st.dda_mode and not st.dda_attempted:
                 if st.window_hwnd is not None:
                     # The channel module opens channels; deciding that the

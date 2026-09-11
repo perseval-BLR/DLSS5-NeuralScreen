@@ -139,13 +139,19 @@ def list_capturable_windows() -> list[tuple[int, str]]:
     The window list for the menu. Excludes our own windows, the desktop
     (Progman/WorkerW), windows without a title and windows that do not
     show in the taskbar (owned/tool windows of background processes).
+
+    Minimised windows ARE listed. They used to be skipped - a minimised
+    window has nothing to capture - but the list is what the user reads to
+    find their game, and a menu showing one entry out of five open programs
+    reads as broken (user report, 11.09). Picking one restores it first,
+    see pipeline.switch_window.
     """
     user32 = ctypes.windll.user32
     out: list[tuple[int, str]] = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def cb(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+        if not user32.IsWindowVisible(hwnd):
             return True
         pid = ctypes.c_ulong(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
