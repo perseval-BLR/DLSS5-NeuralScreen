@@ -138,6 +138,133 @@ PROFILES = {
 WORK_SCALE_MIN = 0.1
 
 
+PARAM_MIN, PARAM_MAX = 0.0, 2.5
+
+
+# The four sliders a user preset stores. The same keys as PROFILES carries,
+# minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
+# tied to the built-in profile the preset was saved from).
+PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
+
+
+SKIN_MIN = -1.0
+
+
+DEFAULT_LANG = "en"
+
+
+def _valid_preset_value(key: str, value) -> bool:
+    """A preset value is a finite number inside the slider range.
+
+    The config is user-editable: a hand-typed "intensity": "abc" or 99.0
+    must not crash the program - the preset is dropped instead (the
+    built-in profiles always survive).
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
+    return lo <= value <= PARAM_MAX
+
+
+# The NGX plumbing fields a preset carries along with the four sliders.
+# They are integers with a small, known range (the same values PROFILES
+# uses); anything outside is a broken entry.
+_PRESET_INT_KEYS = {
+    "profile": (0, 2), "preset": (0, 2), "style": (0, 2),
+    "auto_mask": (0, 1), "ui_correction": (0, 1),
+}
+
+
+def load_presets(cfg: dict) -> dict:
+    """The user presets from the config, validated.
+
+    A preset is a full params snapshot: the four sliders plus the NGX
+    plumbing (profile/preset/style/auto_mask/ui_correction), so applying
+    it reproduces the exact look it was saved with. Anything that is not
+    exactly that shape is dropped - a broken entry must not take the
+    program down, and a broken entry must not be offered in the menu
+    either.
+    """
+    raw = cfg.get("presets")
+    if not isinstance(raw, dict):
+        return {}
+    presets: dict = {}
+    for name, values in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(values, dict):
+            continue
+        clean = {}
+        ok = True
+        for key in PRESET_KEYS:
+            if key not in values or not _valid_preset_value(key, values[key]):
+                ok = False
+                break
+            clean[key] = float(values[key])
+        if not ok:
+            continue
+        for key, (lo, hi) in _PRESET_INT_KEYS.items():
+            v = values.get(key)
+            if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
+                ok = False
+                break
+            clean[key] = v
+        if ok:
+            presets[name.strip()] = clean
+    return presets
+
+
+def load_config(path: Path) -> dict:
+    """Load and validate config.json."""
+    with open(path, "r", encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    required = {"monitor", "width", "height", "fullscreen", "warmup", "profile",
+                "intensity", "local_tone", "local_structure", "skin_structure"}
+    missing = required - set(cfg)
+    if missing:
+        raise ValueError(f"config.json: missing fields: {sorted(missing)}")
+    if cfg["profile"] not in PROFILES:
+        # A user preset name, or a stale reference to a deleted preset.
+        # A stale reference must not take the program down - fall back to
+        # the default profile (the menu still lists the surviving presets).
+        if cfg["profile"] not in load_presets(cfg):
+            print(f"[main] config.json: unknown profile {cfg['profile']!r}; "
+                  f"falling back to 'Natural'", file=sys.stderr)
+            cfg["profile"] = "Natural"
+    for key in ("width", "height", "warmup"):
+        if not isinstance(cfg[key], int) or cfg[key] <= 0:
+            raise ValueError(f"config.json: field {key} must be a positive integer")
+    # work_scale: 0.25..1.0 - the NGX processing resolution relative to the output
+    scale = float(cfg.get("work_scale", 1.0))
+    cfg["work_scale"] = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, scale))
+    # lang: the language of the HUD/alerts/menu (en/ru, DEFAULT_LANG by default)
+    lang = str(cfg.get("lang", DEFAULT_LANG))
+    if lang not in UI_STRINGS:
+        lang = DEFAULT_LANG
+    cfg["lang"] = lang
+    return cfg
+
+
+def resolve_params(cfg: dict) -> dict:
+    """Profile + custom NR parameters from the config (null = use the profile).
+
+    A user preset is a full params snapshot and wins over the built-in
+    profile it was saved from; the per-key overrides below still apply on
+    top (they are the live slider values).
+    """
+    if cfg["profile"] in PROFILES:
+        params = dict(PROFILES[cfg["profile"]])
+    else:
+        params = dict(load_presets(cfg).get(cfg["profile"], PROFILES["Natural"]))
+    for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        value = cfg.get(key)
+        if value is not None:
+            params[key] = float(value)
+    return params
+
+
 def _atomic_write_json(path: Path, data: dict) -> None:
     """Write data to path atomically: a temp file in the same directory,
     flushed and fsynced, then os.replace() over the target.

@@ -200,6 +200,16 @@ RESTART_WARMUP = 10     # warmup after a resolution change (do not freeze the sc
 RACK_TIMEOUT = 20.0     # seconds to wait for RACK after RNSZ
 
 
+# How many restarts in a row are allowed before NR is turned off: past this
+# the worker is not coming back on its own, and spinning through restarts
+# only keeps the screen frozen. The user gets an alert instead.
+MAX_CONSECUTIVE_RESTARTS = 3
+# A transient failure (no-frame, driver hiccup) gets ONE automatic revive
+# after this backoff instead of leaving NR off until the user presses Num1.
+# A hard failure (0xBAD00001) never auto-revives.
+AUTO_REVIVE_BACKOFF = 30.0  # seconds
+
+
 def teardown_pipeline(st) -> None:
     """Stop everything that is sized to the current width/height.
 

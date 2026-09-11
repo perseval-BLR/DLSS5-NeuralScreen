@@ -39,114 +39,12 @@ import time
 import uuid
 from pathlib import Path
 
-# --- Log to a file instead of the console --------------------------------
-# The release is launched through pythonw.exe (no console window): stdout and
-# stderr are None there and any print would fail. We redirect them into
-# NeuralScreen.log next to main.py - every print keeps working and the user
-# reads the log as a file rather than a window. Startup errors (a missing DLL
-# and the like) are additionally shown in a message box (see the bottom of
-# this file).
-LOG_PATH = Path(__file__).resolve().parent / "NeuralScreen.log"
 
 
-def _init_logging() -> None:
-    """Redirect stdout/stderr into NeuralScreen.log (utf-8)."""
-    try:
-        log_file = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
-        sys.stdout = log_file
-        sys.stderr = log_file
-    except Exception:
-        pass  # it did not work - the prints just vanish, we do not crash
 
 
-def _apply_nr_dll(cfg: dict) -> None:
-    """The swappable runtime: a configured nr_dll reaches the worker.
-
-    The worker loads nvngx_dlssnr.dll by name; NS_NR_DLL lets a different
-    build be loaded without rebuilding the worker (the RHI
-    dlss_manifest.json pattern). The path is put into the environment,
-    which subprocess inherits. Without the flag the bundled DLL stays the
-    default.
-    """
-    if cfg.get("nr_dll"):
-        os.environ["NS_NR_DLL"] = str(cfg["nr_dll"])
 
 
-def _log_environment(cfg: dict) -> None:
-    """Print the environment header into the log: version, OS, HDR, driver.
-
-    Users paste NeuralScreen.log into issues; the header answers the
-    questions we would otherwise have to ask (which version, which
-    Windows, is HDR on, which driver). Every probe is wrapped: a missing
-    API or a stripped system must not crash the startup - the line is
-    simply skipped.
-    """
-    try:
-        import platform
-        import sys as _sys
-        win = _sys.getwindowsversion()
-        print(f"[env] NeuralScreen {APP_VERSION} | Windows {win.major}.{win.minor} "
-              f"(build {win.build}) | {platform.platform()}")
-    except Exception:
-        print(f"[env] NeuralScreen {APP_VERSION} | Windows unknown")
-    try:
-        import gpuinfo
-        g = gpuinfo.probe()
-        print(f"[env] GPU: {g.get('name') or 'unknown'} "
-              f"({g.get('family') or '?'}, arch 0x{g.get('arch_group', 0):X})")
-    except Exception:
-        pass
-    try:
-        # The NVIDIA driver version from the display-class registry key.
-        import winreg
-        base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-        for idx in range(10):
-            try:
-                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                    f"{base}\\{idx:04d}") as key:
-                    desc, _ = winreg.QueryValueEx(key, "DriverDesc")
-                    if "NVIDIA" in str(desc):
-                        ver, _ = winreg.QueryValueEx(key, "DriverVersion")
-                        print(f"[env] driver: {ver}")
-                        break
-            except OSError:
-                continue
-    except Exception:
-        pass
-    try:
-        # HDR: the monitor data store in the registry carries HDREnabled.
-        # One read, no deep API digging - if the key is not there the
-        # line just says unknown.
-        import winreg
-        base = (r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
-                r"\MonitorDataStore")
-        hdr = None
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
-                for i in range(winreg.QueryInfoKey(root)[0]):
-                    try:
-                        with winreg.OpenKey(root, winreg.EnumKey(root, i)) as mon:
-                            try:
-                                val, _ = winreg.QueryValueEx(mon, "HDREnabled")
-                                hdr = bool(val)
-                                break
-                            except OSError:
-                                continue
-                    except OSError:
-                        continue
-        except OSError:
-            pass
-        print(f"[env] HDR: {'on' if hdr else 'off' if hdr is not None else 'unknown'}")
-    except Exception:
-        pass
-    try:
-        numlock = bool(ctypes.windll.user32.GetKeyState(0x90) & 1)
-        print(f"[env] Num Lock: {'on' if numlock else 'off'} | "
-              f"lang: {cfg.get('lang', 'en')} | "
-              f"profile: {cfg.get('profile', '?')} | "
-              f"work_scale: {cfg.get('work_scale', '?')}")
-    except Exception:
-        pass
 
 # DPI awareness BEFORE any import (cv2, capture, display, tray): if some
 # module sets awareness first (dxcam, for instance, calls
@@ -189,17 +87,24 @@ from taskbar import TaskbarWindow
 import dialogs
 import channels
 import commands
+import startup
 import settings_io
 import pipeline
 # The restart cooldown is the loop's business too: it is what the
 # deferred apply waits for.
-from pipeline import RESTART_COOLDOWN  # noqa: F401
+from pipeline import (AUTO_REVIVE_BACKOFF,  # noqa: F401
+                      MAX_CONSECUTIVE_RESTARTS, RESTART_COOLDOWN)
 # The pieces below live in their own modules now; re-exported because
 # the rest of the program and the tests look them up in main.
 from paths import BASE_DIR, NATIVE_DIR, WORKER_EXE  # noqa: F401
 from protocol import SharedFrameBuffer, _negotiate_shm  # noqa: F401
 from pipeline import (_drain_stderr, restart_worker,  # noqa: F401
                       shutdown_worker, start_worker)
+from startup import (LOG_PATH, _apply_nr_dll,  # noqa: F401
+                     _init_logging, _log_environment)
+from settings_io import (DEFAULT_LANG, PRESET_KEYS,  # noqa: F401
+                         SKIN_MIN, load_config, load_presets,
+                         resolve_params)
 from settings_io import _work_size, hotkey_labels  # noqa: F401
 # The settings layer owns these now; re-exported because the rest
 # of the program and the tests look them up in main.
@@ -238,12 +143,6 @@ from protocol import (  # noqa: F401
     send_out, send_resize, send_wgc, send_window)
 
 
-# The four sliders a user preset stores. The same keys as PROFILES carries,
-# minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
-# tied to the built-in profile the preset was saved from).
-PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
-PARAM_MIN, PARAM_MAX = 0.0, 2.5
-SKIN_MIN = -1.0
 
 
 FPS_LOG_INTERVAL = 2.0  # seconds, FPS log to the console
@@ -251,121 +150,18 @@ PERF_LOG_INTERVAL = 5.0  # seconds, log of the mean pipeline stage timings
 PERF_KEYS = ("grab", "resize_full", "guides", "send", "recv", "show")
 
 
-DEFAULT_LANG = "en"
-
-
-def _valid_preset_value(key: str, value) -> bool:
-    """A preset value is a finite number inside the slider range.
-
-    The config is user-editable: a hand-typed "intensity": "abc" or 99.0
-    must not crash the program - the preset is dropped instead (the
-    built-in profiles always survive).
-    """
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return False
-    lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
-    return lo <= value <= PARAM_MAX
-
-
-# The NGX plumbing fields a preset carries along with the four sliders.
-# They are integers with a small, known range (the same values PROFILES
-# uses); anything outside is a broken entry.
-_PRESET_INT_KEYS = {
-    "profile": (0, 2), "preset": (0, 2), "style": (0, 2),
-    "auto_mask": (0, 1), "ui_correction": (0, 1),
-}
-
-
-def load_presets(cfg: dict) -> dict:
-    """The user presets from the config, validated.
-
-    A preset is a full params snapshot: the four sliders plus the NGX
-    plumbing (profile/preset/style/auto_mask/ui_correction), so applying
-    it reproduces the exact look it was saved with. Anything that is not
-    exactly that shape is dropped - a broken entry must not take the
-    program down, and a broken entry must not be offered in the menu
-    either.
-    """
-    raw = cfg.get("presets")
-    if not isinstance(raw, dict):
-        return {}
-    presets: dict = {}
-    for name, values in raw.items():
-        if not isinstance(name, str) or not name.strip():
-            continue
-        if not isinstance(values, dict):
-            continue
-        clean = {}
-        ok = True
-        for key in PRESET_KEYS:
-            if key not in values or not _valid_preset_value(key, values[key]):
-                ok = False
-                break
-            clean[key] = float(values[key])
-        if not ok:
-            continue
-        for key, (lo, hi) in _PRESET_INT_KEYS.items():
-            v = values.get(key)
-            if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
-                ok = False
-                break
-            clean[key] = v
-        if ok:
-            presets[name.strip()] = clean
-    return presets
 
 
 
 
-def load_config(path: Path) -> dict:
-    """Load and validate config.json."""
-    with open(path, "r", encoding="utf-8") as fh:
-        cfg = json.load(fh)
-    required = {"monitor", "width", "height", "fullscreen", "warmup", "profile",
-                "intensity", "local_tone", "local_structure", "skin_structure"}
-    missing = required - set(cfg)
-    if missing:
-        raise ValueError(f"config.json: missing fields: {sorted(missing)}")
-    if cfg["profile"] not in PROFILES:
-        # A user preset name, or a stale reference to a deleted preset.
-        # A stale reference must not take the program down - fall back to
-        # the default profile (the menu still lists the surviving presets).
-        if cfg["profile"] not in load_presets(cfg):
-            print(f"[main] config.json: unknown profile {cfg['profile']!r}; "
-                  f"falling back to 'Natural'", file=sys.stderr)
-            cfg["profile"] = "Natural"
-    for key in ("width", "height", "warmup"):
-        if not isinstance(cfg[key], int) or cfg[key] <= 0:
-            raise ValueError(f"config.json: field {key} must be a positive integer")
-    # work_scale: 0.25..1.0 - the NGX processing resolution relative to the output
-    scale = float(cfg.get("work_scale", 1.0))
-    cfg["work_scale"] = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, scale))
-    # lang: the language of the HUD/alerts/menu (en/ru, DEFAULT_LANG by default)
-    lang = str(cfg.get("lang", DEFAULT_LANG))
-    if lang not in UI_STRINGS:
-        lang = DEFAULT_LANG
-    cfg["lang"] = lang
-    return cfg
 
 
-def resolve_params(cfg: dict) -> dict:
-    """Profile + custom NR parameters from the config (null = use the profile).
 
-    A user preset is a full params snapshot and wins over the built-in
-    profile it was saved from; the per-key overrides below still apply on
-    top (they are the live slider values).
-    """
-    if cfg["profile"] in PROFILES:
-        params = dict(PROFILES[cfg["profile"]])
-    else:
-        params = dict(load_presets(cfg).get(cfg["profile"], PROFILES["Natural"]))
-    for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
-        value = cfg.get(key)
-        if value is not None:
-            params[key] = float(value)
-    return params
+
+
+
+
+
 
 
             # A reply for a frame main no longer waits for (after a timeout) - skip
@@ -459,6 +255,7 @@ class _Pipeline:
         "shot_dialog_open",
         "shot_paths",
         "split_pos",
+        "taskbar",
         "startup_menu",
         "tray",
         "tray_commands",
@@ -505,258 +302,10 @@ def main() -> int:
     # The config file's path, kept in the state: the settings module writes
     # back into it and has no business knowing what argparse is.
     st.cfg_path = args.config
-    st.cfg = load_config(st.cfg_path)
-    st.params = resolve_params(st.cfg)
-    st.presets = load_presets(st.cfg)
-    _apply_nr_dll(st.cfg)
-    _log_environment(st.cfg)
-    st.width, st.height = int(st.cfg["width"]), int(st.cfg["height"])
-    monitor_cfg = st.cfg["monitor"]
-    if isinstance(monitor_cfg, str):
-        # New configs store the DXGI devicename - resolve it to the current
-        # output index; a monitor that is not connected falls back to 0.
-        st.monitor = resolve_output_idx(monitor_cfg)
-        if st.monitor is None:
-            print(f"[main] monitor {monitor_cfg!r} from config.json is not "
-                  "connected - using monitor 0", file=sys.stderr)
-            st.monitor = 0
-    else:
-        # Old configs store the positional index.
-        st.monitor = int(monitor_cfg)
-    st.warmup = int(st.cfg["warmup"])
-    st.work_scale = float(st.cfg["work_scale"])
-    # The worker reads NS_NR_SMALL once, at startup: with it on, Neural
-    # Rendering runs at the work resolution and the result is scaled back up
-    # instead of the network chewing the whole screen. Off by default - it is
-    # faster but softer, and an update must not change how the picture looks
-    # without being asked. Toggling it later restarts the worker, which is why
-    # it lives in the environment rather than in the frame protocol.
-    st.nr_small = bool(st.cfg.get("nr_small", False))
-    os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
-    st.lang = str(st.cfg["lang"])
-
-    # The output resolution comes FROM THE REAL MONITOR, not from a stale
-    # config.json (the monitor may have been switched to 1440p while the
-    # config still remembers 4K - the overlay, the recording and the worker
-    # window would start drifting away from the screen).
-    st.capture = ScreenCapture(monitor_idx=st.monitor)
-    st.mon_w, st.mon_h = st.capture.resolution
-    if st.mon_w > 0 and st.mon_h > 0 and (st.mon_w, st.mon_h) != (st.width, st.height):
-        print(f"[main] monitor {st.monitor} is {st.mon_w}x{st.mon_h} (config: {st.width}x{st.height}), "
-              f"taking the real resolution")
-        st.width, st.height = st.mon_w, st.mon_h
-
-    print(f"[main] NeuralScreen - profile {st.cfg['profile']!r}, "
-          f"resolution {st.width}x{st.height}, monitor {st.monitor}")
-    print(f"[main] NGX parameters: {st.params}")
-    print(f"[main] work_scale {st.work_scale:.2f} (NGX resolution "
-          f"{int(st.width * st.work_scale)}x{int(st.height * st.work_scale)})")
-
-    st.worker: subprocess.Popen | None = None
-    st.reader: WorkerReader | None = None
-    st.worker_stop: threading.Event | None = None
-    st.shm: SharedFrameBuffer | None = None
-    st.display: Display | None = None
-    st.tray: TrayController | None = None
-    st.hotkeys: HotkeyController | None = None
-    st.recorder: VideoRecorder | None = None
+    startup.configure(st)
     try:
-        # The worker and guides run at the work resolution (the NGX feature is
-        # created from the header sizes; guides' assert requires them to match)
-        st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
-        # The v3 protocol (full_w/full_h) ONLY when work != full: at work==full
-        # (scale 1.0) the worker crashes or hangs in upscale mode (verified in
-        # isolation) - we use legacy full_w=0, as in D5V2.
-        full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
-        full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
-        # Shared memory for the input frame: its size does not depend on
-        # work_scale (see SharedFrameBuffer), so it is created once per process.
-        st.shm = SharedFrameBuffer(st.width, st.height)
-        # Which card this is and whether NR works on it. The model comes from
-        # nvapi, but the support verdict comes from the worker rather than the
-        # architecture: only it knows whether feature 18 was created.
-        gpu_info = gpu_probe()
-        st.gpu_text = gpu_describe(gpu_info)
-        st.gpu_ok: bool | None = None
-        print(f"[main] GPU: {st.gpu_text or 'unknown'} "
-              f"(group 0x{gpu_info['arch_group']:X}, officially supported: "
-              f"{'yes' if gpu_info['official'] else 'no'})")
-        # The stock warm-up is 120 discarded evaluations. On a fast Blackwell
-        # card that is a second or two; on Turing/Ampere/Ada it can take far
-        # longer than the frame watchdog, which then kills the worker on
-        # frame 0 and starts a restart storm (seen on RTX 2070 at ~1 FPS and
-        # on RTX 3060 Ti at ~18 FPS). Unsupported/pre-Blackwell cards get a
-        # short warm-up; the actual effect is still evaluated normally
-        # afterwards.
-        effective_warmup = st.warmup
-        if not gpu_info["official"] and st.warmup > 4:
-            effective_warmup = 4
-            print(f"[main] pre-Blackwell GPU: warmup {st.warmup} -> "
-                  f"{effective_warmup} to avoid a false frame-0 watchdog "
-                  f"timeout")
-        st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-            st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
-        print(f"[main] worker started (pid {st.worker.pid}), header sent "
-              f"({st.work_w}x{st.work_h})")
+        startup.bring_up(st)
 
-        print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
-
-        st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
-        st.display.set_lang(st.lang)
-        # The program draws over the desktop and gives no sign of itself -
-        # without this it is unclear after launch whether it is running.
-        st.startup_menu = bool(st.cfg.get("open_menu_on_start", True))
-        # The before/after wipe: the share of the frame the worker leaves raw.
-        st.split_pos = min(1.0, max(0.0, float(st.cfg.get("split", 0.0))))
-        startup_pending = True
-        # The menu size, position and theme - exactly as the user left them.
-        st.display.menu.set_user_scale(float(st.cfg.get("menu_scale", 1.0)))
-        saved_theme = st.cfg.get("theme")
-        if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
-            st.display.menu.set_state({"theme": saved_theme})
-        saved_offset = st.cfg.get("menu_offset")
-        if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
-            st.display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
-        saved_height = st.cfg.get("menu_height")
-        if isinstance(saved_height, (int, float)) and saved_height > 0:
-            st.display.menu.user_height = int(saved_height)
-        print(f"[main] output window {st.display.width}x{st.display.height}")
-
-        # Tray icon: commands go into a queue, the main loop reads them
-        st.tray_commands = queue.Queue()
-        # Answers from the "Save as" dialog. The dialog is modal and lives in
-        # its own thread (see _open_save_dialog); the path arrives here.
-        st.shot_paths = queue.Queue()
-        st.shot_dialog_open = False
-        st.tray = TrayController(st.tray_commands, labels={
-            "settings": UI_STRINGS[st.lang].get("settings_title", "Settings"),
-            "quit": UI_STRINGS[st.lang].get("exit", "Exit"),
-        })
-        st.tray._set_state(nr=True, scale=st.work_scale)
-        st.tray.start()
-        print("[main] tray icon started")
-
-        # Taskbar button: the overlay and the worker window are tool
-        # windows, so the program lived only in the tray. A 1x1 APPWINDOW
-        # window gives the program a real taskbar button; clicking it sends
-        # the same "settings" command as a left click on the tray (user
-        # rule 2026-09-09: the program must always show in the taskbar).
-        taskbar = TaskbarWindow(st.tray_commands, "NeuralScreen")
-        taskbar.start()
-        print("[main] taskbar window started")
-
-        # Global hotkeys: RegisterHotKey rather than polling the key state.
-        # The system gives the keypress to us alone and does not pass it to the
-        # active application - Num1 inside a game toggles NR and the game never
-        # sees the key (the polling fallback does not swallow it, but the numpad
-        # is free in games). The commands go into the same queue the tray uses. The
-        # user's bindings come from config.json ("hotkeys": {"toggle": "Num1", ...}).
-        hotkey_overrides = st.cfg.get("hotkeys")
-        if not isinstance(hotkey_overrides, dict):
-            hotkey_overrides = {}
-        st.hotkey_bindings = build_bindings(hotkey_overrides)
-        st.hotkeys = HotkeyController(st.tray_commands, st.hotkey_bindings)
-        st.hotkeys.start()
-        if st.hotkeys.registered:
-            print(f"[main] hotkeys registered: {', '.join(st.hotkeys.registered)} "
-                  f"({describe_hotkeys(st.hotkey_bindings)})")
-        if st.hotkeys.failed:
-            print(f"[main] hotkeys taken by another program: {', '.join(st.hotkeys.failed)}",
-                  file=sys.stderr)
-        # The numpad sends different key codes with Num Lock off, so those
-        # bindings do not misbehave - they are simply absent. Say so, or it
-        # looks like the program ignores the keyboard.
-        numpad = numlock_needed(st.hotkey_bindings)
-        if numpad and not numlock_on():
-            print(f"[main] Num Lock is off: the numpad hotkeys "
-                  f"({', '.join(numpad)}) will not fire until it is on",
-                  file=sys.stderr)
-            st.display.alert(UI_STRINGS[st.lang]["numlock_off"], duration=6.0)
-        # The captions on the menu buttons come from the same bindings that were
-        # registered. Strictly after build_bindings: before that they do not exist.
-        st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
-
-        # The settings live in the overlay menu (Num2). There is no separate
-        # window any more: it was a second interface over the same fields, it
-        # stole focus from the game and dragged the whole of tcl/tk into the
-        # runtime.
-
-        st.guides = TemporalGuideGenerator(st.work_w, st.work_h)
-
-        # A reused buffer: every frame allocated ~100 MB (a 4K grab plus the
-        # resizes plus flow), the GC could not keep up -> OOM around frame 1900.
-        # The buffer is reused through cv2.resize(dst=...). work/out buffers are
-        # not needed: in v3 the full->work->full resize is done by the worker on
-        # the GPU (NGX Upscaling).
-        st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
-
-        st.paused = False
-        # The worker died and exhausted the restart budget: the pipeline is
-        # stopped (no send/recv, no more restarts) and the overlay is hidden
-        # so the desktop is not covered by a black window (issue #3: black
-        # screen on a GPU where feature 18 cannot be created). Cleared when
-        # the user turns NR back on.
-        st.worker_failed = False
-        st.frame_index = 0
-        st.pts = 0
-        guide = None  # initialised before the loop: Num1 before the first NR frame must not raise NameError
-        st.output_rgba = None  # the last NR frame (for a screenshot); None until the first one
-        # WNDO mode: the worker shows the frame, no pixels come back to Python.
-        st.want_present = bool(st.cfg.get("worker_present", True))
-        st.want_motion_small = bool(st.cfg.get("motion_on_gpu", True))
-        st.want_dda = bool(st.cfg.get("capture_in_worker", True))  # DDA: the worker takes the colour
-        # The result pixels come back through shared memory, not the pipe.
-        st.want_out_shm = bool(st.cfg.get("pixels_in_shm", True))
-        # System audio ("what you hear") as a second track in the recording.
-        # A config flag rather than a menu item: it is a decision made once,
-        # not something to reach for while the overlay is up.
-        st.record_audio = bool(st.cfg.get("record_audio", True))
-        st.out_shm = False
-        st.out_attempted = False
-        st.motion_small = False  # the worker upscales the motion field itself
-        st.motion_attempted = False  # already tried for the current worker
-        st.present_mode = False      # the worker window is up right now
-        st.present_attempted = False  # already tried for the current worker (do not spam)
-        st.dda_mode = False          # the worker captures the screen itself
-        st.dda_attempted = False     # already tried for the current worker (do not spam)
-        st.window_hwnd = None        # WGCW target; None = the whole desktop (DDA1)
-        st.last_foreground = 0       # the last focused window that was not ours
-        st.follow_pos = None         # where the overlay currently sits (window mode)
-        st.follow_resize = None      # a pending size change, waiting to settle
-        st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
-        st.gray_active = False       # guides take luminance from the worker's gray channel
-        st.pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels
-        st.recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC
-        st.work_frame = None  # the current work frame; None -> grab at the top of the loop
-        fps_window: list[float] = []
-        last_log = time.monotonic()
-        last_fps = 0.0
-        # Stage timings: mean ms over PERF_LOG_INTERVAL (the [perf] log)
-        st.perf = {k: [] for k in PERF_KEYS}
-        last_perf_log = time.monotonic()
-
-
-        def _perf(key: str, t0: float) -> None:
-            """Record the stage duration (ms) into the timings dictionary."""
-            st.perf[key].append((time.perf_counter() - t0) * 1000.0)
-        st.running = True
-        # Protection against rapid changes (arrow key repeat, a jerked slider):
-        # the intermediate values are coalesced and only the last one is applied.
-        # 0.5 s rather than 2 s: the change goes through RNSZ inside the live
-        # worker process, not through a restart with an NGX init/shutdown plus
-        # sleep(2) - the expensive path is only a fallback now.
-        st.last_restart = 0.0
-        st.pending_apply: tuple | None = None  # the deferred (scale, profile, params)
-        # Auto-recovery limit: if the worker dies N times in a row we turn NR
-        # off (pause) and raise an alert instead of spinning through restarts.
-        MAX_CONSECUTIVE_RESTARTS = 3
-        # A transient failure (no-frame, driver hiccup) gets ONE automatic
-        # revive after this backoff instead of leaving NR off until the user
-        # presses Num1. A hard failure (0xBAD00001) never auto-revives.
-        AUTO_REVIVE_BACKOFF = 30.0  # seconds
-        st.next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
-        st.consecutive_restarts = 0
-        st.guide_fails = 0
 
         def _recreate_capture() -> None:
             """Recreate the capture (a fresh DDA session) after a failure or mode change."""
@@ -785,6 +334,20 @@ def main() -> int:
                           file=sys.stderr)
                 return None
 
+
+        # The loop's own state, next to the loop that owns it.
+        guide = None  # Num1 before the first NR frame must not raise NameError
+        startup_pending = True  # open the menu once the picture is alive
+        fps_window: list[float] = []
+        last_log = time.monotonic()
+        last_fps = 0.0
+        last_perf_log = time.monotonic()
+        # Stage timings: mean ms over PERF_LOG_INTERVAL (the [perf] log)
+        st.perf = {k: [] for k in PERF_KEYS}
+
+        def _perf(key: str, t0: float) -> None:
+            """Record the stage duration (ms) into the timings dictionary."""
+            st.perf[key].append((time.perf_counter() - t0) * 1000.0)
 
         while st.running:
             loop_start = time.perf_counter()
@@ -1351,7 +914,7 @@ def main() -> int:
         except Exception:
             pass
         try:
-            taskbar.stop()
+            st.taskbar.stop()
         except Exception:
             pass
         print("[main] resources released")
