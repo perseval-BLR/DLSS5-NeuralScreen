@@ -5,8 +5,9 @@ Scale +0.05 / -0.05, Exit. Left click on the icon is the default action =
 open the menu (Windows convention: right click for the menu, left for the
 default). Commands go into a queue.Queue that the main loop drains.
 
-The icon is generated with Pillow: a dark #0D1117 square with an amber
-#FFBF00 accent square (the project's colours).
+The icon is the channel avatar (a black turbine fan with a gold "P"):
+the same image the launcher and the taskbar button show. Loaded from
+native/neuralscreen-tray.png, a round crop of the avatar.
 
 Menu labels come from the caller: they are user-visible text, so they live
 in i18n like the rest of the interface, not in this module.
@@ -16,22 +17,26 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 
 import pystray
 from PIL import Image, ImageDraw
-
-ACCENT = (0xFF, 0xBF, 0x00)
-BG = (0x0D, 0x11, 0x17)
 
 #: Fallback labels, used when the caller passes none.
 DEFAULT_LABELS = {"settings": "Settings", "quit": "Exit"}
 
 
 def _make_icon(size: int = 64) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (*BG, 255))
-    draw = ImageDraw.Draw(img)
-    m = size // 8
-    draw.rectangle((m, m, size - m, size - m), fill=(*ACCENT, 255))
+    """The tray image: the round avatar crop at the requested size."""
+    png = Path(__file__).resolve().parent / "native" / "neuralscreen-tray.png"
+    if png.is_file():
+        return Image.open(png).resize((size, size), Image.LANCZOS)
+    # Fallback (the file is missing - a dev tree): the old placeholder, a
+    # dark square with an amber accent.
+    img = Image.new("RGBA", (size, size), (0x0D, 0x11, 0x17, 255))
+    d = size // 8
+    ImageDraw.Draw(img).rectangle((d, d, size - d, size - d),
+                                  fill=(0xFF, 0xBF, 0x00, 255))
     return img
 
 
