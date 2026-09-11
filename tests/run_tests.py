@@ -102,6 +102,7 @@ ABOUT = {
     "test_split.py": "the before/after wipe leaves the left side untouched",
     "test_taskbar_window.py": "the taskbar button exists, opens the menu, closes cleanly",
     "test_ui_buttons.py": "every control on every page fires the right command",
+    "test_controls_visual.py": "the switch, the slider ticks and the Quit edge draw",
     "test_wgc_capture.py": "the worker captures one window (the single-window input)",
     "test_window_filter.py": "the window list holds only real taskbar windows",
     "test_windows_page.py": "the windows page lists, highlights and switches",

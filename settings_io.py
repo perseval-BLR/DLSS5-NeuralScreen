@@ -426,6 +426,15 @@ def menu_payload(st) -> dict:
         "params": {k: st.params[k] for k in
                    ("intensity", "local_tone",
                     "local_structure", "skin_structure")},
+        # What the CURRENT profile puts each parameter at. The menu draws it
+        # as a tick under the slider, so "how far have I moved this from
+        # Natural" is visible instead of remembered.
+        "param_defaults": {
+            k: float(v) for k, v in
+            (PROFILES.get(st.cfg["profile"])
+             or st.presets.get(st.cfg["profile"]) or {}).items()
+            if k in ("intensity", "local_tone", "local_structure",
+                     "skin_structure")},
         "lang": st.lang,
         "recording": st.recorder is not None,
         "work_size": f"{st.work_w}x{st.work_h}",

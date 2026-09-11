@@ -178,6 +178,9 @@ class OverlayMenu:
             "profile": "",
             "profiles": [],
             "params": {},
+            # The profile's own numbers, drawn as a tick under each
+            # parameter slider (see _draw_slider).
+            "param_defaults": {},
             "preset_active": False,
             "recording": False,
             "work_size": "",
@@ -488,15 +491,21 @@ class OverlayMenu:
             cy += sec_h
 
         def slider(key: str, lo: float, hi: float, value: float,
-                   label: str, hint: str = "", value_text: str = "") -> None:
+                   label: str, hint: str = "", value_text: str = "",
+                   mark: float | None = None,
+                   ends: tuple | None = None) -> None:
             nonlocal cy
             items.append(Item("slider", key,
                               pygame.Rect(pad, cy, inner_w, label_h + ctrl_h),
                               lo=lo, hi=hi, value=value,
                               extra={"label": label, "hint": hint,
+                                     "mark": mark, "ends": ends,
                                      "value_text": value_text,
                                      "label_h": label_h}))
-            cy += label_h + ctrl_h + (self._u(SMALL_SIZE) + 4 if hint else 0) + gap
+            # End captions take the same line a hint would: a slider has
+            # one or the other, never both (they would overprint).
+            cy += label_h + ctrl_h + (self._u(SMALL_SIZE) + 4
+                                      if (hint or ends) else 0) + gap
 
         def choice(key: str, label: str, current: str, options: list,
                    labels: list | None = None, hint: str = "") -> None:
@@ -693,8 +702,13 @@ class OverlayMenu:
             # 0.30: a config value below the slider range would put the knob
             # at the bottom while the label shows a different resolution.
             lo = float(self.state.get("work_scale_min", 0.1))
+            # The ends replace the hint here: "fewer pixels - more FPS" on
+            # one side and "whole screen - all detail" on the other say the
+            # same thing as the sentence did, in the place where the choice
+            # is actually made.
             slider("nr_res", lo, cap + 0.05, pos, s["nr_res"],
-                   hint=s["nr_res_hint"], value_text=value_text)
+                   value_text=value_text,
+                   ends=(s.get("nr_res_low", ""), s.get("nr_res_high", "")))
 
             # Idle screens: no new frame arrives (the desktop did not change,
             # the window did not redraw) - the network waits instead of
@@ -710,10 +724,12 @@ class OverlayMenu:
             choice("profile", s["profile"], str(self.state.get("profile", "")),
                    list(self.state.get("profiles") or []))
             params = self.state.get("params") or {}
+            defaults = self.state.get("param_defaults") or {}
             for key in PARAM_KEYS:
                 lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
                 val = float(params.get(key, 0.0))
-                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}")
+                slider(key, lo, PARAM_MAX, val, s[key], value_text=f"{val:.2f}",
+                       mark=defaults.get(key))
             # Save / Delete preset: the user presets live in the same list
             # as the built-in profiles. Delete is only offered while a user
             # preset is active - the built-in profiles are not deletable.
@@ -1522,17 +1538,31 @@ class OverlayMenu:
     def _draw_toggle(self, surface, item: Item, s: dict) -> None:
         on = item.value > 0.5
         size = self._u(20)
-        box = pygame.Rect(item.rect.x, item.rect.centery - size // 2, size, size)
+        # A switch, not a checkbox: the track is a pill and the knob sits at
+        # the end that matches the state. A square box could only be read by
+        # the word beside it, and this one is read from the corner of the eye
+        # while a game is running.
+        track_w = int(size * 1.8)
+        box = pygame.Rect(item.rect.x, item.rect.centery - size // 2,
+                          track_w, size)
         # A hint grows the row; the box and the label stay on the first
         # line - only the hint is pushed under them.
         hint = item.extra.get("hint")
         if hint:
             box.y = item.rect.y + (self._u(CTRL_H) - size) // 2
-        pygame.draw.rect(surface, _rgb(self.c["accent"] if on else self.c["surface"]), box,
-                         border_radius=self._u(4))
+        radius = size // 2
+        pygame.draw.rect(surface,
+                         _rgb(self.c["accent"] if on else self.c["surface"]),
+                         box, border_radius=radius)
         if not on:
             pygame.draw.rect(surface, _rgb(self.c["border"]), box, self._u(1),
-                             border_radius=self._u(4))
+                             border_radius=radius)
+        knob_r = max(3, size // 2 - self._u(3))
+        knob_x = (box.right - knob_r - self._u(3)) if on else (
+            box.x + knob_r + self._u(3))
+        pygame.draw.circle(surface,
+                           _rgb(self.c["bg"] if on else self.c["muted"]),
+                           (knob_x, box.centery), knob_r)
         text = item.extra.get("label")
         if not text:
             text = s["nr_on"] if on else s["nr_off"]
@@ -1585,8 +1615,35 @@ class OverlayMenu:
         fill = pygame.Rect(track.x, track.y, int(track.w * frac), track.h)
         pygame.draw.rect(surface, _rgb(self.c["accent"]), fill,
                          border_radius=self._u(SLIDER_H // 2 or 1))
+        # Where this value sits by default - the profile's own number, or
+        # zero for a slider that runs both ways. Without it "how far have I
+        # moved this" is a thing to remember rather than to see.
+        mark = item.extra.get("mark")
+        if mark is None and item.lo < 0.0 < item.hi:
+            mark = 0.0
+        if mark is not None and item.lo <= mark <= item.hi:
+            mx = int(track.x + ((mark - item.lo) / span) * track.w)
+            pygame.draw.rect(
+                surface, _rgb(self.c["muted"]),
+                pygame.Rect(mx - max(1, self._u(1)),
+                            track.y - self._u(3),
+                            max(2, self._u(2)),
+                            track.h + self._u(6)),
+                border_radius=max(1, self._u(1)))
         cx = int(track.x + frac * track.w)
         pygame.draw.circle(surface, _rgb(self.c["accent"]), (cx, track.centery), self._u(KNOB_R))
+        # What the two ends mean. A number like 0.35 says nothing about
+        # which way is more.
+        ends = item.extra.get("ends")
+        if ends:
+            left, right = ends
+            y = track.bottom + self._u(6)
+            if left:
+                surface.blit(self._small_font.render(
+                    left, True, _rgb(self.c["muted"])), (track.x, y))
+            if right:
+                img = self._small_font.render(right, True, _rgb(self.c["muted"]))
+                surface.blit(img, (track.right - img.get_width(), y))
         pygame.draw.circle(surface, _rgb(self.c["bg"]), (cx, track.centery), self._u(KNOB_R) // 2)
         item.extra["track"] = track
 
@@ -1809,10 +1866,15 @@ class OverlayMenu:
         else:
             pygame.draw.rect(surface, _rgb(self.c["surface"]), rect,
                              border_radius=radius)
-            pygame.draw.rect(surface,
-                             _rgb(self.c["accent"] if hot else self.c["border"]),
-                             rect, self._u(1), border_radius=radius)
-            name_col = self.c["danger"] if danger else self.c["text"]
+            # The danger tone marks the EDGE, not the label. As a label it
+            # sat one step from the accent that paints every number on the
+            # page, so the one destructive action read as another value.
+            edge = (self.c["danger"] if danger
+                    else self.c["accent"] if hot else self.c["border"])
+            pygame.draw.rect(surface, _rgb(edge), rect,
+                             self._u(2) if danger else self._u(1),
+                             border_radius=radius)
+            name_col = self.c["text"]
             key_col = self.c["muted"]
         name = self._font.render(item.extra.get("label", ""), True,
                                  _rgb(name_col))
