@@ -38,6 +38,10 @@ screenshots/
 _menu*.png
 *.local-backup
 release-package.html
+# Handoff briefs between sessions: written for one conversation, stale
+# the next day. They stay on disk and out of the repository.
+BRIEF-*.md
+
 # Dev scripts and personal files - not for the repository
 _measure_*.py
 _probe_*.py
