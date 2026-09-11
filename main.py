@@ -1314,9 +1314,9 @@ def main() -> int:
             process.
 
             CRITICAL: guides is recreated at the NEW work resolution and
-            assigned to the outer variable (nonlocal guides). The assignment
-            used to be local - the outer guides stayed at the old size and main
-            sent motion of the old size, while the worker reads exactly
+            stored back into the state (st.guides). It used to be assigned to
+            a local by mistake - the outer guides stayed at the old size and
+            main sent motion of the old size, while the worker reads exactly
             new_w*new_h*4 bytes:
               * scaling up   -> the worker waits for the missing bytes and goes
                 silent, main hangs in reader.recv(60 s), the window stops
@@ -1457,9 +1457,9 @@ def main() -> int:
         def _rebuild_pipeline(note: str) -> None:
             """Build the worker, the shm and the overlay for the current size.
 
-            The second half of what used to be _switch_monitor: it reads the
-            nonlocal width/height/work_w/work_h and rebuilds everything that
-            depends on them, resetting the per-worker flags so the main loop
+            The second half of what used to be _switch_monitor: it reads
+            st.width/height/work_w/work_h and rebuilds everything that depends
+            on them, resetting the per-worker flags so the main loop
             negotiates DDA1/WGCW, GRAY, OUTS and the window again.
             """
             # Freeze the last picture with a spinner before the old worker
