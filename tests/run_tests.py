@@ -79,6 +79,7 @@ ABOUT = {
     "test_silent_spots.py": "the silent spots from issue #29 speak: log, alert, split warning",
     "test_skip_static.py": "static frames are skipped; transitions and want_pixels are not",
     "test_monitor_origin.py": "the chosen monitor's origin reaches overlay and worker",
+    "test_monitor_windows.py": "both output windows really follow the chosen monitor",
     "test_overlay_toolwindow.py": "the overlay is a tool window - one taskbar button only",
     "test_motion_small.py": "the downscaled motion field is upscaled on the GPU",
     "test_mv_validation.py": "noise-floor motion vectors are zeroed, real motion survives",
