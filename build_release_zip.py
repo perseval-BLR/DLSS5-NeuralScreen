@@ -151,7 +151,7 @@ def _skip(path: str) -> bool:
     # icons and nothing would say why. Named one by one rather than by
     # extension: the rule is "these two files", and a .png dropped into
     # native/ tomorrow is still developer baggage.
-    RUNTIME_ASSETS = ("native/neuralscreen.ico", "native/neuralscreen-tray.png")
+    RUNTIME_ASSETS = ("native/neuralscreen.ico",)
     if (norm.startswith("native/") and not norm.endswith(".dll")
             and norm not in RUNTIME_ASSETS):
         return True

@@ -5,9 +5,12 @@ Scale +0.05 / -0.05, Exit. Left click on the icon is the default action =
 open the menu (Windows convention: right click for the menu, left for the
 default). Commands go into a queue.Queue that the main loop drains.
 
-The icon is the channel avatar (a black turbine fan with a gold "P"):
-the same image the launcher and the taskbar button show. Loaded from
-native/neuralscreen-tray.png, a round crop of the avatar.
+The icon is the channel avatar (a black turbine fan with a gold "P"): the
+same file the launcher and the taskbar button use, native/neuralscreen.ico.
+The .ico rather than a single image because it carries a frame drawn for
+every size - the tray asks for 16 or 24 px, and at that size the white rim
+that separates the logo from a dark taskbar is a matter of one pixel, which
+survives being drawn for 16 and does not survive 256 being squeezed into it.
 
 Menu labels come from the caller: they are user-visible text, so they live
 in i18n like the rest of the interface, not in this module.
@@ -27,10 +30,25 @@ DEFAULT_LABELS = {"settings": "Settings", "quit": "Exit"}
 
 
 def _make_icon(size: int = 64) -> Image.Image:
-    """The tray image: the round avatar crop at the requested size."""
-    png = Path(__file__).resolve().parent / "native" / "neuralscreen-tray.png"
-    if png.is_file():
-        return Image.open(png).resize((size, size), Image.LANCZOS)
+    """The tray image: the icon's own frame for this size.
+
+    The .ico holds 16/32/48/64/128/256. The nearest frame at or above the
+    requested size is taken and shrunk if it has to be - never blown up from
+    a smaller one, which is what turns the rim into a grey halo.
+    """
+    ico = Path(__file__).resolve().parent / "native" / "neuralscreen.ico"
+    if ico.is_file():
+        try:
+            img = Image.open(ico)
+            have = sorted(w for w, _h in img.ico.sizes())
+            pick = next((s for s in have if s >= size), have[-1])
+            img.size = (pick, pick)
+            img.load()
+            img = img.convert("RGBA")
+            return img if pick == size else img.resize((size, size),
+                                                       Image.LANCZOS)
+        except Exception:
+            pass  # a broken .ico must not stop the program from starting
     # Fallback (the file is missing - a dev tree): the old placeholder, a
     # dark square with an amber accent.
     img = Image.new("RGBA", (size, size), (0x0D, 0x11, 0x17, 255))
