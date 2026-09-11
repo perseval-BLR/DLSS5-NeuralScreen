@@ -37,6 +37,12 @@ except Exception:
 ROOT = Path(__file__).resolve().parent.parent  # the project root (tests/ lives inside it)
 PY = ROOT / "runtime" / "python.exe"
 TIMEOUT = 600
+# How long to wait for the previous test's processes to die before
+# starting the next one. See settle().
+SETTLE_LIMIT = 10.0
+#: (label, seconds) per test - reported in the summary so a run where
+#: nothing ever waited is visible as evidence, not as silence.
+SETTLES: list = []
 
 # What each test is for, in one line - a failing name should not send anyone
 # digging through the file to find out what broke.
@@ -105,8 +111,39 @@ def tracked_tests() -> list:
     return sorted(p.name for p in ROOT.glob("tests/test_*.py"))
 
 
+def settle(limit: float = SETTLE_LIMIT) -> float:
+    """Wait until none of our processes are left, and say how long it took.
+
+    The tests run back to back and each GUI test starts a worker that holds
+    the NGX feature on the card. When the previous one has not finished
+    dying, the next test waits for its first NR frame while the old worker
+    is still on the GPU - and test_window_mode, which has the longest wait
+    in the suite, is the one that runs out of patience. The suite was
+    measuring process teardown rather than the code under test.
+
+    Returns the seconds spent waiting (0.0 when the field was already
+    clear). It never fails a run: past the limit it returns what it waited
+    and the caller says so out loud, because a process that will not die is
+    itself worth knowing about.
+    """
+    started = time.monotonic()
+    while time.monotonic() - started < limit:
+        out = subprocess.run(["tasklist"], capture_output=True).stdout
+        text = out.decode("cp1251", errors="replace")
+        if not [l for l in text.splitlines()
+                if "pythonw.exe" in l or "nvngx.dll" in l]:
+            break
+        time.sleep(0.25)
+    return time.monotonic() - started
+
+
 def run(label: str, args: list, note: str = "") -> dict:
     print(f"\n>>> {label}" + (f"  ({note})" if note else ""))
+    waited = settle()
+    SETTLES.append((label, waited))
+    if waited > 0.5:
+        print(f"    (waited {waited:.1f}s for the previous test's "
+              f"processes to exit)")
     started = time.monotonic()
     try:
         # Only file arguments get the tests/ prefix - flags (--smoke,
@@ -167,6 +204,11 @@ def main() -> int:
         print(f"{'PASS' if r['ok'] else 'FAIL'}  {r['label']:<{width}}  {r['took']:6.1f}s")
     failed = [r["label"] for r in results if not r["ok"]]
     total = sum(r["took"] for r in results)
+    if SETTLES:
+        worst_label, worst = max(SETTLES, key=lambda x: x[1])
+        total = sum(s for _, s in SETTLES)
+        print(f"settle: {total:.1f}s total, longest {worst:.1f}s "
+              f"before {worst_label}")
     print("=" * 70)
     if failed:
         print(f"RESULT: {len(failed)} of {len(results)} FAILED in {total:.0f}s - {failed}")
