@@ -462,6 +462,26 @@ def switch_window(st, hwnd: int) -> None:
     rebuild_pipeline(st, note)
 
 
+def apply_spout(st, enabled: bool) -> None:
+    """Toggle the Spout2 bridge: the worker must be restarted.
+
+    The bridge is initialised once inside the worker process
+    (SpoutBridgeInit reads NS_SPOUT at startup) - there is no protocol
+    message for it, so the only way in or out is a fresh worker. The
+    same path the monitor switch takes: teardown, set the environment,
+    rebuild. The picture size does not change, so the overlay, the
+    menu and the capture source survive.
+    """
+    st.cfg["spout"] = bool(enabled)
+    os.environ["NS_SPOUT"] = "1" if enabled else "0"
+    settings_io.save_menu_layout(st)
+    print(f"[main] Spout2 output: {'on' if enabled else 'off'} - restarting the worker")
+    teardown_pipeline(st)
+    rebuild_pipeline(st, UI_STRINGS[st.lang].get(
+        "spout_on" if enabled else "spout_off",
+        "Spout2 output ON" if enabled else "Spout2 output OFF"))
+
+
 def follow_window(st) -> None:
     """Keep the HUD layer on the window being processed.
 

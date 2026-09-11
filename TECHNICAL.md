@@ -72,6 +72,14 @@ half a second for the new size to settle first. A move only moves the windows.
   caption.
 - Recording works in both NR ON and NR OFF (bypass) modes; the file duration
   matches real time (PTS is built from the wall clock).
+- **External recorders see the picture through Spout2** (off by default,
+  toggled in the settings): the worker publishes its output as a Spout2
+  shared texture, so OBS with the Spout2 Capture plugin records the
+  processed picture in full-screen mode too — where `WDA_EXCLUDEFROMCAPTURE`
+  hides the overlay from a screen capture. The NVIDIA App has no Spout
+  input; its path is one-window mode, which drops the WDA flag. The bridge
+  is initialised once per worker process (`NS_SPOUT`), so toggling it
+  restarts the worker.
 - **System audio is recorded as a second track**: WASAPI loopback ("what you
   hear") from the default playback device, AAC 192 kbit/s stereo at the
   endpoint's own rate. No virtual cable, no microphone. Turn it off with

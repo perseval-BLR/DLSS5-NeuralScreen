@@ -101,7 +101,7 @@ from protocol import SharedFrameBuffer, _negotiate_shm  # noqa: F401
 from pipeline import (_drain_stderr, restart_worker,  # noqa: F401
                       shutdown_worker, start_worker)
 from startup import (LOG_PATH, _apply_nr_dll,  # noqa: F401
-                     _init_logging, _log_environment)
+                     _apply_spout_env, _init_logging, _log_environment)
 from settings_io import (DEFAULT_LANG, PRESET_KEYS,  # noqa: F401
                          SKIN_MIN, load_config, load_presets,
                          resolve_params)

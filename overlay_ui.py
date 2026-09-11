@@ -484,13 +484,22 @@ class OverlayMenu:
                                      "labels": list(labels or options)}))
             cy += ctrl_h + gap
 
-        def toggle(key: str, label: str, on: bool) -> None:
+        def toggle(key: str, label: str, on: bool, hint: str = "") -> None:
             nonlocal cy
+            extra = {"label": label}
+            hint_h = 0
+            if hint:
+                extra["hint"] = hint
+                # Multi-line hints: the Spout2 toggle explains two capture
+                # paths and does not fit one line at 1440p. The block is
+                # measured with the real font height.
+                line_h = self._small_font.get_height() + self._u(4)
+                hint_h = self._u(8) + (str(hint).count("\n") + 1) * line_h
             items.append(Item("toggle", key,
-                              pygame.Rect(pad, cy, inner_w, ctrl_h),
+                              pygame.Rect(pad, cy, inner_w, ctrl_h + hint_h),
                               value=1.0 if on else 0.0,
-                              extra={"label": label}))
-            cy += ctrl_h + gap
+                              extra=extra))
+            cy += ctrl_h + hint_h + gap
 
         # The windows page: the full list of capturable windows, one row per
         # window. Hovering a row highlights the real window's outline on the
@@ -534,13 +543,22 @@ class OverlayMenu:
                               extra={"label": label}))
             cy += ctrl_h + gap
 
+            # Recording: everything about what leaves the program besides
+            # the screen itself. Spout2 (off by default) publishes the
+            # processed picture for external recorders; the recording
+            # indicator is a display preference of the same subject.
+            section(s["sec_recording"])
+            toggle("spout", s.get("spout", "Spout2 output (OBS)"),
+                   bool(self.state.get("spout")),
+                   hint=s.get("spout_hint", ""))
+            toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
+                   bool(self.state.get("rec_indicator", True)))
+
             section(s["sec_behaviour"])
             toggle("open_on_start", s["open_on_start"],
                    bool(self.state.get("open_on_start")))
             toggle("autostart", s.get("autostart", "Autostart with Windows"),
                    bool(self.state.get("autostart")))
-            toggle("rec_indicator", s.get("rec_indicator", "Recording indicator"),
-                   bool(self.state.get("rec_indicator", True)))
 
             section(s["sec_hotkeys"])
             # The remapping fields. The captions on the buttons come from these
@@ -1163,8 +1181,16 @@ class OverlayMenu:
             if opt.rect.collidepoint(pos):
                 return opt
         for item in self.items:
-            if item.rect.collidepoint(pos):
-                return item
+            if not item.rect.collidepoint(pos):
+                continue
+            # A hint under a toggle is a caption, not a hit target:
+            # clicking it must not flip the switch (the Spout2 toggle
+            # restarts the worker - a stray click on the explanation
+            # would freeze the screen for seconds).
+            if item.kind == "toggle" and item.extra.get("hint") and \
+                    pos[1] > item.rect.y + self._u(CTRL_H):
+                continue
+            return item
         return None
 
     def inside(self, pos: tuple[int, int]) -> bool:
@@ -1416,6 +1442,11 @@ class OverlayMenu:
         on = item.value > 0.5
         size = self._u(20)
         box = pygame.Rect(item.rect.x, item.rect.centery - size // 2, size, size)
+        # A hint grows the row; the box and the label stay on the first
+        # line - only the hint is pushed under them.
+        hint = item.extra.get("hint")
+        if hint:
+            box.y = item.rect.y + (self._u(CTRL_H) - size) // 2
         pygame.draw.rect(surface, _rgb(self.c["accent"] if on else self.c["surface"]), box,
                          border_radius=self._u(4))
         if not on:
@@ -1428,7 +1459,14 @@ class OverlayMenu:
                            _rgb(self.c["text"] if on else self.c["muted"]),
                            item.rect.right - box.right - self._u(12))
         surface.blit(label, (box.right + self._u(12),
-                             item.rect.centery - label.get_height() // 2))
+                             box.y + (box.h - label.get_height()) // 2))
+        if hint:
+            y = box.bottom + self._u(8)
+            for line in str(hint).split("\n"):
+                img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
+                                 item.rect.w)
+                surface.blit(img, (item.rect.x, y))
+                y += self._small_font.get_height() + self._u(4)
 
     def _draw_slider(self, surface, item: Item, s: dict) -> None:
         label_h = item.extra.get("label_h", self._u(LABEL_H))

@@ -81,6 +81,18 @@ def _apply_nr_dll(cfg: dict) -> None:
         os.environ["NS_NR_DLL"] = str(cfg["nr_dll"])
 
 
+def _apply_spout_env(cfg: dict) -> None:
+    """The Spout2 bridge flag reaches the worker through the environment.
+
+    SpoutBridgeInit in the worker reads NS_SPOUT once, at process start -
+    there is no protocol message for the bridge, so the config flag
+    becomes the environment before the first worker is launched (and
+    again on every restart, see pipeline.apply_spout). "0" and unset
+    both mean off; the worker treats anything but "1" as disabled.
+    """
+    os.environ["NS_SPOUT"] = "1" if cfg.get("spout") else "0"
+
+
 def _log_environment(cfg: dict) -> None:
     """Print the environment header into the log: version, OS, HDR, driver.
 
@@ -193,6 +205,12 @@ def configure(st) -> None:
     # it lives in the environment rather than in the frame protocol.
     st.nr_small = bool(st.cfg.get("nr_small", False))
     os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
+    # The Spout2 bridge is the same story: the worker reads NS_SPOUT once
+    # at startup (SpoutBridgeInit), so the config flag becomes the
+    # environment before the first worker is launched. Off by default -
+    # the bridge costs a full-frame GPU copy on every Present, and it is
+    # only useful to someone recording through OBS.
+    _apply_spout_env(st.cfg)
     st.lang = str(st.cfg["lang"])
 
     # The output resolution comes FROM THE REAL MONITOR, not from a stale

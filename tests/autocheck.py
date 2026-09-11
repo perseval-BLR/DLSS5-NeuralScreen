@@ -112,7 +112,8 @@ def zip_integrity():
         leak = []
         for key in ("menu_offset", "menu_scale", "theme", "lang",
                     "open_menu_on_start", "split", "menu_height",
-                    "hotkeys", "work_scale", "nr_small", "record_audio"):
+                    "hotkeys", "work_scale", "nr_small", "record_audio",
+                    "spout"):
             if key not in head_cfg:
                 continue
             if cfg.get(key) != head_cfg[key]:

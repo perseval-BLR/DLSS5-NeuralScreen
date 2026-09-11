@@ -11,6 +11,7 @@ expected command table:
     sliders -> ("param", ...) / ("split", ...) / ("nr_res", ...), the
     Actions buttons -> windows page / window_mode / screenshot / record;
   * settings page: language/theme segments -> ("lang",) / ("theme",),
+    the Spout2 and recording-indicator toggles -> ("toggle", ...),
     hotkey rows -> capture, back -> main;
   * windows page: a window row -> ("window",), back -> main;
   * the footer exit -> ("button", "exit").
@@ -36,6 +37,7 @@ STATE = {
     "theme": "light", "lang": "en",
     "gpu_text": "RTX 5070 Ti · Blackwell", "gpu_ok": True,
     "window_mode": False,
+    "rec_indicator": True, "spout": False,
     "windows": ["1A2B3C: Notepad", "4D5E6F: Chrome - YouTube"],
     "window_current": "1A2B3C: Notepad",
 }
@@ -150,6 +152,38 @@ def main() -> int:
         out = click(menu, hk)
         if out != [("capture", hk_cmd)]:
             failures.append(f"hotkey row {hk_cmd}: expected capture, got {out}")
+    # The RECORDING section: both toggles report their own key.
+    for tg_key in ("spout", "rec_indicator"):
+        tg = find(menu, "toggle", tg_key)
+        if tg is None:
+            failures.append(f"no {tg_key} toggle on the settings page")
+            continue
+        # A toggle with a hint is taller than its switch: click the top
+        # strip (the hint below is deliberately not a hit target).
+        pos = (tg.rect.centerx, tg.rect.y + menu._u(overlay_ui.CTRL_H) // 2)
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
+        menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONUP, {"pos": pos, "button": 1}))
+        if out != [("toggle", tg_key)]:
+            failures.append(f"toggle {tg_key}: expected [('toggle', {tg_key!r})], "
+                            f"got {out}")
+    # The hint under a toggle is a caption, not a hit target: a click on
+    # the explanation must emit nothing (the Spout2 toggle restarts the
+    # worker, so a stray click there would freeze the screen for seconds).
+    spout_tg = find(menu, "toggle", "spout")
+    if spout_tg is None:
+        failures.append("no spout toggle for the hint hit-test")
+    elif not spout_tg.extra.get("hint"):
+        failures.append("the spout toggle lost its hint")
+    else:
+        hint_pos = (spout_tg.rect.centerx,
+                    spout_tg.rect.y + menu._u(overlay_ui.CTRL_H)
+                    + menu._u(10))
+        out = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, {"pos": hint_pos, "button": 1}))
+        if out:
+            failures.append(f"a click on the hint must not emit, got {out}")
     close_icon = find(menu, "icon", "close")
     if close_icon is None:
         failures.append("no close icon on the settings page")

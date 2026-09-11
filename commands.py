@@ -175,6 +175,11 @@ def apply_menu_action(st, action: tuple) -> None:
         st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
         settings_io.save_menu_layout(st)
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
+    elif kind == "toggle" and action[1] == "spout":
+        # The Spout2 bridge: the worker reads NS_SPOUT only at startup,
+        # so the toggle goes through a worker restart (pipeline.apply_spout
+        # owns the whole path, including the config write).
+        pipeline.apply_spout(st, not bool(st.cfg.get("spout", False)))
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])

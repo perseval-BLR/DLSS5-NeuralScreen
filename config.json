@@ -23,6 +23,7 @@
   "split": 0.0,
   "record_audio": true,
   "nr_small": false,
+  "spout": false,
   "menu_height": null,
   "theme": "light"
 }

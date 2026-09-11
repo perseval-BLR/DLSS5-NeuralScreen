@@ -341,6 +341,9 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "monitor": monitor_name if monitor_name is not None else int(monitor),
         "rec_indicator": bool(cfg.get("rec_indicator", True)),
         "screenshot_dir": cfg.get("screenshot_dir") or "",
+        # The Spout2 bridge choice must survive a restart: the worker
+        # reads NS_SPOUT at startup, and main sets it from this flag.
+        "spout": bool(cfg.get("spout", False)),
     }
 
 
@@ -411,6 +414,7 @@ def menu_payload(st) -> dict:
         "rec_seconds": (st.recorder.duration_ms / 1000.0) if st.recorder else 0.0,
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
+        "spout": bool(st.cfg.get("spout", False)),
         "open_on_start": st.startup_menu,
         "autostart": _autostart_enabled(),
         "split": st.split_pos,
