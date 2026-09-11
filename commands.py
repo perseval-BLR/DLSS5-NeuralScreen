@@ -235,9 +235,15 @@ def apply_menu_action(st, action: tuple) -> None:
             print(f"[main] {cmd} -> {text}")
             st.display.alert(UI_STRINGS[st.lang]["settings_applied"])
     elif kind == "theme":
-        # The menu has already applied the theme to itself
-        # (overlay_ui); here we only remember it for config.json -
-        # settings_io.save_menu_layout(st) runs on menu close and on exit.
+        # The menu has already applied the theme to itself (overlay_ui).
+        # It lands in st.cfg RIGHT HERE, not only in the file: the file is
+        # written on menu close and on exit, but a rebuild in between -
+        # a monitor switch, a GPU switch, one-window mode - recreates the
+        # menu and restores the theme from st.cfg. With the value still
+        # missing there, a monitor switch threw the user back to light
+        # (issue #33).
+        if action[1] in ("light", "dark"):
+            st.cfg["theme"] = action[1]
         print(f"[main] menu theme -> {action[1]}")
     elif kind == "gpu":
         # The value arrives as "N: NVIDIA GeForce ..." - the index is the
