@@ -206,9 +206,7 @@ class OverlayMenu:
         # visible.
         self.stats: dict = {}
         self.items: list[Item] = []
-        self._font = font_loader(self._u(FONT_SIZE))
-        self._title_font = font_loader(self._u(TITLE_SIZE))
-        self._small_font = font_loader(self._u(SMALL_SIZE))
+        self._build_fonts()
         # The language list shows every language in its own script (Русский,
         # 中文, 日本語, 한국어). The current UI font cannot render CJK - the
         # loader picks the font by the language, so dedicated CJK fonts are
@@ -304,9 +302,7 @@ class OverlayMenu:
         if abs(value - self.user_scale) < 0.01:
             return
         self.user_scale = value
-        self._font = self._load_font(self._u(FONT_SIZE))
-        self._title_font = self._load_font(self._u(TITLE_SIZE))
-        self._small_font = self._load_font(self._u(SMALL_SIZE))
+        self._build_fonts()
 
     def toggle(self) -> bool:
         self.visible = not self.visible
@@ -338,6 +334,17 @@ class OverlayMenu:
             elif k in self.state:
                 self.state[k] = v
 
+    def _build_fonts(self) -> None:
+        """The menu's three faces, built together.
+
+        Called from __init__ and after every scale/language change - the
+        sizes and the language both change what the loader returns. Which
+        faces those are lives in fonts.py; this only asks for them.
+        """
+        self._font = self._load_font(self._u(FONT_SIZE))
+        self._title_font = self._load_font(self._u(TITLE_SIZE))
+        self._small_font = self._load_font(self._u(SMALL_SIZE))
+
     def _reload_fonts(self) -> None:
         """Recreate the fonts after a language switch.
 
@@ -345,9 +352,7 @@ class OverlayMenu:
         Consolas renders them as tofu boxes. The loader picks the font by
         the language, so the cached font objects must be rebuilt.
         """
-        self._font = self._load_font(self._u(FONT_SIZE))
-        self._title_font = self._load_font(self._u(TITLE_SIZE))
-        self._small_font = self._load_font(self._u(SMALL_SIZE))
+        self._build_fonts()
 
     def title_center(self) -> tuple[int, int]:
         """The centre of the title bar in screen coordinates.

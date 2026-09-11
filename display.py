@@ -101,6 +101,7 @@ except Exception:
 import numpy as np
 import pygame
 
+import fonts
 from overlay_ui import OverlayMenu, palette as ui_palette
 
 from i18n import STRINGS
@@ -118,12 +119,10 @@ CHROMA_KEY = (0xFF, 0x00, 0xFF)
 LWA_COLORKEY = 0x1
 LWA_ALPHA = 0x2
 
-FONT_NAME = "consolas"
-# The CJK scripts (zh/ja/ko) have no glyphs in Consolas - it renders them
-# as tofu boxes. Each script gets its own font: YaHei for Chinese, Yu
-# Gothic for Japanese (kanji), Malgun Gothic for Korean (hangul). The
-# loader is called with the current language.
-CJK_FONTS = {"zh": "microsoftyahei", "ja": "yugothic", "ko": "malgungothic"}
+# Which faces the program draws with lives in fonts.py - including the
+# per-script CJK families, re-exported here because the docs renderer and
+# the offscreen menu renderer import them from this module.
+CJK_FONTS = fonts.CJK_FONTS
 # The base layout sizes are set for 1440p. On taller screens the interface is
 # scaled up, on shorter ones it stays as is: there is nowhere left to shrink to,
 # the text would become unreadable. Hence the "up only" rule (see ui_scale).
@@ -216,15 +215,19 @@ class Display:
         # Interface scale and the layout sizes derived from it.
         self.ui_scale = ui_scale_for(self.height)
         self.font_size = max(8, int(round(FONT_SIZE * self.ui_scale)))
+        # HUD language (NR ON/NR OFF), see set_lang(). Must exist before the
+        # menu: the loader picks the face by the language, and OverlayMenu
+        # builds its fonts inside its constructor - with this assignment
+        # below the menu, that first build fell through to pygame's default
+        # face instead of ours.
+        self._lang = "ru"
         # The settings menu lives in this same layer. A separate window on top
         # of the game would steal focus and fight for topmost, whereas here we
         # are already above the frame and already transparent by key.
         self.menu = OverlayMenu(self.ui_scale, self._load_font)
-        # HUD language (NR ON/NR OFF), see set_lang(). Must exist before the
-        # fonts: the loader picks the font by the language (CJK scripts
-        # have no glyphs in the default font).
-        self._lang = "ru"
-        self._font = self._load_font(size=self.font_size)
+        # The HUD is nothing but readings - fps, resolution, frame counter -
+        # so it takes the monospaced face whole; the menu picks per element.
+        self._font = self._load_font(size=self.font_size, mono=True)
         self._alert_font = self._load_font(
             size=max(10, int(round(ALERT_FONT_SIZE * self.ui_scale))))
         # Disable vsync: flip() must not wait for vblank (otherwise the FPS is
@@ -294,7 +297,7 @@ class Display:
             self._lang = lang
             # The HUD/alert fonts follow the language: CJK scripts have no
             # glyphs in the default font (tofu boxes).
-            self._font = self._load_font(size=self.font_size)
+            self._font = self._load_font(size=self.font_size, mono=True)
             self._alert_font = self._load_font(size=ALERT_FONT_SIZE)
 
     def set_visible(self, visible: bool) -> None:
@@ -375,12 +378,11 @@ class Display:
 
     # -- window plumbing --------------------------------------------------
 
-    def _load_font(self, size: int = FONT_SIZE):
-        try:
-            name = CJK_FONTS.get(self._lang, FONT_NAME)
-            return pygame.font.SysFont(name, size)
-        except Exception:
-            return pygame.font.Font(None, size)
+    def _load_font(self, size: int = FONT_SIZE, mono: bool = False,
+                   bold: bool = False):
+        """The loader handed to the menu - see fonts.py for the faces."""
+        return fonts.load(size, mono=mono, bold=bold,
+                          lang=getattr(self, "_lang", "en"))
 
     def _set_click_through(self) -> bool:
         """Click-through: WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED.
