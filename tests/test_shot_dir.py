@@ -61,10 +61,27 @@ def main() -> int:
     finally:
         pygame.quit()
 
-    # 3. The dialog's initial dir comes from the config: the source of
-    #    _open_save_dialog must pass the configured folder to the dialog.
+    # 3. The dialog's initial dir comes from the config. Checked on the
+    #    SHAPE of the call, not on its text: the previous version grepped
+    #    main.py for one exact line and broke the moment the dialog moved
+    #    into dialogs.py, which told us nothing about the wiring.
+    import ast
     src = (BASE / "main.py").read_text(encoding="utf-8")
-    if "_ask_save_path(hwnd, default_name, initial_dir)" not in src:
+    passes_initial_dir = False
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (func.attr if isinstance(func, ast.Attribute)
+                else getattr(func, "id", ""))
+        if name not in ("ask_save_path", "_ask_save_path"):
+            continue
+        args = [a.id for a in node.args if isinstance(a, ast.Name)]
+        args += [k.value.id for k in node.keywords
+                 if isinstance(k.value, ast.Name)]
+        if "initial_dir" in args:
+            passes_initial_dir = True
+    if not passes_initial_dir:
         failures.append("the dialog does not receive the initial dir")
     if "screenshot_dir" not in src.split("def _open_save_dialog")[1][:800]:
         failures.append("_open_save_dialog does not read screenshot_dir")

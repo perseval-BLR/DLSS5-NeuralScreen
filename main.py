@@ -197,6 +197,7 @@ REPO_URL = "https://github.com/perseval-BLR/DLSS5-NeuralScreen"
 CHANNEL_URL = "https://www.youtube.com/@perseval_BLR/videos"
 from tray import TrayController
 from taskbar import TaskbarWindow
+import dialogs
 # The Win32 window helpers live in winapi.py now. They are re-exported here
 # on purpose: main is where the rest of the program - and the tests - look
 # them up, and moving code must not move its callers.
@@ -1148,72 +1149,6 @@ def main() -> int:
         perf: dict[str, list[float]] = {k: [] for k in PERF_KEYS}
         last_perf_log = time.monotonic()
 
-        def _ask_save_path(parent_hwnd: int, default_name: str,
-                           initial_dir: str | None = None) -> Path | None:
-            """The native "Save as" dialog (GetSaveFileNameW).
-
-            Returns the chosen path, or None on cancel. The JPEG filter is the
-            default; the extension is appended when the user leaves it out.
-            initial_dir is the folder the dialog opens in (the configured
-            screenshot folder, if any).
-            """
-            try:
-                import ctypes
-                from ctypes import wintypes
-
-                class OPENFILENAME(ctypes.Structure):
-                    _fields_ = [
-                        ("lStructSize", wintypes.DWORD),
-                        ("hwndOwner", wintypes.HWND),
-                        ("hInstance", wintypes.HINSTANCE),
-                        ("lpstrFilter", wintypes.LPCWSTR),
-                        ("lpstrCustomFilter", wintypes.LPWSTR),
-                        ("nMaxCustFilter", wintypes.DWORD),
-                        ("nFilterIndex", wintypes.DWORD),
-                        ("lpstrFile", wintypes.LPWSTR),
-                        ("nMaxFile", wintypes.DWORD),
-                        ("lpstrFileTitle", wintypes.LPWSTR),
-                        ("nMaxFileTitle", wintypes.DWORD),
-                        ("lpstrInitialDir", wintypes.LPCWSTR),
-                        ("lpstrTitle", wintypes.LPCWSTR),
-                        ("Flags", wintypes.DWORD),
-                        ("nFileOffset", wintypes.WORD),
-                        ("nFileExtension", wintypes.WORD),
-                        ("lpstrDefExt", wintypes.LPCWSTR),
-                        ("lCustData", wintypes.LPARAM),
-                        ("lpfnHook", wintypes.LPVOID),
-                        ("lpTemplateName", wintypes.LPCWSTR),
-                        ("pvReserved", wintypes.LPVOID),
-                        ("dwReserved", wintypes.DWORD),
-                        ("FlagsEx", wintypes.DWORD),
-                    ]
-
-                buf = ctypes.create_unicode_buffer(1024)
-                buf.value = default_name
-                ofn = OPENFILENAME()
-                ofn.lStructSize = ctypes.sizeof(OPENFILENAME)
-                ofn.hwndOwner = parent_hwnd or None
-                ofn.lpstrFilter = "JPEG image (*.jpg)\0*.jpg\0PNG image (*.png)\0*.png\0All files (*.*)\0*.*\0"
-                ofn.lpstrFile = buf
-                ofn.nMaxFile = 1024
-                ofn.lpstrDefExt = "jpg"
-                ofn.lpstrInitialDir = initial_dir or None
-                ofn.Flags = 0x00000002 | 0x00000008  # OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST
-                ok = ctypes.windll.comdlg32.GetSaveFileNameW(ctypes.byref(ofn))
-                if not ok:
-                    return None
-                path = Path(buf.value.strip())
-                if not path.suffix:
-                    path = path.with_suffix(".jpg")
-                return path
-            except Exception as exc:
-                print(f"[main] save dialog unavailable ({exc}) - "
-                      f"screenshot goes to screenshots/", file=sys.stderr)
-                shot_dir = BASE_DIR / "screenshots"
-                shot_dir.mkdir(exist_ok=True)
-                stamp = time.strftime("%Y%m%d-%H%M%S")
-                stamp = f"{stamp}-{time.time() % 1 * 1000:03.0f}"
-                return shot_dir / f"neuralscreen-{stamp}.jpg"
 
         def _save_screenshot(path: Path, rgba) -> None:
             """Save the frame as a maximum-quality JPEG.
@@ -1228,22 +1163,7 @@ def main() -> int:
             except Exception as exc:
                 print(f"[main] menu was not baked into the screenshot: {exc}", file=sys.stderr)
             try:
-                import cv2 as _cv2
-                path.parent.mkdir(parents=True, exist_ok=True)
-                # imencode + write_bytes, NOT imwrite: OpenCV opens the file
-                # through the C runtime with the ANSI codepage, so a path with
-                # any non-ASCII character writes NOTHING - and imwrite still
-                # answers True. Measured: a folder named in Cyrillic gave
-                # "True" and no file, while the program told the user the
-                # screenshot was saved. Encoding to memory and writing the
-                # bytes through Python leaves the path handling to Python,
-                # which does it in UTF-16.
-                ok, buf = _cv2.imencode(
-                    ".jpg", _cv2.cvtColor(rgba, _cv2.COLOR_RGBA2BGRA),
-                    [_cv2.IMWRITE_JPEG_QUALITY, 100])
-                if ok:
-                    path.write_bytes(buf.tobytes())
-                    ok = path.exists() and path.stat().st_size > 0
+                ok = dialogs.save_jpeg(path, rgba)
                 if ok:
                     print(f"[main] screenshot: {path}")
                     display.alert(f"Screenshot: {path.name}")
@@ -1984,7 +1904,9 @@ def main() -> int:
 
             def _run() -> None:
                 try:
-                    shot_paths.put(_ask_save_path(hwnd, default_name, initial_dir))
+                    shot_paths.put(dialogs.ask_save_path(
+                        hwnd, default_name, initial_dir,
+                        fallback_dir=BASE_DIR / "screenshots"))
                 except Exception as exc:
                     print(f"[main] the save dialog crashed: {exc}", file=sys.stderr)
                     shot_paths.put(None)
@@ -2265,49 +2187,11 @@ def main() -> int:
                     hwnd = display.get_hwnd()  # captured here: pygame is not thread-safe
 
                     def _pick_dir() -> None:
-                        try:
-                            import ctypes
-                            from ctypes import wintypes
-                            # SHBrowseForFolder needs COM on this thread.
-                            ole32 = ctypes.WinDLL("ole32")
-                            ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
-                            try:
-                                # SHBrowseForFolder: the classic folder picker,
-                                # a plain Win32 call - no COM plumbing.
-                                class _BROWSEINFO(ctypes.Structure):
-                                    _fields_ = [
-                                        ("hwndOwner", wintypes.HWND),
-                                        ("pidlRoot", wintypes.LPVOID),
-                                        ("pszDisplayName", wintypes.LPWSTR),
-                                        ("lpszTitle", wintypes.LPCWSTR),
-                                        ("ulFlags", wintypes.UINT),
-                                        ("lpfn", wintypes.LPVOID),
-                                        ("lParam", wintypes.LPARAM),
-                                        ("iImage", ctypes.c_int),
-                                    ]
-                                shell32 = ctypes.WinDLL("shell32")
-                                shell32.SHBrowseForFolderW.argtypes = [
-                                    ctypes.POINTER(_BROWSEINFO)]
-                                shell32.SHBrowseForFolderW.restype = wintypes.LPVOID
-                                shell32.SHGetPathFromIDListW.argtypes = [
-                                    wintypes.LPVOID, wintypes.LPWSTR]
-                                shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
-                                buf = ctypes.create_unicode_buffer(260)
-                                bi = _BROWSEINFO()
-                                bi.hwndOwner = hwnd or None
-                                bi.lpszTitle = "Select the screenshot folder"
-                                bi.ulFlags = 0x0001  # BIF_RETURNONLYFSDIRS
-                                pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
-                                if pidl and shell32.SHGetPathFromIDListW(pidl, buf):
-                                    shot_paths.put(Path(buf.value.strip()))
-                                else:
-                                    shot_paths.put(None)  # cancelled
-                            finally:
-                                ole32.CoUninitialize()
-                        except Exception as exc:
-                            print(f"[main] folder picker failed: {exc}",
-                                  file=sys.stderr)
-                            shot_paths.put(None)
+                        # The picker blocks its thread; the answer
+                        # (or None on cancel) goes back through the
+                        # queue the main loop drains.
+                        shot_paths.put(dialogs.pick_directory(
+                            hwnd, "Select the screenshot folder"))
 
                     threading.Thread(target=_pick_dir, name="folder-picker",
                                      daemon=True).start()

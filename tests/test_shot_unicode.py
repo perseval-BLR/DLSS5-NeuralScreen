@@ -34,17 +34,10 @@ except Exception:
 NAMES = ["скриншоты", "スクリーンショット", "στιγμιότυπα"]
 
 
-def write_jpeg(path: Path, rgba: np.ndarray) -> bool:
-    """The same two steps main.py uses to save a screenshot."""
-    import cv2
+from dialogs import save_jpeg as write_jpeg  # noqa: E402
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA),
-                           [cv2.IMWRITE_JPEG_QUALITY, 100])
-    if not ok:
-        return False
-    path.write_bytes(buf.tobytes())
-    return path.exists() and path.stat().st_size > 0
+# The real writer, not a copy of it: a test that re-implements the code it
+# checks proves only that the copy works.
 
 
 def main() -> int:
