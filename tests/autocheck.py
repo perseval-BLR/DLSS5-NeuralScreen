@@ -63,6 +63,11 @@ def zip_integrity():
         # of the archive the program ships with the wrong icons and says
         # nothing about it.
         "native/neuralscreen.ico",
+        # The interface faces travel with the program: a Windows that
+        # lacks Segoe UI (or ships a different cut of it) would draw
+        # the menu in whatever it has.
+        "fonts/IBMPlexSans-Regular.ttf", "fonts/IBMPlexMono-Regular.ttf",
+        "fonts/OFL.txt",
         "runtime/pythonw.exe", "VERSION.txt",
     ]
     with zipfile.ZipFile(zpath) as z:

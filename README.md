@@ -196,5 +196,5 @@ second per frame; a press may feel lost.
 ## License
 
 The code here is MIT. NVIDIA's `nvngx_dlssnr.dll` is the leaked 310.8.0
-runtime (sm_75/86/89/120 kernels, RTX 20-50). Included as-is, no
-guarantees; research-only.
+runtime (sm_75/86/89/120 kernels, RTX 20-50), included as-is, no
+guarantees, research-only. Interface faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).
