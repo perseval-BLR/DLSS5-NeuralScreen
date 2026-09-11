@@ -902,7 +902,85 @@ def _set_autostart(enabled: bool) -> bool:
         return False
 
 
+class _Pipeline:
+    """Everything main() rebinds while the program runs.
+
+    These 56 names used to be locals of main() reached through 39
+    `nonlocal` statements and 1041 references: every nested function
+    could rebind any of them, and nothing said which part of the pipeline
+    owned what. They are fields of one object now, so a function that takes
+    `st` declares by that alone that it touches the pipeline, and the reader
+    can see where a value comes from.
+
+    __slots__ is the point, not an optimisation: a typo in a field name
+    raises AttributeError here instead of quietly creating a new attribute
+    that nothing ever reads.
+    """
+
+    __slots__ = (
+        "buf_full",
+        "capture",
+        "cfg",
+        "consecutive_restarts",
+        "dda_attempted",
+        "dda_mode",
+        "display",
+        "follow_pos",
+        "follow_resize",
+        "frame_index",
+        "gpu_ok",
+        "gray_active",
+        "guide_fails",
+        "guides",
+        "height",
+        "hotkey_bindings",
+        "hotkeys",
+        "lang",
+        "last_foreground",
+        "last_restart",
+        "mon_h",
+        "mon_w",
+        "monitor",
+        "motion_attempted",
+        "motion_small",
+        "next_auto_revive",
+        "nr_small",
+        "out_attempted",
+        "out_shm",
+        "output_rgba",
+        "params",
+        "paused",
+        "pending_apply",
+        "pending_shot",
+        "present_attempted",
+        "present_mode",
+        "presets",
+        "pts",
+        "reader",
+        "recorder",
+        "running",
+        "shm",
+        "shot_dialog_open",
+        "split_pos",
+        "startup_menu",
+        "tray",
+        "width",
+        "window_hwnd",
+        "work_frame",
+        "work_h",
+        "work_scale",
+        "work_w",
+        "worker",
+        "worker_failed",
+        "worker_logs",
+        "worker_stop",
+    )
+
+
 def main() -> int:
+    # The pipeline's mutable state (see _Pipeline): one object
+    # instead of 56 closure variables.
+    st = _Pipeline()
     parser = argparse.ArgumentParser(description="DLSS 5 Desktop NR prototype")
     parser.add_argument("--config", type=Path, default=BASE_DIR / "config.json",
                         help="path to config.json (defaults to next to main.py)")
@@ -919,79 +997,79 @@ def main() -> int:
         print("[main] another NeuralScreen is already running - this copy exits", file=sys.stderr)
         return 1
 
-    cfg = load_config(args.config)
-    params = resolve_params(cfg)
-    presets = load_presets(cfg)
-    _apply_nr_dll(cfg)
-    _log_environment(cfg)
-    width, height = int(cfg["width"]), int(cfg["height"])
-    monitor_cfg = cfg["monitor"]
+    st.cfg = load_config(args.config)
+    st.params = resolve_params(st.cfg)
+    st.presets = load_presets(st.cfg)
+    _apply_nr_dll(st.cfg)
+    _log_environment(st.cfg)
+    st.width, st.height = int(st.cfg["width"]), int(st.cfg["height"])
+    monitor_cfg = st.cfg["monitor"]
     if isinstance(monitor_cfg, str):
         # New configs store the DXGI devicename - resolve it to the current
         # output index; a monitor that is not connected falls back to 0.
-        monitor = resolve_output_idx(monitor_cfg)
-        if monitor is None:
+        st.monitor = resolve_output_idx(monitor_cfg)
+        if st.monitor is None:
             print(f"[main] monitor {monitor_cfg!r} from config.json is not "
                   "connected - using monitor 0", file=sys.stderr)
-            monitor = 0
+            st.monitor = 0
     else:
         # Old configs store the positional index.
-        monitor = int(monitor_cfg)
-    warmup = int(cfg["warmup"])
-    work_scale = float(cfg["work_scale"])
+        st.monitor = int(monitor_cfg)
+    warmup = int(st.cfg["warmup"])
+    st.work_scale = float(st.cfg["work_scale"])
     # The worker reads NS_NR_SMALL once, at startup: with it on, Neural
     # Rendering runs at the work resolution and the result is scaled back up
     # instead of the network chewing the whole screen. Off by default - it is
     # faster but softer, and an update must not change how the picture looks
     # without being asked. Toggling it later restarts the worker, which is why
     # it lives in the environment rather than in the frame protocol.
-    nr_small = bool(cfg.get("nr_small", False))
-    os.environ["NS_NR_SMALL"] = "1" if nr_small else "0"
-    lang = str(cfg["lang"])
+    st.nr_small = bool(st.cfg.get("nr_small", False))
+    os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
+    st.lang = str(st.cfg["lang"])
 
     # The output resolution comes FROM THE REAL MONITOR, not from a stale
     # config.json (the monitor may have been switched to 1440p while the
     # config still remembers 4K - the overlay, the recording and the worker
     # window would start drifting away from the screen).
-    capture = ScreenCapture(monitor_idx=monitor)
-    mon_w, mon_h = capture.resolution
-    if mon_w > 0 and mon_h > 0 and (mon_w, mon_h) != (width, height):
-        print(f"[main] monitor {monitor} is {mon_w}x{mon_h} (config: {width}x{height}), "
+    st.capture = ScreenCapture(monitor_idx=st.monitor)
+    st.mon_w, st.mon_h = st.capture.resolution
+    if st.mon_w > 0 and st.mon_h > 0 and (st.mon_w, st.mon_h) != (st.width, st.height):
+        print(f"[main] monitor {st.monitor} is {st.mon_w}x{st.mon_h} (config: {st.width}x{st.height}), "
               f"taking the real resolution")
-        width, height = mon_w, mon_h
+        st.width, st.height = st.mon_w, st.mon_h
 
-    print(f"[main] NeuralScreen - profile {cfg['profile']!r}, "
-          f"resolution {width}x{height}, monitor {monitor}")
-    print(f"[main] NGX parameters: {params}")
-    print(f"[main] work_scale {work_scale:.2f} (NGX resolution "
-          f"{int(width * work_scale)}x{int(height * work_scale)})")
+    print(f"[main] NeuralScreen - profile {st.cfg['profile']!r}, "
+          f"resolution {st.width}x{st.height}, monitor {st.monitor}")
+    print(f"[main] NGX parameters: {st.params}")
+    print(f"[main] work_scale {st.work_scale:.2f} (NGX resolution "
+          f"{int(st.width * st.work_scale)}x{int(st.height * st.work_scale)})")
 
-    worker: subprocess.Popen | None = None
-    reader: WorkerReader | None = None
-    worker_stop: threading.Event | None = None
-    shm: SharedFrameBuffer | None = None
-    display: Display | None = None
-    tray: TrayController | None = None
-    hotkeys: HotkeyController | None = None
-    recorder: VideoRecorder | None = None
+    st.worker: subprocess.Popen | None = None
+    st.reader: WorkerReader | None = None
+    st.worker_stop: threading.Event | None = None
+    st.shm: SharedFrameBuffer | None = None
+    st.display: Display | None = None
+    st.tray: TrayController | None = None
+    st.hotkeys: HotkeyController | None = None
+    st.recorder: VideoRecorder | None = None
     try:
         # The worker and guides run at the work resolution (the NGX feature is
         # created from the header sizes; guides' assert requires them to match)
-        work_w, work_h = _work_size(width, height, work_scale)
+        st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
         # The v3 protocol (full_w/full_h) ONLY when work != full: at work==full
         # (scale 1.0) the worker crashes or hangs in upscale mode (verified in
         # isolation) - we use legacy full_w=0, as in D5V2.
-        full_w = width if (work_w != width or work_h != height) else 0
-        full_h = height if (work_w != width or work_h != height) else 0
+        full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
+        full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
         # Shared memory for the input frame: its size does not depend on
         # work_scale (see SharedFrameBuffer), so it is created once per process.
-        shm = SharedFrameBuffer(width, height)
+        st.shm = SharedFrameBuffer(st.width, st.height)
         # Which card this is and whether NR works on it. The model comes from
         # nvapi, but the support verdict comes from the worker rather than the
         # architecture: only it knows whether feature 18 was created.
         gpu_info = gpu_probe()
         gpu_text = gpu_describe(gpu_info)
-        gpu_ok: bool | None = None
+        st.gpu_ok: bool | None = None
         print(f"[main] GPU: {gpu_text or 'unknown'} "
               f"(group 0x{gpu_info['arch_group']:X}, officially supported: "
               f"{'yes' if gpu_info['official'] else 'no'})")
@@ -1008,46 +1086,46 @@ def main() -> int:
             print(f"[main] pre-Blackwell GPU: warmup {warmup} -> "
                   f"{effective_warmup} to avoid a false frame-0 watchdog "
                   f"timeout")
-        worker, worker_logs, reader, worker_stop = start_worker(
-            params, work_w, work_h, effective_warmup, full_w, full_h, shm)
-        print(f"[main] worker started (pid {worker.pid}), header sent "
-              f"({work_w}x{work_h})")
+        st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
+            st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
+        print(f"[main] worker started (pid {st.worker.pid}), header sent "
+              f"({st.work_w}x{st.work_h})")
 
-        print(f"[main] capturing monitor {monitor}: {capture.resolution}")
+        print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 
-        display = Display(width, height, fullscreen=bool(cfg["fullscreen"]))
-        display.set_lang(lang)
+        st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+        st.display.set_lang(st.lang)
         # The program draws over the desktop and gives no sign of itself -
         # without this it is unclear after launch whether it is running.
-        startup_menu = bool(cfg.get("open_menu_on_start", True))
+        st.startup_menu = bool(st.cfg.get("open_menu_on_start", True))
         # The before/after wipe: the share of the frame the worker leaves raw.
-        split_pos = min(1.0, max(0.0, float(cfg.get("split", 0.0))))
+        st.split_pos = min(1.0, max(0.0, float(st.cfg.get("split", 0.0))))
         startup_pending = True
         # The menu size, position and theme - exactly as the user left them.
-        display.menu.set_user_scale(float(cfg.get("menu_scale", 1.0)))
-        saved_theme = cfg.get("theme")
+        st.display.menu.set_user_scale(float(st.cfg.get("menu_scale", 1.0)))
+        saved_theme = st.cfg.get("theme")
         if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
-            display.menu.set_state({"theme": saved_theme})
-        saved_offset = cfg.get("menu_offset")
+            st.display.menu.set_state({"theme": saved_theme})
+        saved_offset = st.cfg.get("menu_offset")
         if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
-            display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
-        saved_height = cfg.get("menu_height")
+            st.display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
+        saved_height = st.cfg.get("menu_height")
         if isinstance(saved_height, (int, float)) and saved_height > 0:
-            display.menu.user_height = int(saved_height)
-        print(f"[main] output window {display.width}x{display.height}")
+            st.display.menu.user_height = int(saved_height)
+        print(f"[main] output window {st.display.width}x{st.display.height}")
 
         # Tray icon: commands go into a queue, the main loop reads them
         tray_commands: queue.Queue = queue.Queue()
         # Answers from the "Save as" dialog. The dialog is modal and lives in
         # its own thread (see _open_save_dialog); the path arrives here.
         shot_paths: queue.Queue = queue.Queue()
-        shot_dialog_open = False
-        tray = TrayController(tray_commands, labels={
-            "settings": UI_STRINGS[lang].get("settings_title", "Settings"),
-            "quit": UI_STRINGS[lang].get("exit", "Exit"),
+        st.shot_dialog_open = False
+        st.tray = TrayController(tray_commands, labels={
+            "settings": UI_STRINGS[st.lang].get("settings_title", "Settings"),
+            "quit": UI_STRINGS[st.lang].get("exit", "Exit"),
         })
-        tray._set_state(nr=True, scale=work_scale)
-        tray.start()
+        st.tray._set_state(nr=True, scale=st.work_scale)
+        st.tray.start()
         print("[main] tray icon started")
 
         # Taskbar button: the overlay and the worker window are tool
@@ -1065,83 +1143,83 @@ def main() -> int:
         # sees the key (the polling fallback does not swallow it, but the numpad
         # is free in games). The commands go into the same queue the tray uses. The
         # user's bindings come from config.json ("hotkeys": {"toggle": "Num1", ...}).
-        hotkey_overrides = cfg.get("hotkeys")
+        hotkey_overrides = st.cfg.get("hotkeys")
         if not isinstance(hotkey_overrides, dict):
             hotkey_overrides = {}
-        hotkey_bindings = build_bindings(hotkey_overrides)
-        hotkeys = HotkeyController(tray_commands, hotkey_bindings)
-        hotkeys.start()
-        if hotkeys.registered:
-            print(f"[main] hotkeys registered: {', '.join(hotkeys.registered)} "
-                  f"({describe_hotkeys(hotkey_bindings)})")
-        if hotkeys.failed:
-            print(f"[main] hotkeys taken by another program: {', '.join(hotkeys.failed)}",
+        st.hotkey_bindings = build_bindings(hotkey_overrides)
+        st.hotkeys = HotkeyController(tray_commands, st.hotkey_bindings)
+        st.hotkeys.start()
+        if st.hotkeys.registered:
+            print(f"[main] hotkeys registered: {', '.join(st.hotkeys.registered)} "
+                  f"({describe_hotkeys(st.hotkey_bindings)})")
+        if st.hotkeys.failed:
+            print(f"[main] hotkeys taken by another program: {', '.join(st.hotkeys.failed)}",
                   file=sys.stderr)
         # The numpad sends different key codes with Num Lock off, so those
         # bindings do not misbehave - they are simply absent. Say so, or it
         # looks like the program ignores the keyboard.
-        numpad = numlock_needed(hotkey_bindings)
+        numpad = numlock_needed(st.hotkey_bindings)
         if numpad and not numlock_on():
             print(f"[main] Num Lock is off: the numpad hotkeys "
                   f"({', '.join(numpad)}) will not fire until it is on",
                   file=sys.stderr)
-            display.alert(UI_STRINGS[lang]["numlock_off"], duration=6.0)
+            st.display.alert(UI_STRINGS[st.lang]["numlock_off"], duration=6.0)
         # The captions on the menu buttons come from the same bindings that were
         # registered. Strictly after build_bindings: before that they do not exist.
-        display.menu.set_hotkeys(hotkey_labels(hotkey_bindings))
+        st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
 
         # The settings live in the overlay menu (Num2). There is no separate
         # window any more: it was a second interface over the same fields, it
         # stole focus from the game and dragged the whole of tcl/tk into the
         # runtime.
 
-        guides = TemporalGuideGenerator(work_w, work_h)
+        st.guides = TemporalGuideGenerator(st.work_w, st.work_h)
 
         # A reused buffer: every frame allocated ~100 MB (a 4K grab plus the
         # resizes plus flow), the GC could not keep up -> OOM around frame 1900.
         # The buffer is reused through cv2.resize(dst=...). work/out buffers are
         # not needed: in v3 the full->work->full resize is done by the worker on
         # the GPU (NGX Upscaling).
-        buf_full = np.empty((height, width, 4), dtype=np.uint8)
+        st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
 
-        paused = False
+        st.paused = False
         # The worker died and exhausted the restart budget: the pipeline is
         # stopped (no send/recv, no more restarts) and the overlay is hidden
         # so the desktop is not covered by a black window (issue #3: black
         # screen on a GPU where feature 18 cannot be created). Cleared when
         # the user turns NR back on.
-        worker_failed = False
-        frame_index = 0
-        pts = 0
+        st.worker_failed = False
+        st.frame_index = 0
+        st.pts = 0
         guide = None  # initialised before the loop: Num1 before the first NR frame must not raise NameError
-        output_rgba = None  # the last NR frame (for a screenshot); None until the first one
+        st.output_rgba = None  # the last NR frame (for a screenshot); None until the first one
         # WNDO mode: the worker shows the frame, no pixels come back to Python.
-        want_present = bool(cfg.get("worker_present", True))
-        want_motion_small = bool(cfg.get("motion_on_gpu", True))
-        want_dda = bool(cfg.get("capture_in_worker", True))  # DDA: the worker takes the colour
+        want_present = bool(st.cfg.get("worker_present", True))
+        want_motion_small = bool(st.cfg.get("motion_on_gpu", True))
+        want_dda = bool(st.cfg.get("capture_in_worker", True))  # DDA: the worker takes the colour
         # The result pixels come back through shared memory, not the pipe.
-        want_out_shm = bool(cfg.get("pixels_in_shm", True))
+        want_out_shm = bool(st.cfg.get("pixels_in_shm", True))
         # System audio ("what you hear") as a second track in the recording.
         # A config flag rather than a menu item: it is a decision made once,
         # not something to reach for while the overlay is up.
-        record_audio = bool(cfg.get("record_audio", True))
-        out_shm = False
-        out_attempted = False
-        motion_small = False  # the worker upscales the motion field itself
-        motion_attempted = False  # already tried for the current worker
-        present_mode = False      # the worker window is up right now
-        present_attempted = False  # already tried for the current worker (do not spam)
-        dda_mode = False          # the worker captures the screen itself
-        dda_attempted = False     # already tried for the current worker (do not spam)
-        window_hwnd = None        # WGCW target; None = the whole desktop (DDA1)
-        last_foreground = 0       # the last focused window that was not ours
-        follow_pos = None         # where the overlay currently sits (window mode)
-        follow_resize = None      # a pending size change, waiting to settle
-        mon_w, mon_h = width, height  # the full monitor size (for the menu layer)
-        gray_active = False       # guides take luminance from the worker's gray channel
-        pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels
-        recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC
-        work_frame = None  # the current work frame; None -> grab at the top of the loop
+        record_audio = bool(st.cfg.get("record_audio", True))
+        st.out_shm = False
+        st.out_attempted = False
+        st.motion_small = False  # the worker upscales the motion field itself
+        st.motion_attempted = False  # already tried for the current worker
+        st.present_mode = False      # the worker window is up right now
+        st.present_attempted = False  # already tried for the current worker (do not spam)
+        st.dda_mode = False          # the worker captures the screen itself
+        st.dda_attempted = False     # already tried for the current worker (do not spam)
+        st.window_hwnd = None        # WGCW target; None = the whole desktop (DDA1)
+        st.last_foreground = 0       # the last focused window that was not ours
+        st.follow_pos = None         # where the overlay currently sits (window mode)
+        st.follow_resize = None      # a pending size change, waiting to settle
+        st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
+        st.gray_active = False       # guides take luminance from the worker's gray channel
+        st.pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels
+        st.recorder: VideoRecorder | None = None  # recording (Num0), MP4 AV1 NVENC
+        st.work_frame = None  # the current work frame; None -> grab at the top of the loop
         fps_window: list[float] = []
         last_log = time.monotonic()
         last_fps = 0.0
@@ -1159,25 +1237,25 @@ def main() -> int:
             try:
                 surf = pygame.image.frombuffer(
                     rgba, (rgba.shape[1], rgba.shape[0]), "RGBX")
-                display.draw_capture_overlay(surf)
+                st.display.draw_capture_overlay(surf)
             except Exception as exc:
                 print(f"[main] menu was not baked into the screenshot: {exc}", file=sys.stderr)
             try:
                 ok = dialogs.save_jpeg(path, rgba)
                 if ok:
                     print(f"[main] screenshot: {path}")
-                    display.alert(f"Screenshot: {path.name}")
+                    st.display.alert(f"Screenshot: {path.name}")
                 else:
                     print(f"[main] failed to write the screenshot: {path}", file=sys.stderr)
-                    display.alert(UI_STRINGS[lang]["shot_fail"])
+                    st.display.alert(UI_STRINGS[st.lang]["shot_fail"])
             except Exception as exc:
                 print(f"[main] screenshot failed: {exc}", file=sys.stderr)
-                display.alert(UI_STRINGS[lang]["shot_fail"])
+                st.display.alert(UI_STRINGS[st.lang]["shot_fail"])
 
         def _perf(key: str, t0: float) -> None:
             """Record the stage duration (ms) into the timings dictionary."""
             perf[key].append((time.perf_counter() - t0) * 1000.0)
-        running = True
+        st.running = True
         # Protection against rapid changes (arrow key repeat, a jerked slider):
         # the intermediate values are coalesced and only the last one is applied.
         # 0.5 s rather than 2 s: the change goes through RNSZ inside the live
@@ -1186,8 +1264,8 @@ def main() -> int:
         RESTART_COOLDOWN = 0.5  # seconds
         RESTART_WARMUP = 10     # warmup after a resolution change (do not freeze the screen)
         RACK_TIMEOUT = 20.0     # seconds to wait for RACK after RNSZ
-        last_restart = 0.0
-        pending_apply: tuple | None = None  # the deferred (scale, profile, params)
+        st.last_restart = 0.0
+        st.pending_apply: tuple | None = None  # the deferred (scale, profile, params)
         # Auto-recovery limit: if the worker dies N times in a row we turn NR
         # off (pause) and raise an alert instead of spinning through restarts.
         MAX_CONSECUTIVE_RESTARTS = 3
@@ -1195,18 +1273,17 @@ def main() -> int:
         # revive after this backoff instead of leaving NR off until the user
         # presses Num1. A hard failure (0xBAD00001) never auto-revives.
         AUTO_REVIVE_BACKOFF = 30.0  # seconds
-        next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
-        consecutive_restarts = 0
-        guide_fails = 0
+        st.next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
+        st.consecutive_restarts = 0
+        st.guide_fails = 0
 
         def _recreate_capture() -> None:
             """Recreate the capture (a fresh DDA session) after a failure or mode change."""
-            nonlocal capture
             try:
-                capture.close()
+                st.capture.close()
             except Exception:
                 pass
-            capture = ScreenCapture(monitor_idx=monitor)
+            st.capture = ScreenCapture(monitor_idx=st.monitor)
 
         def _safe_grab() -> np.ndarray | None:
             """grab() that recreates the capture on failure.
@@ -1216,9 +1293,8 @@ def main() -> int:
             of returning None. We recreate the DDA session and return None (the
             loop skips the iteration).
             """
-            nonlocal capture
             try:
-                return capture.grab()
+                return st.capture.grab()
             except Exception as exc:
                 print(f"[main] capture failed ({exc}) - recreating the DDA session")
                 try:
@@ -1252,35 +1328,31 @@ def main() -> int:
             TimeoutError, B - BrokenPipeError, C - the control, OK).
             pygame/D3D11 had nothing to do with the crashes.
             """
-            nonlocal work_scale, work_w, work_h, params, frame_index, pts, work_frame
-            nonlocal nr_small
-            nonlocal worker, worker_logs, reader, worker_stop, last_restart
-            nonlocal guides  # without this main sends motion of the old size
-            work_scale = new_scale
-            cfg["profile"] = new_profile
-            params = new_params
-            if new_small is not None and new_small != nr_small:
-                nr_small = new_small
-                cfg["nr_small"] = nr_small
+            st.work_scale = new_scale
+            st.cfg["profile"] = new_profile
+            st.params = new_params
+            if new_small is not None and new_small != st.nr_small:
+                st.nr_small = new_small
+                st.cfg["nr_small"] = st.nr_small
                 # The environment is what a freshly started worker reads; the
                 # live one is told through the resize below.
-                os.environ["NS_NR_SMALL"] = "1" if nr_small else "0"
+                os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
                 _save_menu_layout()
-            new_w, new_h = _work_size(width, height, work_scale)
-            new_full_w = width if (new_w != width or new_h != height) else 0
-            new_full_h = height if (new_w != width or new_h != height) else 0
+            new_w, new_h = _work_size(st.width, st.height, st.work_scale)
+            new_full_w = st.width if (new_w != st.width or new_h != st.height) else 0
+            new_full_h = st.height if (new_w != st.width or new_h != st.height) else 0
             print(f"[main] applying: profile {new_profile!r}, "
-                  f"work_scale {work_scale:.2f} ({new_w}x{new_h}), params {params}")
-            display.alert(UI_STRINGS[lang]["settings_applied"])
+                  f"work_scale {st.work_scale:.2f} ({new_w}x{new_h}), params {st.params}")
+            st.display.alert(UI_STRINGS[st.lang]["settings_applied"])
 
             applied = False
-            if worker.poll() is None and not full:
+            if st.worker.poll() is None and not full:
                 try:
                     t_rnsz = time.perf_counter()
-                    send_resize(worker, params, new_w, new_h, RESTART_WARMUP,
-                                new_full_w, new_full_h, nr_small)
-                    reader.wait_rack(timeout=RACK_TIMEOUT)
-                    reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
+                    send_resize(st.worker, st.params, new_w, new_h, RESTART_WARMUP,
+                                new_full_w, new_full_h, st.nr_small)
+                    st.reader.wait_rack(timeout=RACK_TIMEOUT)
+                    st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
                     applied = True
                     print(f"[main] RNSZ applied: {new_w}x{new_h} in "
                           f"{(time.perf_counter() - t_rnsz) * 1000:.0f} ms")
@@ -1288,9 +1360,9 @@ def main() -> int:
                     print(f"[main] RNSZ did not go through ({exc}) - full worker restart",
                           file=sys.stderr)
             if not applied:
-                worker, worker_logs, reader, worker_stop = restart_worker(
-                    worker, params, new_w, new_h, RESTART_WARMUP,
-                    new_full_w, new_full_h, worker_stop, shm)
+                st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
+                    st.worker, st.params, new_w, new_h, RESTART_WARMUP,
+                    new_full_w, new_full_h, st.worker_stop, st.shm)
                 _forget_present()
                 # The new worker knows nothing about DDA/gray: reset the flags
                 # so the main loop sends DDA1/GRAY again. Otherwise the frames
@@ -1302,15 +1374,15 @@ def main() -> int:
             # The order matters: work_w/work_h and guides change TOGETHER,
             # otherwise the motion size drifts away from what the worker
             # expects (see the docstring).
-            work_w, work_h = new_w, new_h
-            guides = TemporalGuideGenerator(work_w, work_h, emit_small=motion_small)
+            st.work_w, st.work_h = new_w, new_h
+            st.guides = TemporalGuideGenerator(st.work_w, st.work_h, emit_small=st.motion_small)
             _sync_motion_size()  # the flow resolution may have changed
             _sync_gray()         # the gray channel lives in the worker, size = guides flow
-            frame_index = 0
-            pts = 0
-            work_frame = None  # the indices are reset - a fresh grab is needed
-            tray._set_state(scale=work_scale)
-            last_restart = time.monotonic()
+            st.frame_index = 0
+            st.pts = 0
+            st.work_frame = None  # the indices are reset - a fresh grab is needed
+            st.tray._set_state(scale=st.work_scale)
+            st.last_restart = time.monotonic()
 
         def _switch_monitor(new_monitor: int | str) -> None:
             """Switch the capture/output monitor - a full pipeline restart.
@@ -1327,7 +1399,6 @@ def main() -> int:
             # Everything downstream of the size - the worker, the shm, the
             # overlay, the flags - is rebuilt by _rebuild_pipeline, which owns
             # those names; this function only picks the monitor and the size.
-            nonlocal monitor, width, height, work_w, work_h, capture
             if isinstance(new_monitor, str):
                 resolved = resolve_output_idx(new_monitor)
                 if resolved is None:
@@ -1335,33 +1406,33 @@ def main() -> int:
                           file=sys.stderr)
                     return
                 new_monitor = resolved
-            if new_monitor == monitor:
+            if new_monitor == st.monitor:
                 return
-            print(f"[main] monitor change: {monitor} -> {new_monitor}")
+            print(f"[main] monitor change: {st.monitor} -> {new_monitor}")
             _teardown_pipeline()
             try:
-                capture.close()
+                st.capture.close()
             except Exception:
                 pass
             # The new monitor: its real resolution.
-            monitor = new_monitor
-            cfg["monitor"] = monitor
+            st.monitor = new_monitor
+            st.cfg["monitor"] = st.monitor
             try:
-                capture = ScreenCapture(monitor_idx=monitor)
+                st.capture = ScreenCapture(monitor_idx=st.monitor)
             except Exception as exc:
                 # The chosen output is gone (unplugged between the menu
                 # render and the click, dock changed, driver reset) - the
                 # capture must never take the app down. Fall back to the
                 # primary output and tell the user.
-                print(f"[main] monitor {monitor} failed to open: {exc}",
+                print(f"[main] monitor {st.monitor} failed to open: {exc}",
                       file=sys.stderr)
-                capture = ScreenCapture(monitor_idx=0)
-                monitor = capture.monitor_idx
-                cfg["monitor"] = monitor
-                display.alert(UI_STRINGS[lang]["mon_fail"])
-            width, height = capture.resolution
-            work_w, work_h = _work_size(width, height, work_scale)
-            _rebuild_pipeline(f"Monitor {monitor}: {width}x{height}")
+                st.capture = ScreenCapture(monitor_idx=0)
+                st.monitor = st.capture.monitor_idx
+                st.cfg["monitor"] = st.monitor
+                st.display.alert(UI_STRINGS[st.lang]["mon_fail"])
+            st.width, st.height = st.capture.resolution
+            st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
+            _rebuild_pipeline(f"Monitor {st.monitor}: {st.width}x{st.height}")
 
         def _teardown_pipeline() -> None:
             """Stop everything that is sized to the current width/height.
@@ -1370,17 +1441,16 @@ def main() -> int:
             the shared memory and a running recording are all built for one
             frame size and cannot survive a change of it.
             """
-            nonlocal recorder, pending_shot, worker, worker_stop
-            if recorder is not None:
+            if st.recorder is not None:
                 try:
-                    recorder.close()
+                    st.recorder.close()
                 except Exception as exc:
                     print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
-                recorder = None
-            pending_shot = None
-            shutdown_worker(worker, worker_stop)
+                st.recorder = None
+            st.pending_shot = None
+            shutdown_worker(st.worker, st.worker_stop)
             try:
-                shm.close()
+                st.shm.close()
             except Exception:
                 pass
 
@@ -1392,24 +1462,18 @@ def main() -> int:
             depends on them, resetting the per-worker flags so the main loop
             negotiates DDA1/WGCW, GRAY, OUTS and the window again.
             """
-            nonlocal shm, worker, worker_logs, reader, worker_stop
-            nonlocal display, guides, buf_full
-            nonlocal frame_index, pts, work_frame, output_rgba
-            nonlocal present_mode, present_attempted, dda_mode, dda_attempted
-            nonlocal gray_active, motion_small, motion_attempted, gpu_ok
-            nonlocal out_shm, out_attempted
             # Freeze the last picture with a spinner before the old worker
             # dies: the rebuild takes ~1 s (new worker, NGX warm-up) and the
             # bare desktop would flash underneath (user: mode-switch flashes).
             # The overlay spans the whole monitor even when the next mode is
             # one window - no bare desktop at the edges of the spinner.
-            display.enter_switch_mode(output_rgba, *capture.resolution)
-            menu_was_open = display.menu.visible
-            full_w = width if (work_w != width or work_h != height) else 0
-            full_h = height if (work_w != width or work_h != height) else 0
-            shm = SharedFrameBuffer(width, height)
-            worker, worker_logs, reader, worker_stop = start_worker(
-                params, work_w, work_h, warmup, full_w, full_h, shm)
+            st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
+            menu_was_open = st.display.menu.visible
+            full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
+            full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
+            st.shm = SharedFrameBuffer(st.width, st.height)
+            st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
+                st.params, st.work_w, st.work_h, warmup, full_w, full_h, st.shm)
             # The window and the menu are rebuilt, keeping the user settings.
             # A soft resize instead of close()+recreate: the old code went
             # through pygame.quit() and built a fresh window - the screen went
@@ -1418,7 +1482,7 @@ def main() -> int:
             # (new size), the SDL window does not have to be.
             recreated = False
             try:
-                display.resize(width, height)
+                st.display.resize(st.width, st.height)
                 recreated = False
             except Exception as exc:
                 print(f"[main] soft resize failed ({exc}) - recreating the window")
@@ -1427,28 +1491,28 @@ def main() -> int:
                 # below picks up where the user left it, not the stale
                 # values from the last menu close (user rule 10.09: fixed
                 # position until the user drags it).
-                cfg["menu_offset"] = [int(display.menu.offset[0]),
-                                      int(display.menu.offset[1])]
-                cfg["menu_scale"] = round(display.menu.user_scale, 2)
-                cfg["menu_height"] = (None if display.menu.user_height is None
-                                      else int(display.menu.user_height))
+                st.cfg["menu_offset"] = [int(st.display.menu.offset[0]),
+                                      int(st.display.menu.offset[1])]
+                st.cfg["menu_scale"] = round(st.display.menu.user_scale, 2)
+                st.cfg["menu_height"] = (None if st.display.menu.user_height is None
+                                      else int(st.display.menu.user_height))
                 try:
-                    display.close()
+                    st.display.close()
                 except Exception:
                     pass
-                display = Display(width, height, fullscreen=bool(cfg["fullscreen"]))
+                st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
                 recreated = True
             # In one-window mode the overlay stops hiding from screen capture:
             # the input is that window, not the desktop, so there is no
             # self-capture loop to break - and an outside recorder can see the
             # result. The worker does the same for its picture window.
-            display.set_excluded_from_capture(window_hwnd is None)
-            display.set_lang(lang)
-            display.menu.set_hotkeys(hotkey_labels(hotkey_bindings))
-            saved_theme = cfg.get("theme")
+            st.display.set_excluded_from_capture(st.window_hwnd is None)
+            st.display.set_lang(st.lang)
+            st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
+            saved_theme = st.cfg.get("theme")
             if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
-                display.menu.set_state({"theme": saved_theme})
-            display.menu.set_state({"lang": lang})
+                st.display.menu.set_state({"theme": saved_theme})
+            st.display.menu.set_state({"lang": st.lang})
             # The position/scale/height restore applies ONLY to a recreated
             # menu (the window was rebuilt). On a soft resize the menu is
             # alive and keeps exactly what the user set - re-applying the
@@ -1456,53 +1520,53 @@ def main() -> int:
             # every mode switch (user: menu returns to the launch position
             # and scale after picking a window).
             if recreated:
-                display.menu.set_user_scale(float(cfg.get("menu_scale", 1.0)))
-                saved_offset = cfg.get("menu_offset")
+                st.display.menu.set_user_scale(float(st.cfg.get("menu_scale", 1.0)))
+                saved_offset = st.cfg.get("menu_offset")
                 if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
-                    display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
-                saved_height = cfg.get("menu_height")
+                    st.display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
+                saved_height = st.cfg.get("menu_height")
                 if isinstance(saved_height, (int, float)) and saved_height > 0:
-                    display.menu.user_height = int(saved_height)
+                    st.display.menu.user_height = int(saved_height)
             if menu_was_open:
-                display.menu.set_state(_menu_payload())
-                display.menu.visible = True
-                display.set_menu_opaque(True)
-                display.set_menu_input(True)
+                st.display.menu.set_state(_menu_payload())
+                st.display.menu.visible = True
+                st.display.set_menu_opaque(True)
+                st.display.set_menu_input(True)
                 # The saved offset is honoured as-is: the panel stays where
                 # the user left it, clamped to the screen by layout() (user
                 # rule 10.09: fixed position until the user drags it).
-                if window_hwnd is not None:
-                    display.set_fullscreen_layer(mon_w, mon_h)
+                if st.window_hwnd is not None:
+                    st.display.set_fullscreen_layer(st.mon_w, st.mon_h)
             # guides and the buffers follow the new resolution.
-            guides = TemporalGuideGenerator(work_w, work_h, emit_small=motion_small)
-            buf_full = np.empty((height, width, 4), dtype=np.uint8)
+            st.guides = TemporalGuideGenerator(st.work_w, st.work_h, emit_small=st.motion_small)
+            st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
             # Pipeline flags - the new worker knows nothing.
-            present_mode = False
-            present_attempted = False
-            dda_mode = False
-            dda_attempted = False
-            gray_active = False
-            motion_small = False
-            motion_attempted = False
-            out_shm = False
-            out_attempted = False
-            gpu_ok = None  # a new worker means a new verdict on feature 18
-            frame_index = 0
-            pts = 0
-            work_frame = None
+            st.present_mode = False
+            st.present_attempted = False
+            st.dda_mode = False
+            st.dda_attempted = False
+            st.gray_active = False
+            st.motion_small = False
+            st.motion_attempted = False
+            st.out_shm = False
+            st.out_attempted = False
+            st.gpu_ok = None  # a new worker means a new verdict on feature 18
+            st.frame_index = 0
+            st.pts = 0
+            st.work_frame = None
             # The last NR frame belongs to the previous monitor and size.
             # Without the reset a screenshot right after the switch would
             # save it.
-            output_rgba = None
+            st.output_rgba = None
             _save_menu_layout()
-            print(f"[main] pipeline rebuilt: {width}x{height}, "
-                  f"work {work_w}x{work_h} - {note}")
+            print(f"[main] pipeline rebuilt: {st.width}x{st.height}, "
+                  f"work {st.work_w}x{st.work_h} - {note}")
             # The mode-change alert must survive a rebuild: the pipeline
             # teardown clears the alert list, and in a game the user has no
             # time to read a 2.5 s toast. 6 s is long enough to read while
             # the game keeps running (user: "the Num5 alert disappears too
             # fast").
-            display.alert(note, duration=6.0)
+            st.display.alert(note, duration=6.0)
 
         def _switch_window(hwnd: int) -> None:
             """Point the capture at one window (hwnd) or back at the desktop (0).
@@ -1513,10 +1577,8 @@ def main() -> int:
             worker is asked first (WGCW answers with the real size), and the
             pipeline is rebuilt for exactly that.
             """
-            nonlocal window_hwnd, width, height, work_w, work_h
-            nonlocal follow_pos, follow_resize
             if hwnd and not want_dda:
-                display.alert(UI_STRINGS[lang]["win_fail"])
+                st.display.alert(UI_STRINGS[st.lang]["win_fail"])
                 print("[main] window mode needs capture in the worker "
                       "(capture_in_worker is off)", file=sys.stderr)
                 return
@@ -1525,7 +1587,7 @@ def main() -> int:
             # pipeline is already dead by then - without the overlay the
             # desktop sits bare (user: black gap on one-window mode switch).
             # enter_switch_mode is idempotent and covers the rebuild too.
-            display.enter_switch_mode(output_rgba, *capture.resolution)
+            st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
             if hwnd:
                 try:
                     aw, ah = _probe_window_capture(hwnd)
@@ -1534,13 +1596,13 @@ def main() -> int:
                     # may be half-open: put the source back on the desktop
                     # before bailing out (audit #4, F2).
                     try:
-                        send_dda(worker, width, height)
+                        send_dda(st.worker, st.width, st.height)
                     except Exception:
                         pass
-                    display.alert(UI_STRINGS[lang]["win_fail"])
+                    st.display.alert(UI_STRINGS[st.lang]["win_fail"])
                     print(f"[main] the worker cannot capture that window: {exc}",
                           file=sys.stderr)
-                    display.exit_switch_mode()  # the overlay was raised before the probe
+                    st.display.exit_switch_mode()  # the overlay was raised before the probe
                     return
                 if aw < 64 or ah < 64:
                     # Below the work-resolution floor there is nothing to
@@ -1550,24 +1612,24 @@ def main() -> int:
                     # back on the desktop, otherwise the frozen tiny window
                     # becomes the picture until the next rebuild (audit #4,
                     # F2).
-                    send_dda(worker, width, height)
+                    send_dda(st.worker, st.width, st.height)
                     print(f"[main] the window is {aw}x{ah} - too small to process",
                           file=sys.stderr)
-                    display.alert(UI_STRINGS[lang]["win_fail"])
-                    display.exit_switch_mode()  # the overlay was raised before the probe
+                    st.display.alert(UI_STRINGS[st.lang]["win_fail"])
+                    st.display.exit_switch_mode()  # the overlay was raised before the probe
                     return
                 _teardown_pipeline()
-                window_hwnd = int(hwnd)
-                width, height = int(aw), int(ah)
-                note = UI_STRINGS[lang]["win_mode_on"]
+                st.window_hwnd = int(hwnd)
+                st.width, st.height = int(aw), int(ah)
+                note = UI_STRINGS[st.lang]["win_mode_on"]
             else:
                 _teardown_pipeline()
-                window_hwnd = None
-                width, height = capture.resolution
-                note = UI_STRINGS[lang]["win_mode_off"]
-            work_w, work_h = _work_size(width, height, work_scale)
-            follow_pos = None        # a fresh overlay starts at (0,0)
-            follow_resize = None
+                st.window_hwnd = None
+                st.width, st.height = st.capture.resolution
+                note = UI_STRINGS[st.lang]["win_mode_off"]
+            st.work_w, st.work_h = _work_size(st.width, st.height, st.work_scale)
+            st.follow_pos = None        # a fresh overlay starts at (0,0)
+            st.follow_resize = None
             _rebuild_pipeline(note)
 
         def _follow_window() -> None:
@@ -1580,55 +1642,54 @@ def main() -> int:
             that on every pixel while someone drags a resize handle would be
             unusable. The new size has to hold still for half a second first.
             """
-            nonlocal follow_pos, follow_resize
-            if window_hwnd is None:
+            if st.window_hwnd is None:
                 return
             # The worker is dead: the overlay must stay hidden (issue #3) -
             # nothing would fill it, and showing it covers the desktop with
             # a black window.
-            if worker_failed:
+            if st.worker_failed:
                 return
-            rect = window_frame_rect(window_hwnd)
+            rect = window_frame_rect(st.window_hwnd)
             if rect is None:
                 return
             x, y, w, h = rect
-            if ctypes.windll.user32.IsIconic(ctypes.c_void_p(window_hwnd)):
+            if ctypes.windll.user32.IsIconic(ctypes.c_void_p(st.window_hwnd)):
                 # Minimised: the capture goes silent (the worker hides its own
                 # window for the same reason), so the HUD goes with it rather
                 # than floating over whatever is underneath.
-                if display.is_visible():
-                    display.set_visible(False)
-                    follow_pos = None
+                if st.display.is_visible():
+                    st.display.set_visible(False)
+                    st.follow_pos = None
                 return
-            if not display.is_visible():
-                display.set_visible(True)
-            moved = (x, y) != follow_pos
+            if not st.display.is_visible():
+                st.display.set_visible(True)
+            moved = (x, y) != st.follow_pos
             # While the menu is open the user may be dragging it by its title
             # bar - following the captured window would yank the HUD (and the
             # menu with it) back onto the window every frame, which is the
             # "does not grab, stutters, flickers" report. The position is
             # re-synced on the first frame after the menu closes.
-            if moved and not display.menu.visible:
-                display.move_to(x, y)
-                follow_pos = (x, y)
+            if moved and not st.display.menu.visible:
+                st.display.move_to(x, y)
+                st.follow_pos = (x, y)
             # Both windows are topmost, and within that group the one raised
             # last is on top. The worker re-asserts its picture window every
             # time the target moves, so the HUD has to keep coming back up -
             # otherwise the menu ends up UNDER the picture, invisible both to
             # the user and to a recorder. Measured: without this the menu
             # changed 0% of what an outside capture saw.
-            if moved or frame_index % 30 == 0:
-                display.raise_topmost()
-            if (w, h) != (width, height):
+            if moved or st.frame_index % 30 == 0:
+                st.display.raise_topmost()
+            if (w, h) != (st.width, st.height):
                 now = time.monotonic()
-                if follow_resize is None or follow_resize[0] != (w, h):
-                    follow_resize = ((w, h), now)
-                elif now - follow_resize[1] > 0.5:
-                    follow_resize = None
+                if st.follow_resize is None or st.follow_resize[0] != (w, h):
+                    st.follow_resize = ((w, h), now)
+                elif now - st.follow_resize[1] > 0.5:
+                    st.follow_resize = None
                     print(f"[main] the window is now {w}x{h} - rebuilding the pipeline")
-                    _switch_window(window_hwnd)
+                    _switch_window(st.window_hwnd)
             else:
-                follow_resize = None
+                st.follow_resize = None
 
         def _probe_window_capture(hwnd: int) -> tuple:
             """Ask the CURRENT worker for the capture size of a window.
@@ -1636,8 +1697,8 @@ def main() -> int:
             It switches that worker's source as a side effect, which is
             harmless: the caller tears it down immediately afterwards.
             """
-            send_wgc(worker, hwnd)
-            return reader.wait_wgak(timeout=15.0)
+            send_wgc(st.worker, hwnd)
+            return st.reader.wait_wgak(timeout=15.0)
 
         def _enable_out_shm() -> None:
             """OUTS: agree that the result pixels will go through a section.
@@ -1646,19 +1707,18 @@ def main() -> int:
             process and a new one knows nothing about it. A refusal is not
             fatal - the pixels travel down the pipe as before.
             """
-            nonlocal out_shm, out_attempted
-            out_attempted = True
+            st.out_attempted = True
             if not want_out_shm:
                 return
             try:
-                shm.open_out(width, height)
-                send_out(worker, width, height, shm.out_name)
-                reader.wait_oak(timeout=15.0)
-                out_shm = True
+                st.shm.open_out(st.width, st.height)
+                send_out(st.worker, st.width, st.height, st.shm.out_name)
+                st.reader.wait_oak(timeout=15.0)
+                st.out_shm = True
                 print(f"[main] result pixels through shared memory "
-                      f"({width}x{height}, {shm.out_bytes / 1024 / 1024:.0f} MB)")
+                      f"({st.width}x{st.height}, {st.shm.out_bytes / 1024 / 1024:.0f} MB)")
             except Exception as exc:
-                out_shm = False
+                st.out_shm = False
                 print(f"[main] shared memory for pixels unavailable ({exc}) - "
                       f"they go through the pipe", file=sys.stderr)
 
@@ -1670,20 +1730,19 @@ def main() -> int:
             nothing about it. A refusal is not fatal - we do the upscale on
             the CPU, as before.
             """
-            nonlocal motion_small, motion_attempted
-            motion_attempted = True
+            st.motion_attempted = True
             if not want_motion_small:
                 return
-            guides.emit_small = True
+            st.guides.emit_small = True
             try:
-                send_motion_size(worker, guides.motion_width, guides.motion_height)
-                reader.wait_mack(timeout=15.0)
-                motion_small = True
-                print(f"[main] motion field {guides.motion_width}x{guides.motion_height} - "
+                send_motion_size(st.worker, st.guides.motion_width, st.guides.motion_height)
+                st.reader.wait_mack(timeout=15.0)
+                st.motion_small = True
+                print(f"[main] motion field {st.guides.motion_width}x{st.guides.motion_height} - "
                       f"upscaled by the worker on the GPU")
             except Exception as exc:
-                guides.emit_small = False
-                motion_small = False
+                st.guides.emit_small = False
+                st.motion_small = False
                 print(f"[main] GPU motion upscale unavailable ({exc}) - doing it on the CPU",
                       file=sys.stderr)
 
@@ -1693,43 +1752,40 @@ def main() -> int:
             A refusal is not fatal: we stay on returning pixels to Python and
             drawing them in pygame - that path has not gone anywhere.
             """
-            nonlocal present_mode, present_attempted
-            present_attempted = True
+            st.present_attempted = True
             try:
-                send_window(worker, width, height, 0)
-                reader.wait_wack(timeout=15.0)
-                present_mode = True
-                display.set_hud_only(True)
-                display.raise_topmost()  # the HUD must be ABOVE the worker's window
+                send_window(st.worker, st.width, st.height, 0)
+                st.reader.wait_wack(timeout=15.0)
+                st.present_mode = True
+                st.display.set_hud_only(True)
+                st.display.raise_topmost()  # the HUD must be ABOVE the worker's window
                 print("[main] presenting in the worker window: no frame comes back to Python")
             except Exception as exc:
-                present_mode = False
-                display.set_hud_only(False)
+                st.present_mode = False
+                st.display.set_hud_only(False)
                 print(f"[main] worker window unavailable ({exc}) - output through pygame",
                       file=sys.stderr)
 
         def _disable_present() -> None:
             """Close the worker window and go back to drawing in pygame."""
-            nonlocal present_mode, present_attempted
-            if not present_mode:
+            if not st.present_mode:
                 return
             try:
-                send_window(worker, 0, 0, WINDOW_FLAG_DISABLE)
-                reader.wait_wack(timeout=10.0)
+                send_window(st.worker, 0, 0, WINDOW_FLAG_DISABLE)
+                st.reader.wait_wack(timeout=10.0)
             except Exception as exc:
                 print(f"[main] could not close the worker window: {exc}", file=sys.stderr)
-            present_mode = False
-            present_attempted = False  # after a pause the window can be raised again
-            display.set_hud_only(False)
+            st.present_mode = False
+            st.present_attempted = False  # after a pause the window can be raised again
+            st.display.set_hud_only(False)
 
         def _forget_present() -> None:
             """The worker restarted - its window and settings died with the process."""
-            nonlocal present_mode, present_attempted, motion_small, motion_attempted
-            present_mode = False
-            present_attempted = False
-            motion_small = False
-            motion_attempted = False
-            display.set_hud_only(False)
+            st.present_mode = False
+            st.present_attempted = False
+            st.motion_small = False
+            st.motion_attempted = False
+            st.display.set_hud_only(False)
 
         def _sync_gray() -> None:
             """GRAY: renegotiate the reverse luminance channel for guides.
@@ -1739,18 +1795,17 @@ def main() -> int:
             change after RNSZ), so a resync is needed in _enable_dda and
             after apply. A refusal is not fatal - guides stay on dxcam.
             """
-            nonlocal gray_active
-            if not dda_mode:
+            if not st.dda_mode:
                 return
             try:
-                gw, gh = guides.flow_width, guides.flow_height
-                shm.open_gray(gw, gh)
-                send_gray(worker, gw, gh, shm.gray_name)
-                reader.wait_gak(timeout=15.0)
-                gray_active = True
+                gw, gh = st.guides.flow_width, st.guides.flow_height
+                st.shm.open_gray(gw, gh)
+                send_gray(st.worker, gw, gh, st.shm.gray_name)
+                st.reader.wait_gak(timeout=15.0)
+                st.gray_active = True
                 print(f"[main] gray channel {gw}x{gh}: guides take luminance from the worker")
             except Exception as exc:
-                gray_active = False
+                st.gray_active = False
                 print(f"[main] gray channel unavailable ({exc}) - guides through dxcam",
                       file=sys.stderr)
 
@@ -1764,18 +1819,17 @@ def main() -> int:
             flow field size), guides read it and no longer depend on dxcam.
             A refusal is not fatal: we stay on sending frames from Python.
             """
-            nonlocal dda_mode, dda_attempted, capture
-            dda_attempted = True
+            st.dda_attempted = True
             try:
                 # In DDA mode guides still need the frame (motion), so dxcam
                 # keeps running - we simply stop sending colour to the worker.
-                send_dda(worker, width, height, 0)
-                reader.wait_dack(timeout=15.0)
-                dda_mode = True
+                send_dda(st.worker, st.width, st.height, 0)
+                st.reader.wait_dack(timeout=15.0)
+                st.dda_mode = True
                 _sync_gray()
                 print("[main] screen capture inside the worker (DDA1): no colour through the pipe")
             except Exception as exc:
-                dda_mode = False
+                st.dda_mode = False
                 print(f"[main] capture inside the worker unavailable ({exc}) - frames through Python",
                       file=sys.stderr)
 
@@ -1788,53 +1842,49 @@ def main() -> int:
             screen capture. If the window has gone (closed, minimised) we drop
             back to the whole screen rather than freezing on the last frame.
             """
-            nonlocal dda_mode, dda_attempted, window_hwnd
-            dda_attempted = True
-            if window_hwnd is None:
+            st.dda_attempted = True
+            if st.window_hwnd is None:
                 return
-            if not ctypes.windll.user32.IsWindow(window_hwnd):
+            if not ctypes.windll.user32.IsWindow(st.window_hwnd):
                 print("[main] the captured window is gone - back to full screen",
                       file=sys.stderr)
                 _switch_window(0)
                 return
             try:
-                send_wgc(worker, window_hwnd)
-                aw, ah = reader.wait_wgak(timeout=15.0)
-                dda_mode = True
+                send_wgc(st.worker, st.window_hwnd)
+                aw, ah = st.reader.wait_wgak(timeout=15.0)
+                st.dda_mode = True
                 _sync_gray()
                 print(f"[main] window capture inside the worker (WGCW): "
                       f"{aw}x{ah}, no colour through the pipe")
             except Exception as exc:
-                dda_mode = False
+                st.dda_mode = False
                 print(f"[main] window capture unavailable ({exc}) - back to full screen",
                       file=sys.stderr)
-                display.alert(UI_STRINGS[lang]["win_fail"])
+                st.display.alert(UI_STRINGS[st.lang]["win_fail"])
                 _switch_window(0)
 
         def _disable_dda() -> None:
             """Turn off capture in the worker and send the frame from Python again."""
-            nonlocal dda_mode
-            if not dda_mode:
+            if not st.dda_mode:
                 return
             try:
-                send_dda(worker, 0, 0, 0)
-                reader.wait_dack(timeout=10.0)
+                send_dda(st.worker, 0, 0, 0)
+                st.reader.wait_dack(timeout=10.0)
             except Exception as exc:
                 print(f"[main] could not turn off capture in the worker: {exc}", file=sys.stderr)
-            dda_mode = False
+            st.dda_mode = False
 
         def _forget_dda() -> None:
             """The worker restarted - its DDA capture died with the process."""
-            nonlocal dda_mode, dda_attempted, gray_active
-            dda_mode = False
-            dda_attempted = False
-            gray_active = False
+            st.dda_mode = False
+            st.dda_attempted = False
+            st.gray_active = False
 
         def _forget_out() -> None:
             """The worker restarted - it knows nothing about the OUTS section."""
-            nonlocal out_shm, out_attempted
-            out_shm = False
-            out_attempted = False
+            st.out_shm = False
+            st.out_attempted = False
 
         def _save_menu_layout() -> bool:
             """Remember the panel size and position in config.json.
@@ -1848,8 +1898,8 @@ def main() -> int:
             try:
                 data = json.loads(args.config.read_text(encoding="utf-8"))
                 data.update(_menu_layout_payload(
-                    cfg, params, monitor, lang, work_scale, split_pos,
-                    startup_menu, nr_small, display.menu))
+                    st.cfg, st.params, st.monitor, st.lang, st.work_scale, st.split_pos,
+                    st.startup_menu, st.nr_small, st.display.menu))
                 _atomic_write_json(args.config, data)
                 return True
             except Exception as exc:
@@ -1864,12 +1914,11 @@ def main() -> int:
             promises. Once decided, the answer is not revisited - worker
             restarts add lines but the verdict does not change.
             """
-            nonlocal gpu_ok
-            if gpu_ok is not None:
+            if st.gpu_ok is not None:
                 return
-            for line in reversed(worker_logs[-80:]):
+            for line in reversed(st.worker_logs[-80:]):
                 if "feature 18 ready" in line:
-                    gpu_ok = True
+                    st.gpu_ok = True
                     return
                 # The real refusal line from the worker is "[pure] direct
                 # feature 18 create failed"; "Unsupported GPU architecture"
@@ -1877,7 +1926,7 @@ def main() -> int:
                 # SAFE PASSTHROUGH (the worker stays alive and shows the raw
                 # frame) is the same verdict: no feature, no NR.
                 if "feature 18 create failed" in line or "NR feature unavailable" in line:
-                    gpu_ok = False
+                    st.gpu_ok = False
                     return
 
         def _open_save_dialog() -> None:
@@ -1893,13 +1942,12 @@ def main() -> int:
             A configured screenshot_dir is the folder the dialog opens in,
             not a replacement for it (issue #20).
             """
-            nonlocal shot_dialog_open
-            if shot_dialog_open:
+            if st.shot_dialog_open:
                 return
-            shot_dialog_open = True
-            hwnd = display.get_hwnd()
+            st.shot_dialog_open = True
+            hwnd = st.display.get_hwnd()
             default_name = f"neuralscreen-{time.strftime('%Y%m%d-%H%M%S')}.jpg"
-            shot_dir = cfg.get("screenshot_dir")
+            shot_dir = st.cfg.get("screenshot_dir")
             initial_dir = str(shot_dir) if isinstance(shot_dir, str) and shot_dir.strip() else None
 
             def _run() -> None:
@@ -1915,11 +1963,10 @@ def main() -> int:
 
         def _drain_save_dialog() -> None:
             """Take the path from the dialog if the user has already answered."""
-            nonlocal shot_dialog_open, pending_shot
             try:
                 while True:
                     shot_path = shot_paths.get_nowait()
-                    shot_dialog_open = False
+                    st.shot_dialog_open = False
                     if shot_path is None:
                         print("[main] screenshot cancelled by the user")
                         continue
@@ -1927,19 +1974,19 @@ def main() -> int:
                         # The folder picker answered: remember the folder
                         # and let the next screenshot go there without a
                         # dialog (issue #20).
-                        cfg["screenshot_dir"] = str(shot_path)
+                        st.cfg["screenshot_dir"] = str(shot_path)
                         _save_menu_layout()
-                        display.menu.set_state({"screenshot_dir": str(shot_path)})
+                        st.display.menu.set_state({"screenshot_dir": str(shot_path)})
                         print(f"[main] screenshot folder -> {shot_path}")
-                        display.alert(f"Screenshot folder: {shot_path}")
+                        st.display.alert(f"Screenshot folder: {shot_path}")
                         continue
-                    if present_mode:
-                        pending_shot = shot_path
+                    if st.present_mode:
+                        st.pending_shot = shot_path
                         print(f"[main] screenshot from the next frame: {shot_path}")
-                    elif output_rgba is not None:
-                        _save_screenshot(shot_path, output_rgba)
+                    elif st.output_rgba is not None:
+                        _save_screenshot(shot_path, st.output_rgba)
                     else:
-                        display.alert("No frame yet")
+                        st.display.alert("No frame yet")
             except queue.Empty:
                 pass
 
@@ -1967,7 +2014,7 @@ def main() -> int:
             a cap the slider cannot land on exactly would leave the top of the
             range doing nothing, which is the whole thing being fixed here.
             """
-            raw = min(1.0, WORK_MAX_W / max(1, width), WORK_MAX_H / max(1, height))
+            raw = min(1.0, WORK_MAX_W / max(1, st.width), WORK_MAX_H / max(1, st.height))
             return max(0.35, int(raw / 0.05) * 0.05)
 
         def _menu_payload() -> dict:
@@ -1979,42 +2026,42 @@ def main() -> int:
             monitor_entries = [f"{i}: {w}x{h} ({dev})"
                                for i, w, h, dev in list_monitors()]
             return {
-                "nr": not paused,
-                "work_scale": work_scale,
+                "nr": not st.paused,
+                "work_scale": st.work_scale,
                 # Where the work size hits the 2560x1440 cap. Everything above
                 # it lands on the same resolution, so the slider puts "the whole
                 # screen" there instead of a dead stretch.
                 "work_scale_cap": _work_scale_cap(),
                 "work_scale_min": WORK_SCALE_MIN,
-                "nr_small": nr_small,
-                "screen_size": f"{width}x{height}",
-                "profile": cfg["profile"],
-                "profiles": list(PROFILES) + list(presets),
-                "preset_active": cfg["profile"] in presets,
-                "params": {k: params[k] for k in
+                "nr_small": st.nr_small,
+                "screen_size": f"{st.width}x{st.height}",
+                "profile": st.cfg["profile"],
+                "profiles": list(PROFILES) + list(st.presets),
+                "preset_active": st.cfg["profile"] in st.presets,
+                "params": {k: st.params[k] for k in
                            ("intensity", "local_tone",
                             "local_structure", "skin_structure")},
-                "lang": lang,
-                "recording": recorder is not None,
-                "work_size": f"{work_w}x{work_h}",
-                "rec_seconds": (recorder.duration_ms / 1000.0) if recorder else 0.0,
-                "rec_indicator": bool(cfg.get("rec_indicator", True)),
-                "screenshot_dir": cfg.get("screenshot_dir") or "",
-                "open_on_start": startup_menu,
+                "lang": st.lang,
+                "recording": st.recorder is not None,
+                "work_size": f"{st.work_w}x{st.work_h}",
+                "rec_seconds": (st.recorder.duration_ms / 1000.0) if st.recorder else 0.0,
+                "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
+                "screenshot_dir": st.cfg.get("screenshot_dir") or "",
+                "open_on_start": st.startup_menu,
                 "autostart": _autostart_enabled(),
-                "split": split_pos,
+                "split": st.split_pos,
                 "gpu_text": gpu_text,
-                "gpu_ok": gpu_ok,
-                "window_mode": window_hwnd is not None,
-                "monitor_devicename": capture.devicename,
+                "gpu_ok": st.gpu_ok,
+                "window_mode": st.window_hwnd is not None,
+                "monitor_devicename": st.capture.devicename,
                 "monitors": monitor_entries,
                 "monitor": next(
                     (m for m in monitor_entries
-                     if m.startswith(f"{monitor}: ")),
-                    str(monitor)),
+                     if m.startswith(f"{st.monitor}: ")),
+                    str(st.monitor)),
                 "windows": [f"{h:X}: {t}" for h, t in wins],
                 "window_current": next(
-                    (f"{h:X}: {t}" for h, t in wins if h == window_hwnd), ""),
+                    (f"{h:X}: {t}" for h, t in wins if h == st.window_hwnd), ""),
                 "version": APP_VERSION,
                 "channel": CHANNEL_LABEL,
             }
@@ -2025,10 +2072,6 @@ def main() -> int:
             The menu changes nothing on its own: it reports what the user
             wants and the decision is taken here, where params and cfg live.
             """
-            nonlocal lang, running, startup_menu, split_pos, hotkey_bindings
-            nonlocal nr_small
-            nonlocal shot_dialog_open
-            nonlocal presets
             kind = action[0]
             if kind == "nr":
                 tray_commands.put("toggle")
@@ -2040,81 +2083,81 @@ def main() -> int:
                 want = float(action[1])
                 cap = _work_scale_cap()
                 if want > cap + 1e-6:
-                    request_apply(1.0, cfg["profile"], params, new_small=False)
+                    request_apply(1.0, st.cfg["profile"], st.params, new_small=False)
                 else:
-                    request_apply(want, cfg["profile"], params, new_small=True)
+                    request_apply(want, st.cfg["profile"], st.params, new_small=True)
             elif kind == "split":
                 # No need to recreate the worker: the wipe position rides in
                 # every frame's header.
-                split_pos = min(1.0, max(0.0, float(action[1])))
+                st.split_pos = min(1.0, max(0.0, float(action[1])))
             elif kind == "toggle" and action[1] == "open_on_start":
-                startup_menu = not startup_menu
+                st.startup_menu = not st.startup_menu
                 _save_menu_layout()
-                print(f"[main] menu at startup: {'yes' if startup_menu else 'no'}")
+                print(f"[main] menu at startup: {'yes' if st.startup_menu else 'no'}")
             elif kind == "toggle" and action[1] == "autostart":
                 # Autostart with Windows (HKCU Run). The state lives in the
                 # registry, not in the config - read it and invert.
                 new_state = not _autostart_enabled()
                 if _set_autostart(new_state):
                     print(f"[main] autostart with Windows: {'on' if new_state else 'off'}")
-                    display.alert(UI_STRINGS[lang].get(
+                    st.display.alert(UI_STRINGS[st.lang].get(
                         "autostart_on" if new_state else "autostart_off",
                         "Autostart ON" if new_state else "Autostart OFF"))
                 else:
-                    display.alert(UI_STRINGS[lang].get("autostart_err", "Autostart failed"))
+                    st.display.alert(UI_STRINGS[st.lang].get("autostart_err", "Autostart failed"))
             elif kind == "toggle" and action[1] == "rec_indicator":
                 # The recording indicator outside the menu: a config flag,
                 # the HUD reads it on every redraw.
-                cfg["rec_indicator"] = not bool(cfg.get("rec_indicator", True))
+                st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
                 _save_menu_layout()
-                print(f"[main] recording indicator: {'on' if cfg['rec_indicator'] else 'off'}")
+                print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
             elif kind == "param":
-                new_params = dict(params)
+                new_params = dict(st.params)
                 new_params[action[1]] = float(action[2])
-                request_apply(work_scale, cfg["profile"], new_params)
+                request_apply(st.work_scale, st.cfg["profile"], new_params)
             elif kind == "profile":
                 if action[1] in PROFILES:
-                    request_apply(work_scale, action[1], dict(PROFILES[action[1]]))
-                elif action[1] in presets:
-                    request_apply(work_scale, action[1], dict(presets[action[1]]))
+                    request_apply(st.work_scale, action[1], dict(PROFILES[action[1]]))
+                elif action[1] in st.presets:
+                    request_apply(st.work_scale, action[1], dict(st.presets[action[1]]))
                 else:
                     print(f"[main] unknown profile {action[1]!r} - ignored",
                           file=sys.stderr)
             elif kind == "lang":
-                if action[1] in UI_STRINGS and action[1] != lang:
-                    lang = action[1]
-                    display.set_lang(lang)
-                    display.menu.set_state({"lang": lang})
-                    print(f"[main] interface language -> {lang}")
+                if action[1] in UI_STRINGS and action[1] != st.lang:
+                    st.lang = action[1]
+                    st.display.set_lang(st.lang)
+                    st.display.menu.set_state({"lang": st.lang})
+                    print(f"[main] interface language -> {st.lang}")
             elif kind == "capture":
                 # While the menu waits for a keypress the global hotkeys must
                 # be suspended: otherwise Num2 toggles the menu instead of
                 # landing in the field.
                 if action[1]:
-                    hotkeys.suspend()
+                    st.hotkeys.suspend()
                 else:
-                    hotkeys.resume()
+                    st.hotkeys.resume()
             elif kind == "hotkey":
                 cmd, text = action[1], action[2]
                 parsed = parse_binding(text)
                 if parsed is None:
                     print(f"[main] could not parse the combination {text!r}", file=sys.stderr)
-                    display.alert(UI_STRINGS[lang]["hotkey_bad"])
+                    st.display.alert(UI_STRINGS[st.lang]["hotkey_bad"])
                 else:
-                    over = cfg.get("hotkeys")
+                    over = st.cfg.get("hotkeys")
                     over = dict(over) if isinstance(over, dict) else {}
                     over[cmd] = text
-                    cfg["hotkeys"] = over
-                    hotkey_bindings = build_bindings(over)
-                    hotkeys.rebind(hotkey_bindings)
-                    display.menu.set_hotkeys(hotkey_labels(hotkey_bindings))
+                    st.cfg["hotkeys"] = over
+                    st.hotkey_bindings = build_bindings(over)
+                    st.hotkeys.rebind(st.hotkey_bindings)
+                    st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
                     if not _save_hotkeys(over):
                         # The assignment works for this session but will not
                         # survive a restart - the user must know.
-                        display.alert(UI_STRINGS[lang]["save_fail"])
+                        st.display.alert(UI_STRINGS[st.lang]["save_fail"])
                         return
                     print(f"[main] {cmd} -> {text}")
-                    display.alert(UI_STRINGS[lang]["settings_applied"])
+                    st.display.alert(UI_STRINGS[st.lang]["settings_applied"])
             elif kind == "theme":
                 # The menu has already applied the theme to itself
                 # (overlay_ui); here we only remember it for config.json -
@@ -2128,7 +2171,7 @@ def main() -> int:
                 except (ValueError, IndexError):
                     print(f"[main] invalid monitor: {action[1]!r}", file=sys.stderr)
                     return
-                if new_monitor != capture.devicename:
+                if new_monitor != st.capture.devicename:
                     _switch_monitor(new_monitor)
             elif kind == "window":
                 # The window list in the menu: the value is "hwnd: title".
@@ -2139,7 +2182,7 @@ def main() -> int:
                     return
                 if not ctypes.windll.user32.IsWindow(ctypes.c_void_p(target)):
                     print(f"[main] the window 0x{target:X} is gone", file=sys.stderr)
-                    display.alert(UI_STRINGS[lang]["win_fail"])
+                    st.display.alert(UI_STRINGS[st.lang]["win_fail"])
                     return
                 # Bring the chosen window to the front: the capture follows
                 # it, and a window buried under others would show through
@@ -2154,14 +2197,14 @@ def main() -> int:
             elif kind == "button":
                 name = action[1]
                 if name == "close":
-                    display.menu.visible = False
-                    display.set_menu_opaque(False)
-                    display.set_menu_input(False)
+                    st.display.menu.visible = False
+                    st.display.set_menu_opaque(False)
+                    st.display.set_menu_input(False)
                     _save_menu_layout()
                 elif name == "exit":
                     print(f"[main] exit: button in the overlay menu "
-                          f"(frames processed {frame_index})")
-                    running = False
+                          f"(frames processed {st.frame_index})")
+                    st.running = False
                 elif name == "record":
                     tray_commands.put("record")
                 elif name == "screenshot":
@@ -2171,20 +2214,20 @@ def main() -> int:
                     # as the Num5 hotkey - in window mode it returns to the
                     # whole screen, in fullscreen mode it is a no-op with an
                     # alert (the user asked for a visible "already active").
-                    if window_hwnd is not None:
+                    if st.window_hwnd is not None:
                         print("[main] window mode off - back to the whole screen")
                         _switch_window(0)
                     else:
-                        display.alert(UI_STRINGS[lang]["fs_active"])
+                        st.display.alert(UI_STRINGS[st.lang]["fs_active"])
                 elif name == "shot_dir":
                     # The screenshot folder picker (issue #20). The dialog
                     # is modal, so it lives in its own thread; the chosen
                     # folder comes back through the same queue as the save
                     # dialog, and the config is written on the main thread.
-                    if shot_dialog_open:
+                    if st.shot_dialog_open:
                         return
-                    shot_dialog_open = True
-                    hwnd = display.get_hwnd()  # captured here: pygame is not thread-safe
+                    st.shot_dialog_open = True
+                    hwnd = st.display.get_hwnd()  # captured here: pygame is not thread-safe
 
                     def _pick_dir() -> None:
                         # The picker blocks its thread; the answer
@@ -2202,7 +2245,7 @@ def main() -> int:
                     try:
                         import webbrowser
                         webbrowser.open(REPO_URL)
-                        display.alert(UI_STRINGS[lang]["github_opened"])
+                        st.display.alert(UI_STRINGS[st.lang]["github_opened"])
                     except Exception as exc:
                         print(f"[main] could not open {REPO_URL}: {exc}",
                               file=sys.stderr)
@@ -2211,34 +2254,34 @@ def main() -> int:
                     # preset. The NGX plumbing of the active profile rides
                     # along, so the preset reproduces the exact look it was
                     # saved with.
-                    name = _next_preset_name(presets)
-                    presets[name] = dict(params)
-                    cfg["presets"] = presets
+                    name = _next_preset_name(st.presets)
+                    st.presets[name] = dict(st.params)
+                    st.cfg["presets"] = st.presets
                     if not _save_menu_layout():
                         # The preset lives in memory but not on disk - the
                         # user must know it will not survive a restart.
-                        del presets[name]
-                        cfg["presets"] = presets
-                        display.alert(UI_STRINGS[lang]["save_fail"])
+                        del st.presets[name]
+                        st.cfg["presets"] = st.presets
+                        st.display.alert(UI_STRINGS[st.lang]["save_fail"])
                         return
-                    display.menu.set_state(
-                        {"profiles": list(PROFILES) + list(presets)})
+                    st.display.menu.set_state(
+                        {"profiles": list(PROFILES) + list(st.presets)})
                     print(f"[main] preset saved: {name}")
-                    display.alert(f"Preset saved: {name}")
+                    st.display.alert(f"Preset saved: {name}")
                 elif name == "delete_preset":
                     # Only a user preset can be deleted - the built-in
                     # profiles are not deletable.
-                    if cfg["profile"] in presets:
-                        del presets[cfg["profile"]]
-                        cfg["presets"] = presets
+                    if st.cfg["profile"] in st.presets:
+                        del st.presets[st.cfg["profile"]]
+                        st.cfg["presets"] = st.presets
                         if not _save_menu_layout():
-                            display.alert(UI_STRINGS[lang]["save_fail"])
+                            st.display.alert(UI_STRINGS[st.lang]["save_fail"])
                             return
-                        display.menu.set_state(
-                            {"profiles": list(PROFILES) + list(presets)})
-                        print(f"[main] preset deleted: {cfg['profile']}")
-                        display.alert(f"Preset deleted: {cfg['profile']}")
-                        request_apply(work_scale, "Natural",
+                        st.display.menu.set_state(
+                            {"profiles": list(PROFILES) + list(st.presets)})
+                        print(f"[main] preset deleted: {st.cfg['profile']}")
+                        st.display.alert(f"Preset deleted: {st.cfg['profile']}")
+                        request_apply(st.work_scale, "Natural",
                                       dict(PROFILES["Natural"]))
                 elif name == "channel":
                     # The channel label in the settings page opens the
@@ -2246,7 +2289,7 @@ def main() -> int:
                     try:
                         import webbrowser
                         webbrowser.open(CHANNEL_URL)
-                        display.alert(UI_STRINGS[lang]["github_opened"])
+                        st.display.alert(UI_STRINGS[st.lang]["github_opened"])
                     except Exception as exc:
                         print(f"[main] could not open {CHANNEL_URL}: {exc}",
                               file=sys.stderr)
@@ -2260,9 +2303,8 @@ def main() -> int:
             path, while the tray and the arrows called _do_restart directly -
             key repeat on an arrow produced a flood of RNSZ.
             """
-            nonlocal pending_apply
-            if time.monotonic() - last_restart < RESTART_COOLDOWN:
-                pending_apply = (new_scale, new_profile, new_params, new_small)
+            if time.monotonic() - st.last_restart < RESTART_COOLDOWN:
+                st.pending_apply = (new_scale, new_profile, new_params, new_small)
                 print(f"[main] apply deferred (cooldown {RESTART_COOLDOWN:.1f} s), "
                       f"the last value will be applied")
             else:
@@ -2276,21 +2318,20 @@ def main() -> int:
             stay responsive while main waits for the worker (user: "NR toggle
             does not always fire in Cyberpunk").
             """
-            nonlocal running, paused, worker_failed, recorder, window_hwnd, work_frame, last_foreground, work_scale, params, lang, width, height, mon_w, mon_h, frame_index, pending_apply, last_restart, split_pos, startup_menu, nr_small, work_h, work_w, monitor, dda_mode, dda_attempted, present_mode, present_attempted, out_shm, out_attempted, motion_small, motion_attempted, gray_active, follow_pos, follow_resize, pts, output_rgba, pending_shot, consecutive_restarts, guide_fails, buf_full, guides, shm, worker, worker_logs, reader, worker_stop, display, tray, hotkeys, cfg, next_auto_revive
             try:
                 while True:
                     cmd = tray_commands.get_nowait()
                     if cmd == "quit":
                         print(f"[main] exit: tray or the quit hotkey "
-                              f"(frames processed {frame_index})")
-                        running = False
+                              f"(frames processed {st.frame_index})")
+                        st.running = False
                     elif cmd == "settings":
                         # Num2 and a left click on the tray open the overlay
                         # menu - the only place the settings live.
-                        display.menu.set_state(_menu_payload())
-                        opened = display.menu.toggle()
-                        display.set_menu_opaque(opened)
-                        display.set_menu_input(opened)
+                        st.display.menu.set_state(_menu_payload())
+                        opened = st.display.menu.toggle()
+                        st.display.set_menu_opaque(opened)
+                        st.display.set_menu_input(opened)
                         if opened:
                             # In one-window mode the HUD layer is the size of
                             # the captured window - a menu near the edge would
@@ -2300,60 +2341,60 @@ def main() -> int:
                             # small window). The saved offset is honoured -
                             # layout() clamps it to the screen (user rule
                             # 10.09: fixed position until the user drags it).
-                            if window_hwnd is not None:
-                                display.set_fullscreen_layer(mon_w, mon_h)
+                            if st.window_hwnd is not None:
+                                st.display.set_fullscreen_layer(st.mon_w, st.mon_h)
                             # The mouse lands on the title bar, so the user
                             # does not have to hunt for the pointer (user
                             # request). The layout must be current for the
                             # title rect to be valid.
                             try:
-                                display.menu.layout(
-                                    display.screen.get_width(),
-                                    display.screen.get_height())
-                                cx, cy = display.menu.title_center()
+                                st.display.menu.layout(
+                                    st.display.screen.get_width(),
+                                    st.display.screen.get_height())
+                                cx, cy = st.display.menu.title_center()
                                 ctypes.windll.user32.SetCursorPos(cx, cy)
                             except Exception:
                                 pass
                         else:
                             # The menu closed: put the HUD layer back on the
                             # captured window.
-                            if window_hwnd is not None:
-                                rect = window_frame_rect(window_hwnd)
+                            if st.window_hwnd is not None:
+                                rect = window_frame_rect(st.window_hwnd)
                                 if rect is not None:
-                                    display.set_window_layer(*rect)
+                                    st.display.set_window_layer(*rect)
                             _save_menu_layout()
                         print(f"[main] overlay menu {'opened' if opened else 'closed'}")
                     elif cmd == "toggle":
-                        paused = not paused
-                        if not paused:
-                            work_frame = None  # a fresh grab after the pause
-                            if worker_failed:
+                        st.paused = not st.paused
+                        if not st.paused:
+                            st.work_frame = None  # a fresh grab after the pause
+                            if st.worker_failed:
                                 # The worker died and was shut down (issue #3):
                                 # revive it - a fresh process may succeed (a
                                 # transient GPU conflict, a driver hiccup).
-                                worker_failed = False
+                                st.worker_failed = False
                                 print("[main] reviving the worker after the failure")
                                 try:
-                                    worker, worker_logs, reader, worker_stop = restart_worker(
-                                        worker, params, work_w, work_h, warmup,
-                                        width if (work_w != width or work_h != height) else 0,
-                                        height if (work_w != width or work_h != height) else 0,
-                                        worker_stop, shm)
+                                    st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
+                                        st.worker, st.params, st.work_w, st.work_h, warmup,
+                                        st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
+                                        st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
+                                        st.worker_stop, st.shm)
                                     _forget_present()
                                     _forget_dda()
                                     _forget_out()
                                     _sync_motion_size()
-                                    frame_index = 0
-                                    pts = 0
+                                    st.frame_index = 0
+                                    st.pts = 0
                                 except Exception as exc:
                                     print(f"[main] worker revive failed ({exc}) - "
                                           f"staying NR OFF", file=sys.stderr)
-                                    paused = True
-                                    worker_failed = True
-                            display.set_visible(True)
-                        print(f"[main] NR {'OFF (bypass NGX)' if paused else 'ON'}")
-                        display.alert(UI_STRINGS[lang]["nr_off" if paused else "nr_on"])
-                        tray._set_state(nr=not paused)
+                                    st.paused = True
+                                    st.worker_failed = True
+                            st.display.set_visible(True)
+                        print(f"[main] NR {'OFF (bypass NGX)' if st.paused else 'ON'}")
+                        st.display.alert(UI_STRINGS[st.lang]["nr_off" if st.paused else "nr_on"])
+                        st.tray._set_state(nr=not st.paused)
                     elif cmd == "screenshot_menu":
                         _open_save_dialog()
                     elif cmd == "record":
@@ -2361,7 +2402,7 @@ def main() -> int:
                         # are requested from the worker through
                         # FRAME_FLAG_WANT_PIXELS (the screenshot mechanism,
                         # but for every recorded frame).
-                        if recorder is None:
+                        if st.recorder is None:
                             rec_dir = BASE_DIR / "recordings"
                             rec_dir.mkdir(exist_ok=True)
                             stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -2377,27 +2418,27 @@ def main() -> int:
                                 # ~36% of the FPS (101 -> 65). Halving the
                                 # frame rate halves that cost; the picture
                                 # quality per frame is identical.
-                                recorder = VideoRecorder(path, width, height, fps=30,
+                                st.recorder = VideoRecorder(path, st.width, st.height, fps=30,
                                                          audio=record_audio)
                             except Exception as exc:
                                 print(f"[main] recording did not start: {exc}", file=sys.stderr)
-                                display.alert(f"REC ERROR: {exc}")
-                                recorder = None
+                                st.display.alert(f"REC ERROR: {exc}")
+                                st.recorder = None
                             else:
                                 print(f"[main] recording started: {path}")
-                                display.alert(UI_STRINGS[lang]["record_on"])
+                                st.display.alert(UI_STRINGS[st.lang]["record_on"])
                         else:
-                            rec_path = recorder.path
+                            rec_path = st.recorder.path
                             try:
-                                recorder.close()
+                                st.recorder.close()
                             except Exception as exc:
                                 print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
-                                display.alert(UI_STRINGS[lang]["rec_save_fail"])
-                            secs = recorder.duration_ms / 1000.0
+                                st.display.alert(UI_STRINGS[st.lang]["rec_save_fail"])
+                            secs = st.recorder.duration_ms / 1000.0
                             print(f"[main] recording finished: {rec_path} "
-                                  f"({recorder.written} frames, {secs:.1f}s)")
-                            display.alert(UI_STRINGS[lang]["record_off"])
-                            recorder = None
+                                  f"({st.recorder.written} frames, {secs:.1f}s)")
+                            st.display.alert(UI_STRINGS[st.lang]["record_off"])
+                            st.recorder = None
                     elif cmd == "window_mode":
                         # The window under the cursor wins: it works on the
                         # desktop too (the focused window there is Progman,
@@ -2405,11 +2446,11 @@ def main() -> int:
                         # is looking at. Fall back to the last focused
                         # foreign window when the cursor is over nothing
                         # capturable (our own overlay, the desktop).
-                        if window_hwnd is not None:
+                        if st.window_hwnd is not None:
                             print("[main] window mode off - back to the whole screen")
                             _switch_window(0)
                         else:
-                            target = window_under_cursor() or last_foreground
+                            target = window_under_cursor() or st.last_foreground
                             if target:
                                 print(f"[main] window mode on - target hwnd "
                                       f"0x{target:X}")
@@ -2421,20 +2462,20 @@ def main() -> int:
                                 print("[main] window mode: no window to capture "
                                       "(only our own windows have had the focus)",
                                       file=sys.stderr)
-                                display.alert(UI_STRINGS[lang]["win_none"])
+                                st.display.alert(UI_STRINGS[st.lang]["win_none"])
                     elif cmd in ("scale_up", "scale_down"):
                         delta = WORK_SCALE_STEP if cmd == "scale_up" else -WORK_SCALE_STEP
-                        new_scale = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, work_scale + delta))
-                        if abs(new_scale - work_scale) > 1e-6:
-                            new_w, new_h = _work_size(width, height, new_scale)
+                        new_scale = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, st.work_scale + delta))
+                        if abs(new_scale - st.work_scale) > 1e-6:
+                            new_w, new_h = _work_size(st.width, st.height, new_scale)
                             print(f"[main] work_scale -> {new_scale:.2f} ({new_w}x{new_h})")
-                            display.alert(UI_STRINGS[lang]["work_scale_changed"].format(new_scale, new_w, new_h))
-                            request_apply(new_scale, cfg["profile"], params)
+                            st.display.alert(UI_STRINGS[st.lang]["work_scale_changed"].format(new_scale, new_w, new_h))
+                            request_apply(new_scale, st.cfg["profile"], st.params)
             except queue.Empty:
                 pass
-            return running
+            return st.running
 
-        while running:
+        while st.running:
             loop_start = time.perf_counter()
             now = time.monotonic()
 
@@ -2450,43 +2491,43 @@ def main() -> int:
             # dlss5-video-player 0.17.2: CreateFeature-once, retries as a
             # fallback - the revive is a fresh process, not a feature
             # recreation).
-            if worker_failed:
-                if next_auto_revive and time.monotonic() >= next_auto_revive:
-                    next_auto_revive = 0.0
-                    worker_failed = False
+            if st.worker_failed:
+                if st.next_auto_revive and time.monotonic() >= st.next_auto_revive:
+                    st.next_auto_revive = 0.0
+                    st.worker_failed = False
                     print("[main] auto-reviving the worker after the transient failure")
                     try:
-                        worker, worker_logs, reader, worker_stop = restart_worker(
-                            worker, params, work_w, work_h, warmup,
-                            width if (work_w != width or work_h != height) else 0,
-                            height if (work_w != width or work_h != height) else 0,
-                            worker_stop, shm)
+                        st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
+                            st.worker, st.params, st.work_w, st.work_h, warmup,
+                            st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
+                            st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
+                            st.worker_stop, st.shm)
                         _forget_present()
                         _forget_dda()
                         _forget_out()
                         _sync_motion_size()
-                        frame_index = 0
-                        pts = 0
-                        paused = False
-                        display.set_visible(True)
-                        display.alert(UI_STRINGS[lang]["nr_on"])
-                        tray._set_state(nr=True)
+                        st.frame_index = 0
+                        st.pts = 0
+                        st.paused = False
+                        st.display.set_visible(True)
+                        st.display.alert(UI_STRINGS[st.lang]["nr_on"])
+                        st.tray._set_state(nr=True)
                     except Exception as exc:
                         print(f"[main] auto-revive failed ({exc}) - staying NR OFF",
                               file=sys.stderr)
-                        worker_failed = True
+                        st.worker_failed = True
                 time.sleep(0.05)
                 continue
 
             # Deferred apply (coalescing): if a restart happened recently, we
             # apply the last value once the pause is over
-            if pending_apply is not None and time.monotonic() - last_restart >= RESTART_COOLDOWN:
-                p_scale, p_profile, p_params, p_small = pending_apply
-                pending_apply = None
+            if st.pending_apply is not None and time.monotonic() - st.last_restart >= RESTART_COOLDOWN:
+                p_scale, p_profile, p_params, p_small = st.pending_apply
+                st.pending_apply = None
                 print("[main] applying the deferred settings")
                 _do_restart(p_scale, p_profile, p_params, new_small=p_small)
 
-            if not running:
+            if not st.running:
                 break
 
             # NR OFF - bypass: the pipeline keeps spinning (grab -> show the
@@ -2494,68 +2535,68 @@ def main() -> int:
             # The overlay (picture + HUD) stays alive and predictable; we hide
             # everything only on a real exit. A bypass frame is sent like any
             # other (the flag lives in the header) so send/recv stay paired.
-            bypass = paused
+            bypass = st.paused
             # (for readability: send_frame is called with bypass=bypass)
 
             # The answer from the "Save as" dialog (it runs in its own thread).
             _drain_save_dialog()
 
-            if want_present and not present_mode and not present_attempted:
+            if want_present and not st.present_mode and not st.present_attempted:
                 _enable_present()
             # Who has the focus, for the window-mode hotkey: by the time it
             # is pressed the menu may be in front, so the last window that was
             # not ours is remembered continuously.
             fg = foreign_foreground()
             if fg:
-                last_foreground = fg
+                st.last_foreground = fg
             # A game that goes fullscreen raises itself above every topmost
             # window, ours included, and then the menu is drawn but not on
             # screen. While it is open we keep coming back up; a SetWindowPos
             # that changes nothing is cheap, and 30 frames is fast enough that
             # nobody sees the menu disappear.
-            if display.menu.visible and frame_index % 30 == 0:
-                display.raise_topmost()
+            if st.display.menu.visible and st.frame_index % 30 == 0:
+                st.display.raise_topmost()
             # The same for the HUD even when the menu is closed: a borderless
             # game (Cyberpunk) keeps itself on top and our HUD stays
             # underneath it forever. Re-assert only when the topmost window
             # is NOT ours - in the steady state this is zero SetWindowPos
             # calls, so no DWM flicker (user: flicker + invisible HUD over
             # borderless games).
-            if frame_index % 30 == 0:
+            if st.frame_index % 30 == 0:
                 try:
                     top = ctypes.windll.user32.GetTopWindow(0)
-                    if top and top != display.get_hwnd():
-                        display.raise_topmost()
+                    if top and top != st.display.get_hwnd():
+                        st.display.raise_topmost()
                 except Exception:
                     pass
-            if window_hwnd is not None:
-                if not ctypes.windll.user32.IsWindow(ctypes.c_void_p(window_hwnd)):
+            if st.window_hwnd is not None:
+                if not ctypes.windll.user32.IsWindow(ctypes.c_void_p(st.window_hwnd)):
                     print("[main] the captured window closed - back to full screen",
                           file=sys.stderr)
                     _switch_window(0)
                     continue
                 _follow_window()
-            if want_dda and not dda_mode and not dda_attempted:
-                if window_hwnd is not None:
+            if want_dda and not st.dda_mode and not st.dda_attempted:
+                if st.window_hwnd is not None:
                     _enable_wgc()
                 else:
                     _enable_dda()
-            if want_motion_small and not motion_small and not motion_attempted:
-                motion_attempted = True
+            if want_motion_small and not st.motion_small and not st.motion_attempted:
+                st.motion_attempted = True
                 _sync_motion_size()
-            if want_out_shm and not out_shm and not out_attempted:
+            if want_out_shm and not st.out_shm and not st.out_attempted:
                 _enable_out_shm()
 
             # --- Input for the overlay menu --------------------------
             # Events are read only while the menu is open: the rest of the
             # time the window is click-through, there are no events, and an
             # extra get() would eat the queue from pump() inside drawing.
-            if display.menu.visible:
+            if st.display.menu.visible:
                 for ev in pygame.event.get():
-                    for action in display.menu.handle_event(ev):
+                    for action in st.display.menu.handle_event(ev):
                         _apply_menu_action(action)
-                if not display.menu.dragging:
-                    display.menu.set_state(_menu_payload())
+                if not st.display.menu.dragging:
+                    st.display.menu.set_state(_menu_payload())
 
             # --- Grab ahead: while NGX computes frame N we grab N+1 -------
             # work_frame == None happens on the first frame, after a worker
@@ -2567,26 +2608,26 @@ def main() -> int:
             # GPU itself: Python sends a full-res frame, motion at work-res
             # (guides is built with work_w/work_h and downsamples its own
             # input) and receives full-res back.
-            if work_frame is None and not gray_active:
+            if st.work_frame is None and not st.gray_active:
                 t0 = time.perf_counter()
                 frame = _safe_grab()
                 _perf("grab", t0)
                 if frame is None:
                     continue  # the frame is not ready yet - skip the iteration
-                if frame.shape[1] != width or frame.shape[0] != height:
+                if frame.shape[1] != st.width or frame.shape[0] != st.height:
                     t0 = time.perf_counter()
                     try:
-                        cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4, dst=buf_full)
+                        cv2.resize(frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
                     except cv2.error:
                         # The monitor resolution changed: buf_full was
                         # preallocated for the old size - recreate and retry
-                        buf_full = np.empty((height, width, 4), dtype=np.uint8)
-                        cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4, dst=buf_full)
+                        st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
+                        cv2.resize(frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
                     _perf("resize_full", t0)
-                    frame = buf_full
+                    frame = st.buf_full
                 else:
                     frame = np.ascontiguousarray(frame, dtype=np.uint8)
-                work_frame = frame
+                st.work_frame = frame
 
             # --- Sending the frame with auto-recovery ---
             # The worker can die or hang (NGX after RNSZ, a GPU conflict) -
@@ -2595,10 +2636,10 @@ def main() -> int:
             # the program does not fall over.
             try:
                 t0 = time.perf_counter()
-                if gray_active:
-                    guide = guides.process(gray=shm.read_gray())
+                if st.gray_active:
+                    guide = st.guides.process(gray=st.shm.read_gray())
                 else:
-                    guide = guides.process(work_frame)
+                    guide = st.guides.process(st.work_frame)
                 _perf("guides", t0)
             except Exception as guide_exc:
                 # guides is not critical: ValueError/TypeError/cv2.error (the
@@ -2610,36 +2651,36 @@ def main() -> int:
                 # frames keep flowing and the picture does not freeze.
                 print(f"[main] guides.process failed ({guide_exc}) - frame skipped",
                       file=sys.stderr)
-                guide_fails += 1
-                if guide_fails >= 5:
+                st.guide_fails += 1
+                if st.guide_fails >= 5:
                     print(f"[main] guides.process is unstable - zero motion "
                           f"(frames keep flowing)", file=sys.stderr)
-                    guide_fails = 0
-                    guide = guides.zero_guide()
+                    st.guide_fails = 0
+                    guide = st.guides.zero_guide()
                 else:
                     continue
             try:
-                check_worker(worker, worker_logs)
+                check_worker(st.worker, st.worker_logs)
                 t0 = time.perf_counter()
-                send_frame(worker, frame_index, work_frame, guide.motion, guide.reset,
-                           pts, shm, want_pixels=(pending_shot is not None
-                                                   or (recorder is not None
-                                                       and recorder.needs_frame())),
-                           motion_small=motion_small,
-                           no_color=bool(dda_mode),
+                send_frame(st.worker, st.frame_index, st.work_frame, guide.motion, guide.reset,
+                           st.pts, st.shm, want_pixels=(st.pending_shot is not None
+                                                   or (st.recorder is not None
+                                                       and st.recorder.needs_frame())),
+                           motion_small=st.motion_small,
+                           no_color=bool(st.dda_mode),
                            bypass=bypass,
-                           split=split_pos)
+                           split=st.split_pos)
                 _perf("send", t0)
             except (BrokenPipeError, OSError, EOFError, RuntimeError) as exc:
-                consecutive_restarts += 1
-                if consecutive_restarts >= MAX_CONSECUTIVE_RESTARTS:
-                    print(f"[main] the worker died {consecutive_restarts} times in a row - NR OFF")
-                    paused = True
-                    worker_failed = True
-                    display.alert(UI_STRINGS[lang]["nr_off"])
-                    tray._set_state(nr=False)
-                    consecutive_restarts = 0
-                    work_frame = None
+                st.consecutive_restarts += 1
+                if st.consecutive_restarts >= MAX_CONSECUTIVE_RESTARTS:
+                    print(f"[main] the worker died {st.consecutive_restarts} times in a row - NR OFF")
+                    st.paused = True
+                    st.worker_failed = True
+                    st.display.alert(UI_STRINGS[st.lang]["nr_off"])
+                    st.tray._set_state(nr=False)
+                    st.consecutive_restarts = 0
+                    st.work_frame = None
                     # The worker is gone and will not come back on its own:
                     # stop hammering it, hide the overlay so the desktop is
                     # not covered by a black window (issue #3), and wait for
@@ -2648,34 +2689,34 @@ def main() -> int:
                     # permanent; a transient one (no-frame, driver hiccup)
                     # gets one automatic revive after a backoff instead of
                     # leaving the user with NR off until they press Num1.
-                    if not _hard_failure(worker_logs):
-                        next_auto_revive = time.monotonic() + AUTO_REVIVE_BACKOFF
+                    if not _hard_failure(st.worker_logs):
+                        st.next_auto_revive = time.monotonic() + AUTO_REVIVE_BACKOFF
                         print(f"[main] transient worker failure - auto-revive "
                               f"in {AUTO_REVIVE_BACKOFF:.0f}s")
                     try:
-                        shutdown_worker(worker, worker_stop)
+                        shutdown_worker(st.worker, st.worker_stop)
                     except Exception:
                         pass
-                    display.set_visible(False)
+                    st.display.set_visible(False)
                     continue
                 print(f"[main] worker lost while sending ({exc}) - restarting "
-                      f"({consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
-                if worker_logs:
+                      f"({st.consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
+                if st.worker_logs:
                     print("[main] worker stderr (tail):")
-                    for line in worker_logs[-15:]:
+                    for line in st.worker_logs[-15:]:
                         print(f"  {line}")
-                worker, worker_logs, reader, worker_stop = restart_worker(
-                    worker, params, work_w, work_h, 10,
-                    width if (work_w != width or work_h != height) else 0,
-                    height if (work_w != width or work_h != height) else 0,
-                    worker_stop, shm)
+                st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
+                    st.worker, st.params, st.work_w, st.work_h, 10,
+                    st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
+                    st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
+                    st.worker_stop, st.shm)
                 _forget_present()
                 _forget_dda()
                 _forget_out()
                 _sync_motion_size()
-                frame_index = 0
-                pts = 0
-                work_frame = None
+                st.frame_index = 0
+                st.pts = 0
+                st.work_frame = None
                 continue
 
             # Grab the next frame WHILE the worker computes the current one
@@ -2686,20 +2727,20 @@ def main() -> int:
             # references to its input - buf_full can be reused right away.
             # In DDA mode the worker grabs the frame itself - Python does not.
             next_frame = None
-            if not gray_active:
+            if not st.gray_active:
                 t0 = time.perf_counter()
                 next_frame = _safe_grab()
                 _perf("grab", t0)
             if next_frame is not None:
-                if next_frame.shape[1] != width or next_frame.shape[0] != height:
+                if next_frame.shape[1] != st.width or next_frame.shape[0] != st.height:
                     t0 = time.perf_counter()
                     try:
-                        cv2.resize(next_frame, (width, height), interpolation=cv2.INTER_LANCZOS4, dst=buf_full)
+                        cv2.resize(next_frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
                     except cv2.error:
-                        buf_full = np.empty((height, width, 4), dtype=np.uint8)
-                        cv2.resize(next_frame, (width, height), interpolation=cv2.INTER_LANCZOS4, dst=buf_full)
+                        st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
+                        cv2.resize(next_frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
                     _perf("resize_full", t0)
-                    next_frame = buf_full
+                    next_frame = st.buf_full
                 else:
                     next_frame = np.ascontiguousarray(next_frame, dtype=np.uint8)
             # next_frame == None: the frame is not ready - the start of the
@@ -2709,12 +2750,12 @@ def main() -> int:
 
             t0 = time.perf_counter()
             try:
-                output_rgba = None
-                recv_reader = reader
+                st.output_rgba = None
+                recv_reader = st.reader
                 recv_deadline = time.monotonic() + 5.0
                 while time.monotonic() < recv_deadline:
                     try:
-                        output_rgba = reader.recv(frame_index, timeout=0.05)
+                        st.output_rgba = st.reader.recv(st.frame_index, timeout=0.05)
                         break
                     except TimeoutError:
                         # A heavy 4K scene can take ~1 s per NGX frame -
@@ -2722,75 +2763,75 @@ def main() -> int:
                         # "NR toggle does not always fire in Cyberpunk").
                         # The switch overlay's spinner must keep animating
                         # while the new worker warms up.
-                        if display.is_switch_active():
-                            display.draw_overlay(0.0)
+                        if st.display.is_switch_active():
+                            st.display.draw_overlay(0.0)
                         if not _drain_commands():
-                            running = False
+                            st.running = False
                             break
-                        if reader is not recv_reader:
+                        if st.reader is not recv_reader:
                             break  # a command restarted the worker
                         continue
                 else:
                     raise TimeoutError(
-                        f"the worker has been silent for 5s on frame {frame_index} - NGX did not answer after the restart")
-                if not running:
+                        f"the worker has been silent for 5s on frame {st.frame_index} - NGX did not answer after the restart")
+                if not st.running:
                     break
-                if reader is not recv_reader:
+                if st.reader is not recv_reader:
                     continue  # the worker was restarted by a command
             except (TimeoutError, EOFError, RuntimeError, OSError) as exc:
-                consecutive_restarts += 1
-                if consecutive_restarts >= MAX_CONSECUTIVE_RESTARTS:
-                    print(f"[main] worker silent/dying {consecutive_restarts} times in a row - NR OFF")
-                    paused = True
-                    worker_failed = True
-                    display.alert(UI_STRINGS[lang]["nr_off"])
-                    tray._set_state(nr=False)
-                    consecutive_restarts = 0
-                    work_frame = None
+                st.consecutive_restarts += 1
+                if st.consecutive_restarts >= MAX_CONSECUTIVE_RESTARTS:
+                    print(f"[main] worker silent/dying {st.consecutive_restarts} times in a row - NR OFF")
+                    st.paused = True
+                    st.worker_failed = True
+                    st.display.alert(UI_STRINGS[st.lang]["nr_off"])
+                    st.tray._set_state(nr=False)
+                    st.consecutive_restarts = 0
+                    st.work_frame = None
                     # No frame will ever arrive - the switch overlay must not
                     # hang over the desktop forever (audit M2: the veil is
                     # removed only on a received frame).
-                    display.exit_switch_mode()
+                    st.display.exit_switch_mode()
                     # Same for the overlay itself: hide it so the desktop is
                     # not covered by a black window (issue #3). A HARD
                     # failure (0xBAD00001) is permanent; a transient one gets
                     # one automatic revive after a backoff.
-                    if not _hard_failure(worker_logs):
-                        next_auto_revive = time.monotonic() + AUTO_REVIVE_BACKOFF
+                    if not _hard_failure(st.worker_logs):
+                        st.next_auto_revive = time.monotonic() + AUTO_REVIVE_BACKOFF
                         print(f"[main] transient worker failure - auto-revive "
                               f"in {AUTO_REVIVE_BACKOFF:.0f}s")
                     try:
-                        shutdown_worker(worker, worker_stop)
+                        shutdown_worker(st.worker, st.worker_stop)
                     except Exception:
                         pass
-                    display.set_visible(False)
+                    st.display.set_visible(False)
                     continue
-                print(f"[main] worker silent/dead on frame {frame_index} ({exc}) - restarting "
-                      f"({consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
-                worker, worker_logs, reader, worker_stop = restart_worker(
-                    worker, params, work_w, work_h, 10,
-                    width if (work_w != width or work_h != height) else 0,
-                    height if (work_w != width or work_h != height) else 0,
-                    worker_stop, shm)
+                print(f"[main] worker silent/dead on frame {st.frame_index} ({exc}) - restarting "
+                      f"({st.consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
+                st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
+                    st.worker, st.params, st.work_w, st.work_h, 10,
+                    st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
+                    st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
+                    st.worker_stop, st.shm)
                 _forget_present()
                 _forget_dda()
                 _forget_out()
                 _sync_motion_size()
-                frame_index = 0
-                pts = 0
-                work_frame = None
+                st.frame_index = 0
+                st.pts = 0
+                st.work_frame = None
                 continue
             _perf("recv", t0)
             # A frame arrived - the failure chain is broken. Without the reset
             # the counter accumulated across the whole session and three
             # unrelated failures (even an hour apart) turned NR off.
-            consecutive_restarts = 0
-            status = "NR OFF" if paused else "NR ON"
-            pts += 1
+            st.consecutive_restarts = 0
+            status = "NR OFF" if st.paused else "NR ON"
+            st.pts += 1
 
             t0 = time.perf_counter()
             try:
-                if recorder is not None and output_rgba is not None:
+                if st.recorder is not None and st.output_rgba is not None:
                     # Our layer is excluded from capture
                     # (WDA_EXCLUDEFROMCAPTURE), so we bake the open menu onto
                     # the frame ourselves. frombuffer references the numpy
@@ -2798,8 +2839,8 @@ def main() -> int:
                     # output_rgba.
                     try:
                         surf = pygame.image.frombuffer(
-                            output_rgba, (output_rgba.shape[1], output_rgba.shape[0]), "RGBX")
-                        display.draw_capture_overlay(surf)
+                            st.output_rgba, (st.output_rgba.shape[1], st.output_rgba.shape[0]), "RGBX")
+                        st.display.draw_capture_overlay(surf)
                     except Exception as menu_exc:
                         print(f"[main] menu was not baked into the recorded frame: {menu_exc}",
                               file=sys.stderr)
@@ -2809,16 +2850,16 @@ def main() -> int:
                     # loop). A recording error stops the recording, not the
                     # window.
                     try:
-                        recorder.write(output_rgba)
+                        st.recorder.write(st.output_rgba)
                     except Exception as rec_exc:
                         print(f"[main] frame write failed ({rec_exc}) - "
                               f"stopping the recording", file=sys.stderr)
                         try:
-                            recorder.close()
+                            st.recorder.close()
                         except Exception:
                             pass
-                        recorder = None
-                if present_mode:
+                        st.recorder = None
+                if st.present_mode:
                     # In WNDO mode the worker draws the frame on screen; in
                     # Python the pixels arrive ONLY on want_pixels
                     # (recording/screenshot). There is no need to show them in
@@ -2826,33 +2867,33 @@ def main() -> int:
                     # flicker of the frame in the HUD layer above the worker's
                     # window. The HUD is refreshed by draw_overlay() with
                     # throttling (not every frame).
-                    display.exit_switch_mode()  # the new worker is presenting
-                    display.reveal()  # a real frame exchange happened
-                    if pending_shot is not None and output_rgba is not None:
-                        _save_screenshot(pending_shot, output_rgba)
-                        pending_shot = None
-                    display.draw_overlay()
-                elif output_rgba is None:
+                    st.display.exit_switch_mode()  # the new worker is presenting
+                    st.display.reveal()  # a real frame exchange happened
+                    if st.pending_shot is not None and st.output_rgba is not None:
+                        _save_screenshot(st.pending_shot, st.output_rgba)
+                        st.pending_shot = None
+                    st.display.draw_overlay()
+                elif st.output_rgba is None:
                     # The frame is already on screen - the worker showed it, only the HUD here
                     # (WGCW/DDA without want_pixels: no colour reaches Python).
                     # This is still a live exchange with the rebuilt worker: the
                     # switch overlay must come down or the menu stays hidden
                     # behind the veil forever (user: clipped/blank after Num5).
-                    display.exit_switch_mode()
+                    st.display.exit_switch_mode()
                     # reveal() is THE only way to show the window while
                     # _reveal_pending is set (audit H1): this branch is hit on
                     # every frame when the WNDO window is unavailable and DDA/
                     # WGCW works (fallback config) - without the call the HUD
                     # and the menu stay invisible forever in that setup.
-                    display.reveal()
-                    display.draw_overlay()
+                    st.display.reveal()
+                    st.display.draw_overlay()
                 else:
-                    display.exit_switch_mode()  # the next frame replaces the overlay
-                    display.reveal()  # a real frame exchange happened
-                    display.show(output_rgba)
-                    if pending_shot is not None:
-                        _save_screenshot(pending_shot, output_rgba)
-                        pending_shot = None
+                    st.display.exit_switch_mode()  # the next frame replaces the overlay
+                    st.display.reveal()  # a real frame exchange happened
+                    st.display.show(st.output_rgba)
+                    if st.pending_shot is not None:
+                        _save_screenshot(st.pending_shot, st.output_rgba)
+                        st.pending_shot = None
             except Exception as exc:
                 # A display mode change (entering/leaving a fullscreen game)
                 # can kill the pygame/SDL context - recreate the window.
@@ -2861,17 +2902,17 @@ def main() -> int:
                 # restore below must pick up where the user left it, not the
                 # stale cfg values (user rule 10.09: fixed position until
                 # the user drags it).
-                cfg["menu_offset"] = [int(display.menu.offset[0]),
-                                      int(display.menu.offset[1])]
-                cfg["menu_scale"] = round(display.menu.user_scale, 2)
-                cfg["menu_height"] = (None if display.menu.user_height is None
-                                      else int(display.menu.user_height))
+                st.cfg["menu_offset"] = [int(st.display.menu.offset[0]),
+                                      int(st.display.menu.offset[1])]
+                st.cfg["menu_scale"] = round(st.display.menu.user_scale, 2)
+                st.cfg["menu_height"] = (None if st.display.menu.user_height is None
+                                      else int(st.display.menu.user_height))
                 try:
-                    display.close()
+                    st.display.close()
                 except Exception:
                     pass
-                display = Display(width, height, fullscreen=bool(cfg["fullscreen"]))
-                display.set_lang(lang)
+                st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+                st.display.set_lang(st.lang)
                 # In one-window mode the overlay must stay visible to outside
                 # recorders: the NEW window comes up with the WDA flag set
                 # (the Display default), so state it explicitly here - the
@@ -2879,55 +2920,55 @@ def main() -> int:
                 # display-mode change while in window mode silently drops
                 # the overlay from NVIDIA App / OBS capture until the next
                 # pipeline rebuild (audit #4, F1).
-                display.set_excluded_from_capture(window_hwnd is None)
+                st.display.set_excluded_from_capture(st.window_hwnd is None)
                 # The menu is created together with the window - we give it
                 # back its size, position, theme and language, otherwise after
                 # a game starts it jumps to the centre, turns light and
                 # switches to en.
-                display.menu.set_user_scale(float(cfg.get("menu_scale", 1.0)))
-                display.menu.set_hotkeys(hotkey_labels(hotkey_bindings))
-                saved_theme = cfg.get("theme")
+                st.display.menu.set_user_scale(float(st.cfg.get("menu_scale", 1.0)))
+                st.display.menu.set_hotkeys(hotkey_labels(st.hotkey_bindings))
+                saved_theme = st.cfg.get("theme")
                 if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
-                    display.menu.set_state({"theme": saved_theme})
-                display.menu.set_state({"lang": lang})
-                saved = cfg.get("menu_offset")
+                    st.display.menu.set_state({"theme": saved_theme})
+                st.display.menu.set_state({"lang": st.lang})
+                saved = st.cfg.get("menu_offset")
                 if isinstance(saved, (list, tuple)) and len(saved) == 2:
-                    display.menu.offset = [int(saved[0]), int(saved[1])]
-                if present_mode:
+                    st.display.menu.offset = [int(saved[0]), int(saved[1])]
+                if st.present_mode:
                     # The new window must become a transparent layer over the worker again
-                    display.set_hud_only(True)
-                    display.raise_topmost()
-                display.alert(UI_STRINGS[lang]["nr_on"])
+                    st.display.set_hud_only(True)
+                    st.display.raise_topmost()
+                st.display.alert(UI_STRINGS[st.lang]["nr_on"])
             _perf("show", t0)
-            display.set_hud({
+            st.display.set_hud({
                 "fps": last_fps,
                 "status": status,
-                "resolution": f"{width}x{height}",
-                "profile": cfg["profile"],
-                "params": {k: v for k, v in params.items() if k not in ("profile", "preset", "style", "auto_mask", "ui_correction")},
-                "frames": frame_index,
+                "resolution": f"{st.width}x{st.height}",
+                "profile": st.cfg["profile"],
+                "params": {k: v for k, v in st.params.items() if k not in ("profile", "preset", "style", "auto_mask", "ui_correction")},
+                "frames": st.frame_index,
                 # The recording indicator outside the menu: the HUD is drawn
                 # over the worker's window, so the user sees the REC state
                 # even with the menu closed (user 5080 request).
-                "recording": recorder is not None,
-                "rec_seconds": (recorder.duration_ms / 1000.0) if recorder else 0.0,
-                "rec_indicator": bool(cfg.get("rec_indicator", True)),
+                "recording": st.recorder is not None,
+                "rec_seconds": (st.recorder.duration_ms / 1000.0) if st.recorder else 0.0,
+                "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
             })
 
-            frame_index += 1
-            if startup_pending and frame_index >= 2:
+            st.frame_index += 1
+            if startup_pending and st.frame_index >= 2:
                 # Wait for the first displayed frame: an open menu over a
                 # window that is not filled yet flashes black.
                 startup_pending = False
-                if startup_menu:
-                    display.menu.set_state(_menu_payload())
-                    display.menu.visible = True
-                    display.set_menu_opaque(True)
-                    display.set_menu_input(True)
+                if st.startup_menu:
+                    st.display.menu.set_state(_menu_payload())
+                    st.display.menu.visible = True
+                    st.display.set_menu_opaque(True)
+                    st.display.set_menu_input(True)
                     print("[main] menu opened at startup")
                 else:
-                    display.alert(UI_STRINGS[lang]["started"], 3.5)
-            work_frame = next_frame  # None -> grab at the start of the next iteration
+                    st.display.alert(UI_STRINGS[st.lang]["started"], 3.5)
+            st.work_frame = next_frame  # None -> grab at the start of the next iteration
             fps_window.append(time.perf_counter() - loop_start)
             if len(fps_window) > 120:
                 fps_window.pop(0)
@@ -2935,8 +2976,8 @@ def main() -> int:
             if now - last_log >= FPS_LOG_INTERVAL:
                 last_fps = len(fps_window) / sum(fps_window) if fps_window else 0.0
                 scene = f" | scene {guide.scene_score:.3f}" if guide is not None else ""
-                print(f"[main] {status} | FPS {last_fps:5.1f} | frames {frame_index} | "
-                      f"work {work_w}x{work_h}{scene}")
+                print(f"[main] {status} | FPS {last_fps:5.1f} | frames {st.frame_index} | "
+                      f"work {st.work_w}x{st.work_h}{scene}")
                 last_log = now
 
             if now - last_perf_log >= PERF_LOG_INTERVAL:
@@ -2955,43 +2996,43 @@ def main() -> int:
         print("\n[main] interrupted (Ctrl+C)")
     except Exception as exc:
         print(f"[main] ERROR: {exc}", file=sys.stderr)
-        if worker is not None and worker.poll() is not None:
+        if st.worker is not None and st.worker.poll() is not None:
             print("[main] the worker crashed; last stderr lines:", file=sys.stderr)
-            for line in worker_logs[-40:]:
+            for line in st.worker_logs[-40:]:
                 print(f"  {line}", file=sys.stderr)
         return 1
     finally:
         # A recording may have been running at exit: without close() the moov
         # atom is not written and the file stays broken (players refuse it).
-        if recorder is not None:
+        if st.recorder is not None:
             try:
-                recorder.close()
+                st.recorder.close()
             except Exception as exc:
                 print(f"[main] failed to close the recording: {exc}", file=sys.stderr)
-        if worker is not None:
-            shutdown_worker(worker, worker_stop)
-        if shm is not None:
-            shm.close()
+        if st.worker is not None:
+            shutdown_worker(st.worker, st.worker_stop)
+        if st.shm is not None:
+            st.shm.close()
         try:
             _save_menu_layout()
         except Exception:
             pass
-        if capture is not None:
+        if st.capture is not None:
             try:
-                capture.close()
+                st.capture.close()
             except Exception as exc:
                 print(f"[main] failed to close the capture: {exc}", file=sys.stderr)
-        if display is not None:
+        if st.display is not None:
             try:
-                display.close()
+                st.display.close()
             except Exception as exc:
                 print(f"[main] failed to close the window: {exc}", file=sys.stderr)
         try:
-            hotkeys.stop()
+            st.hotkeys.stop()
         except Exception:
             pass
         try:
-            tray.stop()
+            st.tray.stop()
         except Exception:
             pass
         try:
