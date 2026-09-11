@@ -1,20 +1,4 @@
-"""An HDR display gets said out loud, once.
-
-The network is trained on SDR. On an HDR desktop its result reads as
-"everything is too bright and lowering the sliders does nothing" - which is
-a report we have already had (issue #27) and a notice a user asked for
-(issue #33). The log carried the fact and nothing else did.
-
-The fact comes from the worker, which asks the OUTPUT it duplicates for its
-colour space - so it is about the screen being processed, not about some
-monitor in the registry, which is what the startup header reads.
-
-Checked: it speaks on the marker, it speaks ONCE (an alert on every frame
-would be worse than silence), it stays quiet without the marker, and the
-string exists in the user's language.
-
-Run:  runtime\\python.exe tests\\test_hdr_notice.py
-"""
+"""HDR capture warnings distinguish SDR fallback from native FP16 and startup."""
 import sys
 import types
 from pathlib import Path
@@ -27,6 +11,8 @@ from i18n import STRINGS  # noqa: E402
 
 MARKER = "[dda] output colour space 12 - HDR IS ON for the captured display"
 SDR = "[dda] output colour space 0"
+CAP_SDR = "[hdr] capture=SDR; neural processing=SDR proxy; export=SDR"
+CAP_HDR = "[hdr] capture=FP16 scRGB; neural processing=SDR proxy; export=SDR"
 
 
 def _state(logs, lang="en"):
@@ -41,7 +27,7 @@ def main() -> int:
     failures = []
 
     # 1. It speaks on the marker - and only once.
-    st, said = _state(["[host] adapter 0", MARKER, "[dda] capture active"])
+    st, said = _state(["[host] adapter 0", MARKER, CAP_SDR])
     settings_io.warn_hdr(st)
     settings_io.warn_hdr(st)
     settings_io.warn_hdr(st)
@@ -66,11 +52,28 @@ def main() -> int:
         failures.append("the notice fired with an empty log")
 
     # 4. The marker can be older than the tail of a busy log.
-    st, said = _state([MARKER] + [f"[present] frame {i}" for i in range(150)])
+    st, said = _state([MARKER, CAP_SDR] + [f"[present] frame {i}" for i in range(250)])
     settings_io.warn_hdr(st)
     if not said:
         failures.append("the notice was lost behind later diagnostics - the "
                         "worker prints it once, when the capture opens")
+
+    # Native HDR, discovery before the first frame, and a new SDR output
+    # must not inherit a warning from earlier capture diagnostics.
+    for logs in ([MARKER], [MARKER, CAP_HDR],
+                 [MARKER, CAP_SDR, SDR, CAP_SDR],
+                 [MARKER, CAP_SDR, MARKER],
+                 [MARKER, CAP_HDR, "[hdr] presentation=FP16 scRGB"]):
+        st, said = _state(logs)
+        settings_io.warn_hdr(st)
+        if said or st.hdr_alerted:
+            failures.append(f"false HDR warning: {logs}")
+    st, said = _state([MARKER])
+    settings_io.warn_hdr(st)
+    st.worker_logs.append(CAP_SDR)
+    settings_io.warn_hdr(st)
+    if len(said) != 1:
+        failures.append("SDR fallback after startup was not reported")
 
     # 5. Every language has the string (test_i18n pins the key set; this
     #    pins that THIS key is the one the code asks for).
@@ -82,7 +85,7 @@ def main() -> int:
         print("FAIL:", f)
     if failures:
         return 1
-    print("OK: an HDR display is reported once, an SDR one not at all")
+    print("OK: HDR SDR fallback reported once; FP16, startup and SDR stay quiet")
     return 0
 
 

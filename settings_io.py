@@ -449,25 +449,26 @@ def refresh_gpu_ok(st) -> None:
 
 
 def warn_hdr(st) -> None:
-    """Say once that the captured display is in HDR.
+    """Warn only when an HDR display actually uses the SDR capture path.
 
-    The worker asks the OUTPUT it duplicates for its colour space, so this
-    is about the screen being processed rather than about some monitor in
-    the registry. The network is trained on SDR and an HDR desktop comes
-    out looking blown out with sliders that appear to do nothing - a report
-    we have had (issue #27) and a notice a user asked for (issue #33).
+    Display discovery precedes the first frame. Wait for its capture format:
+    FP16 scRGB uses an SDR neural proxy and preserves the original HDR signal.
     """
     if st.hdr_alerted:
         return
-    for line in reversed(st.worker_logs[-200:]):
-        if "HDR IS ON for the captured display" in line:
+    capture_sdr = None
+    for line in reversed(st.worker_logs):
+        if capture_sdr is None and "[hdr] capture=" in line:
+            capture_sdr = "capture=SDR;" in line
+        if "[dda] output colour space " in line:
+            if "HDR IS ON for the captured display" not in line or capture_sdr is not True:
+                return
             st.hdr_alerted = True
             st.display.alert(UI_STRINGS[st.lang].get(
                 "hdr_on",
-                "HDR is on for this display - the picture will look wrong. "
-                "Turn HDR off for it."), duration=6.0)
-            print("[main] HDR is on for the captured display - the network "
-                  "is trained on SDR")
+                "HDR display is using SDR capture. HDR brightness and colours "
+                "are not preserved."), duration=6.0)
+            print("[main] HDR display is using SDR capture; HDR is not preserved")
             return
 
 
