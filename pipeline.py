@@ -44,6 +44,43 @@ from settings_io import _work_size, hotkey_labels
 from winapi import window_frame_rect
 
 
+# Worker lines that always reach the shared log. These are the ones a user
+# needs to answer "which card is running the network, and did it come up":
+# the adapter list and the NS_GPU pick ([host]), the NGX create/init result
+# ([pure]), the architecture spoof ([arch]), the capture path ([cap]) and
+# the overlay/spout lifecycle. Before this they were gated behind
+# NS_PHASE=1 and a user's log could not tell a working GPU from a Turing
+# card that silently fell into SAFE PASSTHROUGH (issue #29: the 2060 Super
+# case - the network never came up and nothing said so).
+#: Always let through: the pipeline diagnostics. NS_PHASE=1 adds the
+#: per-frame profiler lines ([phase]/[pw]) on top of these.
+_LOG_ALWAYS = ("[host]", "[pure]", "[arch]", "[cap]", "[dda]", "[present]",
+               "[spout]", "[wgc]", "[video]", "[skip]")
+#: [video] lines that are a heartbeat rather than a diagnostic: the "delivered
+#: frame N" line is printed every 30 frames and would bury the log.
+_LOG_SKIP = ("delivered frame",)
+
+
+def _log_wanted(line: str) -> bool:
+    """Whether a worker stderr line goes into the shared log.
+
+    The diagnostics above always do; the per-frame profiler only under
+    NS_PHASE=1 (a line per frame would otherwise bury the log). [video]
+    carries the one line that says the network never came up - "NR feature
+    unavailable (0xBAD00001) - SAFE PASSTHROUGH" - and in issue #29 a user's
+    log had no way to show it.
+    """
+    for skip in _LOG_SKIP:
+        if skip in line:
+            return False
+    for tag in _LOG_ALWAYS:
+        if tag in line:
+            return True
+    if os.environ.get("NS_PHASE") == "1":
+        return "[phase]" in line or "[pw]" in line
+    return False
+
+
 def _drain_stderr(worker, logs: list[str], stop: threading.Event) -> None:
     """Background drain of the worker's stderr (otherwise the buffer fills up
     and the worker hangs).
@@ -63,18 +100,7 @@ def _drain_stderr(worker, logs: list[str], stop: threading.Event) -> None:
             # - every consumer reads only the tail, so we keep 2000.
             if len(logs) > 2000:
                 del logs[: len(logs) - 2000]
-            # The worker log goes into the shared log, but only when the
-            # profiler is on (NS_PHASE=1): otherwise it just sits in the
-            # buffer and is seen only when something crashed. Besides the
-            # phase measurements we let [pure]/[host] through: they carry the
-            # NGX result code and the chosen model preset, and without them
-            # there is no telling what was actually created. [present] is
-            # let through too: the overlay window lifecycle (created, hidden,
-            # revealed, resize) is part of the startup/shutdown diagnostics.
-            if "[present]" in line or "[spout]" in line or "[arch]" in line or (
-                    os.environ.get("NS_PHASE") == "1" and (
-                        "[phase]" in line or "[pure]" in line or "[host]" in line
-                        or "[cap]" in line or "[dda]" in line or "[pw]" in line)):
+            if _log_wanted(line):
                 print(line)
     except Exception:
         pass
@@ -329,6 +355,7 @@ def rebuild_pipeline(st, note: str) -> None:
     st.out_shm = False
     st.out_attempted = False
     st.gpu_ok = None  # a new worker means a new verdict on feature 18
+    st.gpu_alerted = False           # and a fresh chance for the alert to speak
     st.frame_index = 0
     st.pts = 0
     st.work_frame = None
@@ -569,6 +596,11 @@ def apply_gpu(st, index: int) -> None:
         return
     st.cfg["gpu"] = int(index)
     os.environ["NS_GPU"] = str(int(index))
+    # If the chosen card turns out to drive no display, the capture stays on
+    # the display card and every frame crosses through shared memory - a
+    # split pipeline. That is worth one alert, and only after a deliberate
+    # switch (on an Optimus laptop it is the normal state from launch).
+    st.gpu_switch_pending = True
     settings_io.save_menu_layout(st)
     print(f"[main] GPU: adapter {index} - restarting the worker")
     teardown_pipeline(st)

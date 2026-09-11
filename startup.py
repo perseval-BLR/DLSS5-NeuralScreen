@@ -282,6 +282,8 @@ def bring_up(st) -> None:
     gpu_info = gpu_probe()
     st.gpu_text = gpu_describe(gpu_info)
     st.gpu_ok: bool | None = None
+    st.gpu_alerted = False          # the "cannot run the pass" alert, once per verdict
+    st.gpu_switch_pending = False   # set by apply_gpu: a split pipeline is worth an alert
     print(f"[main] GPU: {st.gpu_text or 'unknown'} "
           f"(group 0x{gpu_info['arch_group']:X}, officially supported: "
           f"{'yes' if gpu_info['official'] else 'no'})")

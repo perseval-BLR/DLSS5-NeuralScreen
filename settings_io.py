@@ -19,6 +19,7 @@ from pathlib import Path
 
 from paths import BASE_DIR
 from capture import devicename_for_output_idx, list_adapters, list_monitors
+from i18n import STRINGS as UI_STRINGS
 # The work caps are the worker's contract, not a setting: the same two
 # numbers size the shared motion buffer in the SHMI handshake.
 from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
@@ -385,6 +386,15 @@ def refresh_gpu_ok(st) -> None:
         # frame) is the same verdict: no feature, no NR.
         if "feature 18 create failed" in line or "NR feature unavailable" in line:
             st.gpu_ok = False
+            # The red dot alone was not enough: in issue #29 the user picked
+            # a card that cannot run the pass and nothing on screen said so.
+            # One alert per verdict - a fresh worker clears gpu_ok and the
+            # alert can speak again.
+            if not st.gpu_alerted:
+                st.gpu_alerted = True
+                st.display.alert(UI_STRINGS[st.lang].get(
+                    "gpu_nr_fail",
+                    "This GPU cannot run the neural pass - the picture stays unprocessed"))
             return
 
 

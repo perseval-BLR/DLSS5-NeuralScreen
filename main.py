@@ -222,6 +222,8 @@ class _Pipeline:
         "mon_resize",
         "frame_index",
         "gpu_ok",
+        "gpu_alerted",
+        "gpu_switch_pending",
         "gray_active",
         "guide_fails",
         "guides",

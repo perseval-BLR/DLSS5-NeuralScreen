@@ -148,12 +148,22 @@ def enable_dda(st) -> None:
         send_dda(st.worker, st.width, st.height, 0)
         st.reader.wait_dack(timeout=15.0)
         st.dda_mode = True
+        st.gpu_switch_pending = False  # the card runs capture - nothing is split
         sync_gray(st)
         print("[main] screen capture inside the worker (DDA1): no colour through the pipe")
     except Exception as exc:
         st.dda_mode = False
         print(f"[main] capture inside the worker unavailable ({exc}) - frames through Python",
               file=sys.stderr)
+        # The chosen card could not open a capture session - it drives no
+        # display. The pipeline is SPLIT now: the network runs on the chosen
+        # card while the capture stays on the display card and every frame
+        # crosses through shared memory. In issue #29 exactly this happened
+        # after a GPU switch and nothing on the screen said so.
+        if st.gpu_switch_pending:
+            st.gpu_switch_pending = False
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "gpu_split", "The chosen card drives no display - the capture stays on the display card"))
 
 
 def enable_wgc(st) -> bool:

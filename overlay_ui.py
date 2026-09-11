@@ -476,15 +476,21 @@ class OverlayMenu:
             cy += label_h + ctrl_h + (self._u(SMALL_SIZE) + 4 if hint else 0) + gap
 
         def choice(key: str, label: str, current: str, options: list,
-                   labels: list | None = None) -> None:
+                   labels: list | None = None, hint: str = "") -> None:
             nonlocal cy
+            extra = {"label": label, "current": current,
+                     "labels": list(labels or options),
+                     "label_h": label_h}
+            hint_h = 0
+            if hint:
+                extra["hint"] = hint
+                line_h = self._small_font.get_height() + self._u(4)
+                hint_h = self._u(8) + (str(hint).count("\n") + 1) * line_h
             items.append(Item("choice", key,
-                              pygame.Rect(pad, cy, inner_w, label_h + ctrl_h),
+                              pygame.Rect(pad, cy, inner_w, label_h + ctrl_h + hint_h),
                               payload=list(options),
-                              extra={"label": label, "current": current,
-                                     "labels": list(labels or options),
-                                     "label_h": label_h}))
-            cy += label_h + ctrl_h + gap
+                              extra=extra))
+            cy += label_h + ctrl_h + hint_h + gap
 
         def segmented(key: str, label: str, current: str, options: list,
                       labels: list | None = None) -> None:
@@ -554,7 +560,8 @@ class OverlayMenu:
             gpus = self.state.get("gpus") or []
             if len(gpus) > 1:
                 choice("gpu", s.get("gpu", "GPU"),
-                       str(self.state.get("gpu", gpus[0])), gpus)
+                       str(self.state.get("gpu", gpus[0])), gpus,
+                       hint=s.get("gpu_hint", ""))
             # The screenshot folder: a plain button that opens the folder
             # picker (issue #20). The current value is shown as the caption
             # so the user sees what is configured.
@@ -809,9 +816,12 @@ class OverlayMenu:
             if it.kind == "choice":
                 # The select field is computed here rather than at draw time:
                 # the layout of an expanded list is built before the first
-                # draw.
+                # draw. The strip is the CONTROL, not the whole row: a row
+                # with a hint is taller, and the strip must stay the height
+                # of the field or the value text and the list would centre
+                # on the hint below it.
                 it.extra["strip"] = pygame.Rect(
-                    it.rect.x, it.rect.y + label_h, it.rect.w, it.rect.h - label_h)
+                    it.rect.x, it.rect.y + label_h, it.rect.w, self._u(CTRL_H))
         self.items = items
 
         # The entries of the expanded list. They lie on top of the rows below,
@@ -1225,6 +1235,10 @@ class OverlayMenu:
             if item.kind == "toggle" and item.extra.get("hint") and \
                     pos[1] > item.rect.y + self._u(CTRL_H):
                 continue
+            if item.kind == "choice" and item.extra.get("hint"):
+                strip = item.extra.get("strip")
+                if strip is not None and pos[1] > strip.bottom:
+                    continue
             return item
         return None
 
@@ -1563,6 +1577,14 @@ class OverlayMenu:
                [(cx - size, cy - size // 2), (cx + size, cy - size // 2), (cx, cy + size)])
         pygame.draw.polygon(surface, _rgb(self.c["accent"]), pts)
         item.extra["strip"] = strip
+        hint = item.extra.get("hint")
+        if hint:
+            y = strip.bottom + self._u(8)
+            for line in str(hint).split("\n"):
+                img = self._clip(self._small_font, line, _rgb(self.c["muted"]),
+                                 item.rect.w)
+                surface.blit(img, (item.rect.x, y))
+                y += self._small_font.get_height() + self._u(4)
 
     def _draw_options(self, surface) -> None:
         """The entries of the expanded list - above the rest of the content.
