@@ -55,8 +55,8 @@ program is not signed with a paid certificate. Click *More info* → *Run
 anyway*. If you would rather not, `NeuralScreen.vbs` next to it does the same
 thing.
 
-There is no installer and nothing is written outside the folder. To remove it,
-delete the folder.
+There is no installer: to remove the program, delete the folder. Autostart is the
+one thing written outside it - turn it off before you move or delete the folder.
 
 > **Do not use it in competitive online games.** A process named `nvngx.dll`
 > plus a fullscreen overlay is exactly what anti-cheat systems look for.
