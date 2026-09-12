@@ -1507,3 +1507,47 @@ STRINGS = {
 def tr(lang: str, key: str) -> str:
     """Translate a STRINGS key; an unknown key comes back unchanged."""
     return STRINGS.get(lang, STRINGS[DEFAULT_LANG]).get(key, key)
+
+for _table in STRINGS.values():
+    _table.update({
+        "lib_section": "DLSS library versions",
+        "lib_check": "Check official versions",
+        "lib_checking": "Checking versions…",
+        "lib_update": "Update available",
+        "lib_install": "Update",
+        "lib_notice": "Library updates available",
+        "lib_close": "Close",
+        "lib_downloading": "Downloading update…",
+        "lib_download_failed": "Download failed — retry",
+        "lib_install_failed": "Installation failed — retry update",
+        "lib_pending": "Update ready — restart the app",
+        "lib_current": "Matches official version",
+        "lib_newer": "Local version is newer",
+        "lib_no_source": "No public update source",
+        "lib_missing": "Library not found",
+        "lib_unknown": "Could not verify version",
+    })
+STRINGS["ru"].update({
+    "lib_section": "Версии библиотек DLSS",
+    "lib_check": "Проверить официальные версии",
+    "lib_checking": "Проверка версий…",
+    "lib_update": "Доступно обновление",
+    "lib_install": "Обновить",
+    "lib_notice": "Доступны новые версии библиотек",
+    "lib_close": "Закрыть",
+    "lib_downloading": "Загрузка обновления…",
+    "lib_download_failed": "Ошибка загрузки — повторите",
+    "lib_install_failed": "Ошибка установки — повторите обновление",
+    "lib_pending": "Загружено — перезапустите программу",
+    "lib_current": "Совпадает с официальной версией",
+    "lib_newer": "Локальная версия новее",
+    "lib_no_source": "Нет публичного источника обновлений",
+    "lib_missing": "Библиотека не найдена",
+    "lib_unknown": "Не удалось проверить версию",
+})
+
+for _table in STRINGS.values():
+    _table["lib_opt_in"] = "Check library updates automatically"
+    _table["lib_opt_in_hint"] = "connects to NVIDIA on GitHub; off by default"
+STRINGS["ru"]["lib_opt_in"] = "Автоматически проверять обновления библиотек"
+STRINGS["ru"]["lib_opt_in_hint"] = "обращается к NVIDIA на GitHub; по умолчанию выключено"

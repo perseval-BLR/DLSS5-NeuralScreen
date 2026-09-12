@@ -524,6 +524,7 @@ def main() -> int:
                 # nothing", which is a report we have had (issue #27) and a
                 # notice a user asked for (issue #33). Once per session.
                 settings_io.warn_hdr(st)
+                settings_io.show_update_notice(st)
 
             # --- Input for the overlay menu --------------------------
             # Events are read only while the menu is open: the rest of the

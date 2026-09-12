@@ -81,6 +81,13 @@ def _apply_nr_dll(cfg: dict) -> None:
         os.environ["NS_NR_DLL"] = str(cfg["nr_dll"])
 
 
+def _start_library_checks(cfg: dict) -> None:
+    """Network access requires explicit saved opt-in; absent means offline."""
+    if cfg.get("library_updates_enabled", False) is True:
+        from library_updates import checker
+        checker.start()
+
+
 def _apply_spout_env(cfg: dict) -> None:
     """The Spout2 bridge flag reaches the worker through the environment.
 
@@ -225,6 +232,8 @@ def configure(st) -> None:
     not. Everything else lands on the state: the config, the NR parameters,
     the presets, the monitor and the resolution the pipeline will run at.
     """
+    from library_updates import apply_pending
+    apply_pending()
     st.cfg = load_config(st.cfg_path)
     st.params = resolve_params(st.cfg)
     st.presets = load_presets(st.cfg)
@@ -498,3 +507,4 @@ def bring_up(st) -> None:
     st.next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
     st.consecutive_restarts = 0
     st.guide_fails = 0
+    _start_library_checks(st.cfg)
