@@ -123,14 +123,14 @@ The settings worth touching:
   detail instead of turning into artifacts.
 - **Before / after wipe** — leaves the left part of the screen untouched so
   you can see what the effect is doing. Set it back to 0 when done.
-- **Resolution the network runs at** — one slider. At the top it is your whole
-  screen, which is the default and the best picture. Every step down hands the
-  network a smaller frame: with the slider off the default (full screen) the
-  network is already at its best, and every step down means **roughly 50% more
-  frames** at 2560×1440 on a 4K screen. The picture stays sharp: the network's
-  result is composed onto the pristine 1:1 native frame (a matched residual
+- **Boost** — a switch under DLSS 5, off by default. Without it the network
+  runs at the full frame size whatever else you set. With it on, it runs at a
+  reduced resolution and a slider appears under the switch to choose which:
+  measured on a 5070 Ti at 4K, **45.7 → 72.6 frames** at the default step and
+  **83.4** at the lowest. The picture stays sharp because the network's result
+  is composed onto the pristine 1:1 native frame (a matched residual
   composite), so text, edges and UI keep full resolution while the cheap
-  low-res network does the relighting. Look at your own screen and pick a step.
+  low-res network does the relighting. Try it and look at your own screen.
 The interface speaks **12 languages** - English, Russian, French, German,
 Spanish, Italian, Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
 Pick one under the sliders icon (Language). The menu, the HUD and the alerts
@@ -176,8 +176,8 @@ drawn over it — a Windows rule. Switch the game to *borderless* or
 **The menu pointer is missing or frozen.** A fullscreen game hides the system
 cursor; the overlay only shows the system cursor. Borderless fixes it.
 
-**The picture is soft.** Put *Resolution the network runs at* back to the top
-of its slider.
+**The picture is soft.** Turn *Boost* off, or move its resolution slider
+up a step.
 
 **A key does nothing.** Something else claimed it; reassign it in the menu
 under the sliders icon.
