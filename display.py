@@ -39,6 +39,8 @@ user32 = ctypes.windll.user32
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SetWindowPos.restype = wintypes.BOOL
+user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.FindWindowW.restype = wintypes.HWND
 user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowLongW.restype = wintypes.LONG
 user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
@@ -697,18 +699,28 @@ class Display:
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
     def raise_topmost(self) -> None:
-        """Raise the window above the worker's window.
+        """Raise the worker picture first and the HUD last.
 
         Both windows are topmost, and inside that group the one raised last
         ends up on top. The worker creates its window after ours, so after
-        every raise of its overlay the HUD has to be brought back up, otherwise
-        it ends up under the frame and becomes invisible.
+        every raise of its overlay the picture is raised first and the HUD is
+        brought back up last, otherwise it ends up under the frame and becomes
+        invisible.
         """
         # SWP_NOACTIVATE: the 30-frame re-assert must not steal the keyboard
         # focus back from the user (audit 10.09 F2: with the menu open the
         # overlay has WS_EX_NOACTIVATE removed, and a SetWindowPos that
         # activates re-steals focus <=0.5 s after Alt+Tab / minimizing
         # another window).
+        # Picture first, HUD last. Keep the two raises independent: a missing
+        # or not-yet-created present window must never hide the HUD raise.
+        try:
+            present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
+            if present:
+                user32.SetWindowPos(present, -1, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            pass
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
