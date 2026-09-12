@@ -66,10 +66,15 @@ def paint(menu):
 
 
 def click(menu, item):
+    # Near the top of the row, not at its centre: a hint under a toggle makes
+    # the row taller and the hint is a caption, not a hit target - a stray
+    # click on the explanation must not flip a switch that restarts the
+    # worker. The centre of a two-line hinted row lands in the caption.
+    pos = (item.rect.x + item.rect.w // 2, item.rect.y + 2)
     out = menu.handle_event(pygame.event.Event(
-        pygame.MOUSEBUTTONDOWN, {"pos": item.rect.center, "button": 1}))
+        pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
     menu.handle_event(pygame.event.Event(
-        pygame.MOUSEBUTTONUP, {"pos": item.rect.center, "button": 1}))
+        pygame.MOUSEBUTTONUP, {"pos": pos, "button": 1}))
     return out
 
 
@@ -305,6 +310,25 @@ def main() -> int:
             failures.append(f"exit: expected [('button', 'exit')], got {out}")
 
     # 6. The sliders emit their commands.
+    #
+    # The resolution slider only exists while Boost is on: with Boost off the
+    # network runs at the full frame size whatever the slider says, and the
+    # output frames come back bit-identical at every position of it
+    # (measured, 12.09). A control that answers and does nothing is worse
+    # than no control, so it is simply not laid out then.
+    menu.layout(3840, 2160)
+    paint(menu)
+    if find(menu, "slider", "nr_res") is not None:
+        failures.append("the resolution slider is laid out with Boost off, "
+                        "where every position of it does the same thing")
+    boost = find(menu, "toggle", "boost")
+    if boost is None:
+        failures.append("no Boost switch on the main page")
+    else:
+        out = click(menu, boost)
+        if out != [("toggle", "boost")]:
+            failures.append(f"boost: expected [('toggle', 'boost')], got {out}")
+    menu.set_state({"nr_small": True, "work_size": "2496x1404"})
     menu.layout(3840, 2160)
     paint(menu)
     for key, want_prefix in (("intensity", "param"), ("split", "split"),

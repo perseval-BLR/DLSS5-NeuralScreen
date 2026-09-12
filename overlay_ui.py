@@ -702,49 +702,58 @@ class OverlayMenu:
             toggle("nr", s["nr_on"] if nr_on else s["nr_off"], nr_on,
                    key_text=hk_nr)
 
-            # The resolution the network runs at sits right under the
-            # DLSS 5 switch, not in a section of its own further down:
-            # it is the one control that trades quality for frames, and
-            # users did not connect it with the network at all (user
-            # report, 11.09).
-            section(s["sec_resolution"])
-            # One slider, not a toggle plus a slider. The two used to be
-            # separate, and with the toggle off the slider still moved, still
-            # showed a changing resolution and changed the picture by exactly
-            # nothing - measured, bit for bit. A control that answers and does
-            # nothing is worse than no control.
-            cap = float(self.state.get("work_scale_cap", 1.0))
-            full = not bool(self.state.get("nr_small"))
-            # The extra step past the cap is "the whole screen". Below the cap
-            # every position is a different resolution; above it they would all
-            # be the same one, so there is exactly one position up there.
-            pos = cap + 0.05 if full else float(self.state.get("work_scale", cap))
-            # Always the size the network actually runs at. At the top of
-            # the slider it used to say "3840x2160 - full", which is not
-            # true on a 4K screen: NGX is capped at 2560x1440, so the
-            # network never sees more than that and the menu was promising
-            # a resolution it cannot deliver (user, 12.09). The word stays
-            # only when the work size really is the whole screen.
-            work = str(self.state.get("work_size") or "")
-            screen = str(self.state.get("screen_size")
-                         or self.stats.get("resolution") or "")
-            if full and work and work == screen:
-                value_text = f"{work} · {s['nr_res_full']}"
-            elif work:
-                value_text = work
-            else:
-                value_text = s["nr_res_full"] if full else f"{pos:.2f}"
-            # The lower bound follows WORK_SCALE_MIN (0.1), not a hardcoded
-            # 0.30: a config value below the slider range would put the knob
-            # at the bottom while the label shows a different resolution.
-            lo = float(self.state.get("work_scale_min", 0.1))
-            # The ends replace the hint here: "fewer pixels - more FPS" on
-            # one side and "whole screen - all detail" on the other say the
-            # same thing as the sentence did, in the place where the choice
-            # is actually made.
-            slider("nr_res", lo, cap + 0.05, pos, s["nr_res"],
-                   value_text=value_text,
-                   ends=(s.get("nr_res_low", ""), s.get("nr_res_high", "")))
+            # Boost: the network runs at a reduced resolution and the detail
+            # comes back off the native frame (the matched residual
+            # composite). It sits directly under the DLSS 5 switch because it
+            # is the same subject - how hard the network works - and because
+            # nobody found it where it was.
+            #
+            # Measured on a 5070 Ti at 4K, 12.09: the network costs 16.0 ms
+            # against 5.0-7.3 ms, the whole program runs 45.7 -> 72.6 fps at
+            # 0.65, and at 1:1 on text, a game scene and photographic content
+            # the difference is not visible. The residual is what makes that
+            # true: without it the same setting is visibly soft.
+            boost = bool(self.state.get("nr_small"))
+            toggle("boost", s["boost"], boost, hint=s["boost_hint"])
+
+            # The resolution the network runs at - only while Boost is on.
+            #
+            # Without Boost this slider changes nothing whatsoever: the
+            # network runs at the full frame size no matter where the knob
+            # is, and the output frames come back bit-identical at every
+            # position (measured on four real 4K frames, 12.09). That is why
+            # the two used to be one control, with the top step standing in
+            # for "off" - a slider that answers and does nothing is worse
+            # than no slider. The switch above carries that meaning now, so
+            # the slider carries only the resolution, and it is simply not on
+            # screen when it would be inert.
+            if boost:
+                # No section heading of its own: the slider belongs to the
+                # switch above it, and "PROCESSING / Boost / RESOLUTION /
+                # Resolution the network runs at" says the same word three
+                # times before saying anything.
+                # The top of the range is the NGX cap where one binds (0.65
+                # on a 4K screen, where 2560x1440 is reached) and the whole
+                # source where it does not - on 1440p and below the scale
+                # runs all the way to 1.00.
+                cap = float(self.state.get("work_scale_cap", 1.0))
+                pos = float(self.state.get("work_scale", cap))
+                # The size the network actually runs at. It used to say
+                # "3840x2160 - full" at the top, which is not true on a 4K
+                # screen: NGX is capped at 2560x1440 and the network never
+                # saw more than that (user, 12.09).
+                work = str(self.state.get("work_size") or "")
+                value_text = work if work else f"{pos:.2f}"
+                # The lower bound follows WORK_SCALE_MIN (0.1), not a
+                # hardcoded 0.30: a config value below the slider range would
+                # put the knob at the bottom while the label shows a
+                # different resolution.
+                lo = float(self.state.get("work_scale_min", 0.1))
+                # The ends replace the hint here: the trade is named at both
+                # ends, in the place where the choice is actually made.
+                slider("nr_res", lo, cap, pos, s["nr_res"],
+                       value_text=value_text,
+                       ends=(s.get("nr_res_low", ""), s.get("nr_res_high", "")))
 
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
@@ -1281,27 +1290,25 @@ class OverlayMenu:
             self.state["split"] = value
             return [("split", value)]
         if item.key == "nr_res":
-            cap = float(self.state.get("work_scale_cap", 1.0))
-            # Reflect the choice straight away so the label does not lag a
-            # frame behind the knob; main confirms it on the way back.
-            self.state["nr_small"] = value <= cap + 1e-6
-            if self.state["nr_small"]:
-                self.state["work_scale"] = value
-                # The label shows the work resolution; recompute it here so it
-                # follows the knob while dragging (main confirms on the way
-                # back). The formula mirrors _work_size in main.py.
-                try:
-                    sw, sh = (int(x) for x in
-                              str(self.state.get("screen_size", "0x0")).split("x"))
-                    w = max(64, int(round(sw * value / 2) * 2))
-                    h = max(64, int(round(sh * value / 2) * 2))
-                    if w > 2560 or h > 1440:
-                        k = min(2560 / w, 1440 / h)
-                        w = max(64, int(round(w * k / 2) * 2))
-                        h = max(64, int(round(h * k / 2) * 2))
-                    self.state["work_size"] = f"{w}x{h}"
-                except Exception:
-                    pass
+            # The slider is only on screen while Boost is on, so every
+            # position means a work resolution now - there is no "off" step
+            # at the top any more.
+            self.state["work_scale"] = value
+            # The label shows the work resolution; recompute it here so it
+            # follows the knob while dragging (main confirms on the way
+            # back). The formula mirrors _work_size in main.py.
+            try:
+                sw, sh = (int(x) for x in
+                          str(self.state.get("screen_size", "0x0")).split("x"))
+                w = max(64, int(round(sw * value / 2) * 2))
+                h = max(64, int(round(sh * value / 2) * 2))
+                if w > 2560 or h > 1440:
+                    k = min(2560 / w, 1440 / h)
+                    w = max(64, int(round(w * k / 2) * 2))
+                    h = max(64, int(round(h * k / 2) * 2))
+                self.state["work_size"] = f"{w}x{h}"
+            except Exception:
+                pass
             return [("nr_res", value)]
         params = dict(self.state.get("params") or {})
         params[item.key] = value

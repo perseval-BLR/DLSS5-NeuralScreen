@@ -156,13 +156,20 @@ def check_worker(failures: list) -> None:
 
 
 def check_menu(failures: list) -> None:
-    """One control, and every position of it does something.
+    """Every control on screen does something.
 
-    The menu used to carry a toggle and a slider for the same idea, and with
-    the toggle off the slider still moved while changing the picture by exactly
-    nothing. So what is checked here is that there is one slider, that its top
-    step means the whole screen, and that dragging it reports a resolution
-    rather than being mistaken for an NR parameter.
+    The menu carried a toggle and a slider for the same idea once, and with
+    the toggle off the slider still moved while changing the picture by
+    exactly nothing - the outputs come back bit-identical at every position
+    when the reduced mode is off (measured on four real 4K frames, 12.09).
+    The two were merged into one slider for that reason, and split again when
+    the mode became Boost: a switch people can find, and the slider only on
+    screen while it would do something.
+
+    So: with Boost off there is a switch and no slider at all; with Boost on
+    the slider is there, it stops at the cap rather than one step past it,
+    and dragging it reports a resolution instead of being mistaken for an NR
+    parameter.
     """
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     import pygame
@@ -190,35 +197,57 @@ def check_menu(failures: list) -> None:
         menu.draw(surf)
 
         items = {i.key: i for i in menu.items}
-        if "nr_small" in items:
-            failures.append("the old toggle is still in the menu")
         if "work_scale" in items:
             failures.append("the old work_scale slider is still in the menu")
+        if "boost" not in items:
+            failures.append("no Boost switch in the menu")
+            return
+        if items["boost"].value > 0.5:
+            failures.append("the Boost switch reads on while the mode is off")
+        # The slider would be inert here: the network runs at the full frame
+        # size whatever it says.
+        if "nr_res" in items:
+            failures.append("the resolution slider is on screen with Boost off, "
+                            "where every position of it does the same thing")
+        # The switch itself, not the caption under it: a hint makes the row
+        # taller and is deliberately not a hit target, so that a stray click
+        # on the explanation cannot restart the worker.
+        got = menu.handle_event(pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN,
+            {"pos": (items["boost"].rect.x + 4, items["boost"].rect.y + 2),
+             "button": 1}))
+        print(f"clicked Boost: {got}")
+        if ("toggle", "boost") not in got:
+            failures.append(f"the Boost switch emitted {got}, not a boost toggle")
+        menu.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, {"button": 1}))
+
+        # Boost on: now the resolution is a real choice.
+        menu.set_state({"nr_small": True, "work_scale": 0.50,
+                        "work_size": "1920x1080"})
+        menu.draw(surf)
+        items = {i.key: i for i in menu.items}
         if "nr_res" not in items:
-            failures.append("no resolution slider in the menu")
+            failures.append("no resolution slider with Boost on")
             return
 
         ws = items["nr_res"]
         print(f"slider {ws.lo:.2f}..{ws.hi:.2f}, at {ws.value:.2f} "
               f"showing {ws.extra.get('value_text')!r}")
-        if abs(ws.hi - (CAP + 0.05)) > 1e-6:
-            failures.append(f"the slider runs to {ws.hi:.2f}; it should stop one "
-                            f"step past the {CAP:.2f} cap")
-        # Mode off means the knob sits on that last step, showing the screen.
-        if ws.value <= CAP:
-            failures.append(f"with the mode off the knob is at {ws.value:.2f}, "
-                            f"not on the full-screen step")
-        # The step shows the size the network RUNS at, which on a 4K screen
-        # is the 2560x1440 cap, not the screen. It used to read
-        # "3840x2160 - full" there and promise a resolution NGX cannot
+        if abs(ws.hi - CAP) > 1e-6:
+            failures.append(f"the slider runs to {ws.hi:.2f}; with the switch "
+                            f"carrying the mode it should stop at the {CAP:.2f} cap")
+        if abs(ws.value - 0.50) > 1e-6:
+            failures.append(f"the knob is at {ws.value:.2f}, not at the work "
+                            f"scale it was given")
+        # The label shows the size the network RUNS at. It used to read
+        # "3840x2160 - full" at the top and promise a resolution NGX cannot
         # deliver (user, 12.09).
         shown = str(ws.extra.get("value_text"))
-        if "2560x1440" not in shown:
-            failures.append(f"the full-screen step shows {shown!r}, not the "
-                            f"work size the network runs at")
+        if "1920x1080" not in shown:
+            failures.append(f"the slider shows {shown!r}, not the work size "
+                            f"the network runs at")
         if "3840x2160" in shown:
-            failures.append(f"the full-screen step still promises the screen "
-                            f"size: {shown!r}")
+            failures.append(f"the slider still promises the screen size: {shown!r}")
 
         # Drag to the left end: a resolution action, and not an NR parameter.
         track = ws.extra.get("track")
@@ -234,7 +263,8 @@ def check_menu(failures: list) -> None:
         if got and got[0][1] > CAP:
             failures.append(f"the left end gave {got[0][1]:.2f}, above the cap")
 
-        # And back to the right end: that must read as the whole screen.
+        # And back to the right end: the cap, and not a step past it - the
+        # step past the cap used to mean "off", and the switch owns that now.
         menu.handle_event(pygame.event.Event(pygame.MOUSEBUTTONUP, {"button": 1}))
         menu.draw(surf)
         ws = {i.key: i for i in menu.items}["nr_res"]
@@ -245,9 +275,9 @@ def check_menu(failures: list) -> None:
         print(f"dragged to the right end: {got}")
         if not got or got[0][0] != "nr_res":
             failures.append(f"the right end emitted {got}")
-        elif got[0][1] <= CAP:
-            failures.append(f"the right end gave {got[0][1]:.2f}, which is still "
-                            f"a reduced resolution rather than the whole screen")
+        elif abs(got[0][1] - CAP) > 1e-6:
+            failures.append(f"the right end gave {got[0][1]:.2f} instead of the "
+                            f"{CAP:.2f} cap")
     finally:
         pygame.quit()
 
