@@ -1673,6 +1673,11 @@ static HWND                       g_wgc_hwnd = nullptr;
 
 
 static IDXGISwapChain3           *g_present_swap;
+// What the swap chain has already been told its colours mean. Asking DXGI
+// every frame is both a waste and a way to fail on the SDR path, which has
+// never made the call at all - see EnsurePresentFormat.
+static DXGI_COLOR_SPACE_TYPE      g_present_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+static bool                       g_present_space_set = false;
 static HANDLE                     g_present_thread;
 static DWORD                      g_present_tid;
 static UINT                       g_present_w, g_present_h;
@@ -1794,6 +1799,9 @@ static void ClosePresent()
     // logic must run again (user: blank flash on mode switches).
     g_present_shown = false;
     g_present_revealed = false;
+    // A fresh swap chain knows nothing about its colour space either.
+    g_present_space_set = false;
+    g_present_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 }
 
 static bool OpenPresent(UINT width, UINT height, uint32_t flags)
@@ -3469,16 +3477,32 @@ static bool OpenDda(UINT w, UINT hgt)
     g_capture_display = QueryHdrDisplay(g_capture_monitor);
     g_dda_hdr_mode = HdrEnabled() && g_capture_display.enabled;
     IDXGIOutput5 *output5 = nullptr;
+    hr = E_FAIL;
     if (g_dda_hdr_mode && SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5), (void **)&output5)))
     {
         const DXGI_FORMAT formats[] = {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
         hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(formats), formats, &g_dda_dup);
         output5->Release();
+        if (FAILED(hr))
+            Log("[hdr] FP16 duplication refused 0x%08X - capturing in SDR instead", hr);
     }
-    else if (HdrEnabled() && g_capture_display.enabled)
-        hr = E_NOINTERFACE; // Never silently truncate HDR through legacy duplication.
-    else
+    else if (g_dda_hdr_mode)
+        Log("[hdr] this Windows has no IDXGIOutput5 - capturing in SDR instead");
+    if (FAILED(hr))
+    {
+        // SDR, and never silently: the first staged frame logs "capture=SDR"
+        // and the menu then says HDR is not being preserved (warn_hdr). The
+        // alternative - refusing to duplicate at all - turns a washed-out
+        // picture into no picture, which is the worse of the two on hardware
+        // nobody here can see.
+        //
+        // g_dda_hdr_mode stays as it is on purpose: it records what this
+        // capture was OPENED for, and DdaGrab compares it against what the
+        // desktop is doing now to notice a mode change. Lowering it here
+        // would make that comparison disagree every second and reopen the
+        // duplication forever.
         hr = output1->DuplicateOutput(g_dda_d11, &g_dda_dup);
+    }
     output1->Release(); output->Release(); adapter->Release(); factory->Release();
     if (FAILED(hr)) { Log("[dda] DuplicateOutput failed 0x%08X", hr); return false; }
     // How the display is rotated, in the duplication's own words. Nothing

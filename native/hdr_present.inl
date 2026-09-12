@@ -24,15 +24,34 @@ static bool EnsurePresentFormat(bool hdr)
     {
         // PresentFrame/PresentBypass release each back buffer and wait for GPU
         // work before returning; no old buffer reference survives here.
+        // This failure is fatal on either path, and deliberately so: both
+        // presents CopyResource into the back buffer, and a copy between
+        // mismatched formats is not a wrong picture, it is a removed device.
         if (FAILED(g_present_swap->ResizeBuffers(0, 0, 0, format, desc.Flags)))
         { Log("[hdr] swap chain format change failed"); return false; }
         Log("[hdr] presentation=%s", hdr ? "FP16 scRGB" : "8-bit SDR");
+        g_present_space_set = false;
     }
+    // Once per swap chain, not once per frame. The space only changes with
+    // the format, and the call above is the only thing that changes it.
+    if (g_present_space_set && g_present_space == space) return true;
+    g_present_space_set = true;
+    g_present_space = space;
     UINT support = 0;
     if (FAILED(g_present_swap->CheckColorSpaceSupport(space, &support)) ||
         !(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ||
         FAILED(g_present_swap->SetColorSpace1(space)))
-    { Log("[hdr] presentation color space unsupported"); return false; }
+    {
+        Log("[hdr] presentation colour space %u unsupported", (unsigned)space);
+        // On the HDR path the colour space IS the feature: an scRGB buffer
+        // presented as if it were sRGB is worse than no HDR at all, so the
+        // frame is refused and the capture falls back. On the SDR path it
+        // is the space the chain was created with - the picture is right
+        // without the call ever being made, and this program made presents
+        // for a year without making it. Refusing here would turn "too
+        // bright" into "nothing at all" on somebody's machine.
+        return hdr ? false : true;
+    }
     return true;
 }
 
@@ -42,9 +61,9 @@ static bool EnsureHdrPipeline(UINT w, UINT height)
     {
         const auto d = g_hdr_output->GetDesc();
         if (d.Width == w && d.Height == height) return true;
-        CloseHdrResources();
     }
-    // Clean up partial initialization before another attempt.
+    // Either a size change or a half-built attempt from last time: both
+    // start from nothing.
     CloseHdrResources();
     winrt::com_ptr<ID3DBlob> code, errors, signature;
     HRESULT hr = D3DCompile(kHdrCompositeHlsl, sizeof(kHdrCompositeHlsl)-1,
