@@ -814,8 +814,10 @@ class OverlayMenu:
                         sr_size = f"{iw}x{ih}"
                 except ValueError:
                     pass
+                if sr_scale >= 1.0:
+                    sr_size += " (DLAA)"
                 slider("dlss_sr_scale", .25, 1.0, sr_scale, s["dlss_sr_input"],
-                       value_text=sr_size, ends=("25%", "100%"))
+                       value_text=sr_size, ends=("25%", "100% (DLAA)"))
 
             # What is being processed - the first question anyone has, and
             # until now the only one answered on another page. The segment
