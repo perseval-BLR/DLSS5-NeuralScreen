@@ -575,7 +575,7 @@ def main() -> int:
             try:
                 t0 = time.perf_counter()
                 if st.gray_active:
-                    guide = st.guides.process(gray=st.shm.read_gray())
+                    guide = st.guides.process(gray=st.shm.read_gray(), compute_motion=os.environ.get("NS_GPU_FLOW_EXPERIMENT") != "1")
                 else:
                     guide = st.guides.process(st.work_frame)
                 _perf("guides", t0)

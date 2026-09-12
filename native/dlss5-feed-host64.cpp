@@ -4029,6 +4029,8 @@ static bool UploadVideoFrame(VideoState &v, const BYTE *color, const BYTE *mv, b
     return WaitFenceValue(h.fence, fence, 30000);
 }
 
+#include "gpu_motion_experiment.inl"
+
 // DDA mode: the colour is already in v.color.tex (DdaGrab), we upload only motion.
 static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small)
 {
@@ -4984,7 +4986,7 @@ static int RunVideo()
                 ? SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : 0u;
             g_force_next_frame = false;
             const double t_up = PhaseNow();
-            const bool up_ok = UploadMotionOnly(v, mv_ptr,
+            const bool up_ok = GpuMotionExperiment() ? RunGpuMotionExperiment(v, fh.reset != 0) : UploadMotionOnly(v, mv_ptr,
                                   (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
             PhaseAdd(PH_UPLOAD, t_up);
             if (!up_ok) return 6;
