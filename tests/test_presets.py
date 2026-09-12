@@ -20,7 +20,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
 
-from main import (  # noqa: E402
+from settings_io import (  # noqa: E402
     PROFILES, load_config, load_presets, resolve_params, _next_preset_name,
 )
 

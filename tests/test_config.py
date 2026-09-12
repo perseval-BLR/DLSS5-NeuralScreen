@@ -1,12 +1,12 @@
 """The config loader: validation, clamping and profile resolution.
 
 Pure unit test - no worker, no window, no program launch. It feeds
-load_config() and resolve_params() from main.py with crafted configs and
+load_config() and resolve_params() from settings_io.py with crafted configs and
 checks the contract:
 
 * missing required fields raise;
-* an unknown profile raises;
-* work_scale is clamped to 0.25..1.0 (the slider can never ask for less);
+* a stale profile falls back to Natural;
+* work_scale is clamped to 0.1..1.0 (the slider can never ask for less);
 * an unknown lang falls back to the default;
 * resolve_params merges the profile with non-null overrides.
 """
@@ -16,10 +16,10 @@ import tempfile
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent  # the project root
-sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
+sys.path.insert(0, str(BASE))  # the project modules (settings_io.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
-from main import DEFAULT_LANG, PROFILES, WORK_SCALE_MAX, WORK_SCALE_MIN, load_config, resolve_params  # noqa: E402
+from settings_io import DEFAULT_LANG, PROFILES, WORK_SCALE_MAX, WORK_SCALE_MIN, load_config, resolve_params  # noqa: E402
 
 GOOD = {
     "monitor": 0, "width": 3840, "height": 2160, "fullscreen": True,
@@ -30,7 +30,7 @@ GOOD = {
 }
 
 
-def write_cfg(data: dict) -> Path:
+def write_cfg(data) -> Path:
     f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
     json.dump(data, f)
     f.close()
@@ -65,7 +65,99 @@ def main() -> int:
         finally:
             p.unlink()
 
-    # 3. An unknown profile falls back to Natural instead of raising
+    # 3. A non-object JSON root raises a ValueError.
+    for root in (None, [], 1):
+        p = write_cfg(root)
+        try:
+            try:
+                load_config(p)
+                failures.append(f"non-object JSON root {root!r} did not raise")
+            except ValueError:
+                pass
+        finally:
+            p.unlink()
+
+    # 4. A non-string profile raises before profile membership is checked.
+    p = write_cfg(dict(GOOD, profile=[]))
+    try:
+        try:
+            load_config(p)
+            failures.append("a non-string profile did not raise")
+        except ValueError as exc:
+            if "profile" not in str(exc):
+                failures.append(f"non-string profile error was not field-specific: {exc}")
+    finally:
+        p.unlink()
+
+    # 5. Boolean dimensions and warmup values are not positive integers.
+    for key in ("width", "height", "warmup"):
+        bad = dict(GOOD)
+        bad[key] = True
+        p = write_cfg(bad)
+        try:
+            try:
+                load_config(p)
+                failures.append(f"boolean {key} did not raise")
+            except ValueError as exc:
+                if key not in str(exc):
+                    failures.append(f"boolean {key} error was not field-specific: {exc}")
+        finally:
+            p.unlink()
+
+    # 6. Boolean overrides are rejected with a field-specific error.
+    for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        bad = dict(GOOD)
+        bad[key] = True
+        p = write_cfg(bad)
+        try:
+            try:
+                load_config(p)
+                failures.append(f"boolean {key} override did not raise")
+            except ValueError as exc:
+                if key not in str(exc):
+                    failures.append(f"boolean {key} error was not field-specific: {exc}")
+        finally:
+            p.unlink()
+
+    # 7. Invalid non-null overrides are rejected with field-specific errors.
+    for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        invalid = ("abc", [], {}, float("nan"), float("inf"), -float("inf"), 10 ** 4000)
+        invalid += (-0.1, 2.6) if key != "skin_structure" else (-1.1, 2.6)
+        for value in invalid:
+            bad = dict(GOOD)
+            bad[key] = value
+            p = write_cfg(bad)
+            try:
+                try:
+                    load_config(p)
+                    failures.append(f"invalid {key} override {value!r} did not raise")
+                except ValueError as exc:
+                    if key not in str(exc):
+                        failures.append(f"invalid {key} error was not field-specific: {exc}")
+            finally:
+                p.unlink()
+
+    # 8. Numeric strings and range boundaries survive load and resolution.
+    for key, raw, want in (
+            ("intensity", "0.0", 0.0),
+            ("local_tone", "2.5", 2.5),
+            ("local_structure", 0.0, 0.0),
+            ("skin_structure", "-1.0", -1.0),
+            ("skin_structure", 2.5, 2.5)):
+        bad = dict(GOOD)
+        bad[key] = raw
+        p = write_cfg(bad)
+        try:
+            loaded = load_config(p)
+            params = resolve_params(loaded)
+            if loaded[key] != raw:
+                failures.append(f"load_config rewrote {key}: {loaded[key]!r}")
+            if params[key] != want:
+                failures.append(f"resolve_params changed {key}: {params[key]} vs {want}")
+        finally:
+            p.unlink()
+
+    # 9. An unknown profile falls back to Natural instead of raising
     #    (a stale reference to a deleted user preset must not crash).
     bad = dict(GOOD, profile="Ultra Turbo")
     p = write_cfg(bad)
@@ -77,7 +169,7 @@ def main() -> int:
     finally:
         p.unlink()
 
-    # 4. work_scale clamps: below the floor, above the ceiling, and a string.
+    # 10. work_scale clamps: below the floor, above the ceiling, and a string.
     for raw, want in ((0.01, WORK_SCALE_MIN), (5.0, WORK_SCALE_MAX), ("0.5", 0.5)):
         p = write_cfg(dict(GOOD, work_scale=raw))
         try:
@@ -87,7 +179,7 @@ def main() -> int:
         finally:
             p.unlink()
 
-    # 5. Unknown lang falls back to the default.
+    # 11. Unknown lang falls back to the default.
     p = write_cfg(dict(GOOD, lang="klingon"))
     try:
         cfg = load_config(p)
@@ -96,7 +188,7 @@ def main() -> int:
     finally:
         p.unlink()
 
-    # 6. resolve_params: profile defaults, overridden by non-null values.
+    # 12. resolve_params: profile defaults, overridden by non-null values.
     params = resolve_params(GOOD)
     prof = PROFILES["Strong / Cinematic"]
     for k in ("intensity", "local_tone", "local_structure", "skin_structure"):
