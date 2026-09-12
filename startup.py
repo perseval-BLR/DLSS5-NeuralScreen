@@ -93,6 +93,18 @@ def _apply_spout_env(cfg: dict) -> None:
     os.environ["NS_SPOUT"] = "1" if cfg.get("spout") else "0"
 
 
+def _apply_hdr_env(cfg: dict) -> None:
+    """The HDR compatibility flag reaches the worker the same way.
+
+    HdrEnabled() in the worker reads NS_HDR once, at process start, and
+    everything downstream of it is decided then: the duplication format,
+    the swap chain format, the colour space. So the switch goes through a
+    worker restart (pipeline.apply_hdr), exactly like the Spout bridge.
+    Off unless the config says otherwise - the mode is experimental.
+    """
+    os.environ["NS_HDR"] = "1" if cfg.get("hdr") else "0"
+
+
 def _apply_monitor_env(capture) -> tuple[int, int]:
     """Publish the chosen monitor to the worker and return its origin.
 
@@ -259,6 +271,8 @@ def configure(st) -> None:
     # the bridge costs a full-frame GPU copy on every Present, and it is
     # only useful to someone recording through OBS.
     _apply_spout_env(st.cfg)
+    # And HDR compatibility, read once per worker process as well.
+    _apply_hdr_env(st.cfg)
     # The same for the card: NS_GPU is read once per worker process.
     _apply_gpu_env(st.cfg)
     st.lang = str(st.cfg["lang"])

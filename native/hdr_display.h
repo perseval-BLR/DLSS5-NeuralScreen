@@ -9,12 +9,18 @@ struct HdrDisplayInfo
     float white = 1.0f; // scRGB units (80 nits), not nits
 };
 
+// HDR is off unless it is asked for. It is experimental: it changes the
+// capture format, the swap chain format and the colour space, and every
+// one of those is a way for the picture to disappear on hardware nobody
+// here can test. The menu switch (SETTINGS -> CAPTURE) writes NS_HDR, the
+// same hand-off NS_SPOUT uses, and a worker started by hand keeps the SDR
+// behaviour the program has always had.
 static bool HdrEnabled()
 {
     static const bool enabled = [] {
         char value[16] = {};
         GetEnvironmentVariableA("NS_HDR", value, sizeof(value));
-        return strcmp(value, "0") != 0;
+        return strcmp(value, "1") == 0;
     }();
     return enabled;
 }

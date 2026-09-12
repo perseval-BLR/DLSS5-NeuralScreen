@@ -193,6 +193,10 @@ def apply_menu_action(st, action: tuple) -> None:
         # so the toggle goes through a worker restart (pipeline.apply_spout
         # owns the whole path, including the config write).
         pipeline.apply_spout(st, not bool(st.cfg.get("spout", False)))
+    elif kind == "toggle" and action[1] == "hdr":
+        # HDR compatibility: NS_HDR is read once per worker process too,
+        # and it decides the capture format, so this is a restart as well.
+        pipeline.apply_hdr(st, not bool(st.cfg.get("hdr", False)))
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])

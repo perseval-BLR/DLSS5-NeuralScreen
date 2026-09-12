@@ -354,6 +354,9 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # The Spout2 bridge choice must survive a restart: the worker
         # reads NS_SPOUT at startup, and main sets it from this flag.
         "spout": bool(cfg.get("spout", False)),
+        # HDR compatibility, the same hand-off: the worker reads NS_HDR at
+        # startup and main sets it from this flag. Experimental, off.
+        "hdr": bool(cfg.get("hdr", False)),
         # Which card runs the network and the capture. An index, as
         # DXGI enumerates adapters - the same number the worker takes
         # in NS_GPU and prints in its "[host] adapter N" lines.
@@ -568,6 +571,7 @@ def menu_payload(st) -> dict:
         "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "spout": bool(st.cfg.get("spout", False)),
+        "hdr": bool(st.cfg.get("hdr", False)),
         "skip_static": bool(st.cfg.get("skip_static", True)),
         # Is the network idling on an unchanged screen right now? The
         # worker says so in its log; without this the menu shows a

@@ -37,7 +37,7 @@ STATE = {
     "theme": "light", "lang": "en",
     "gpu_text": "RTX 5070 Ti · Blackwell", "gpu_ok": True,
     "window_mode": False,
-    "rec_indicator": True, "spout": False,
+    "rec_indicator": True, "spout": False, "hdr": False,
     "windows": ["1A2B3C: Notepad", "4D5E6F: Chrome - YouTube"],
     "window_current": "1A2B3C: Notepad",
 }
@@ -157,8 +157,9 @@ def main() -> int:
         out = click(menu, hk)
         if out != [("capture", hk_cmd)]:
             failures.append(f"hotkey row {hk_cmd}: expected capture, got {out}")
-    # The RECORDING section: both toggles report their own key.
-    for tg_key in ("spout", "rec_indicator"):
+    # The switches on the settings page: each reports its own key. Two
+    # of the three restart the worker when they fire (spout, hdr).
+    for tg_key in ("spout", "rec_indicator", "hdr"):
         tg = find(menu, "toggle", tg_key)
         if tg is None:
             failures.append(f"no {tg_key} toggle on the settings page")

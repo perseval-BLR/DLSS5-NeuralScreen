@@ -533,6 +533,34 @@ def apply_spout(st, enabled: bool) -> None:
         "Spout2 output ON" if enabled else "Spout2 output OFF"))
 
 
+def apply_hdr(st, enabled: bool) -> None:
+    """Toggle HDR compatibility: the worker must be restarted.
+
+    HdrEnabled() is read once per worker process, and the whole chain
+    hangs off it: DuplicateOutput1 with an FP16 format list instead of
+    DuplicateOutput, a WGC pool in R16G16B16A16Float instead of BGRA, an
+    scRGB swap chain instead of an 8-bit one. None of that can be changed
+    under a running capture, so the switch takes the same road as the
+    Spout bridge: teardown, set the environment, rebuild.
+
+    The mode is experimental and off by default. On an SDR display it
+    changes nothing that can be seen - the capture comes back 8-bit and
+    the worker says so in its "[hdr] capture=" line.
+    """
+    st.cfg["hdr"] = bool(enabled)
+    os.environ["NS_HDR"] = "1" if enabled else "0"
+    settings_io.save_menu_layout(st)
+    print(f"[main] HDR compatibility: {'on' if enabled else 'off'} - "
+          f"restarting the worker")
+    teardown_pipeline(st)
+    # A fresh worker has said nothing about HDR yet, and the notice is
+    # about what the capture actually did - so let it speak again.
+    st.hdr_alerted = False
+    rebuild_pipeline(st, UI_STRINGS[st.lang].get(
+        "hdr_mode_on" if enabled else "hdr_mode_off",
+        "HDR compatibility ON" if enabled else "HDR compatibility OFF"))
+
+
 def follow_monitor(st) -> None:
     """Rebuild when the desktop resolution changes under a running pipeline.
 

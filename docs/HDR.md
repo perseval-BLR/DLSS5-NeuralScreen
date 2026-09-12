@@ -1,29 +1,33 @@
 # Experimental HDR support
 
-This fork adds HDR desktop/window capture and scRGB presentation to NeuralScreen
-1.6.0. HDR is detected automatically on the captured display. The NVIDIA neural
-runtime still operates on an SDR proxy; this is **not native HDR inference**.
+HDR desktop/window capture and scRGB presentation, contributed in PR #36. HDR is
+detected automatically on the captured display. The NVIDIA neural runtime still
+operates on an SDR proxy; this is **not native HDR inference**.
 
-## Running
+## Turning it on
 
-Build `native/build-host.bat` with Visual Studio 2022 C++ Build Tools and a recent
-Windows SDK. The build produces `native/nvngx.dll` (the executable worker despite
-its extension). Use the Python runtime and `native/nvngx_dlssnr.dll` from the
-official 1.6.0 release, then launch `NeuralScreen.bat` in this checkout.
-Alternatively, close NeuralScreen, back up the release's `native/nvngx.dll`, and
-replace only that worker with the newly built file. The frame protocol is unchanged.
+**SETTINGS → CAPTURE → HDR compatibility.** Off by default: the mode changes the
+capture format, the swap chain format and the colour space of the presentation,
+and each of those is a way for the picture to fail on hardware we cannot test on.
+The switch restarts the worker, which takes about a second.
 
-Keep HDR enabled in Windows. Desktop capture and single-window capture select the
-HDR path automatically. The log should contain both:
+Keep HDR enabled in Windows as well. Desktop capture and single-window capture
+then select the HDR path automatically, and the log contains both:
 
 ```text
 [hdr] capture=FP16 scRGB; neural processing=SDR proxy; export=SDR
 [hdr] presentation=FP16 scRGB
 ```
 
-`NS_HDR=0` at process startup restores the original SDR capture path for comparison
-or rollback. It does not make that original path compatible with HDR. Use the
-original SDR path with Windows HDR off.
+The switch is carried to the worker as `NS_HDR`, read once at process start - the
+same hand-off `NS_SPOUT` uses. `NS_HDR=1` in the environment is what the switch
+writes; anything else, including an unset variable, is the original SDR capture
+path. That path is not HDR-compatible: with Windows HDR on and this switch off,
+the picture is captured in SDR and the menu says so.
+
+If FP16 duplication is refused - no `IDXGIOutput5`, or the driver says no - the
+capture falls back to SDR rather than failing, and the log says which of the two
+happened.
 
 ## Behavior
 
@@ -84,11 +88,17 @@ and evaluated directly in HDR. Strong edits can change highlights and colors.
 
 ```bat
 native\build-host.bat
-native\test-hdr.bat
+runtime\python.exe tests\test_hdr_shaders.py
+runtime\python.exe tests\test_hdr_switch.py
 runtime\python.exe tests\test_bypass.py
 runtime\python.exe tests\test_hdr_capture.py --run
 runtime\python.exe tests\test_hdr_capture.py --desktop
 ```
+
+All four are in `tests\run_tests.py` as well. `test_hdr_shaders.py` is
+`native\test-hdr.bat` under a name the suite picks up; `test_hdr_capture.py`
+with no argument asks Windows whether the primary display is in HDR and runs
+the WGC variant when it is, rather than skipping in silence.
 
 `test-hdr.bat` compiles and executes the **production HLSL** on WARP using GPU
 readback. It covers non-multiple-of-8 dimensions, HDR highlight separation, signed
