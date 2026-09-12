@@ -1,7 +1,7 @@
 """The atomic config write: temp file + fsync + os.replace, and the payload.
 
 Pure unit test - no worker, no window, no program launch. It feeds
-_atomic_write_json() and _menu_layout_payload() from main.py and checks
+_atomic_write_json() and _menu_layout_payload() from settings_io.py and checks
 the contract:
 
 * the helper writes a valid JSON file and replaces the target;
@@ -19,10 +19,10 @@ import tempfile
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent  # the project root
-sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
+sys.path.insert(0, str(BASE))  # the project modules (settings_io.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
-from main import (  # noqa: E402
+from settings_io import (  # noqa: E402
     _atomic_write_json, _menu_layout_payload, load_config, resolve_params,
 )
 
@@ -186,7 +186,7 @@ def main() -> int:
     # 6. Both save sites go through the atomic writer, and the menu-layout
     #    save goes through the payload builder.
     #
-    #    This used to grep main.py for a literal call, because "the closures
+    #    This used to grep settings_io.py for a literal call, because "the closures
     #    are not importable without launching the program". They are plain
     #    functions in settings_io now, so the check calls them and watches
     #    what they do - which is what it wanted to know all along.

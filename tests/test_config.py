@@ -1,12 +1,12 @@
 """The config loader: validation, clamping and profile resolution.
 
 Pure unit test - no worker, no window, no program launch. It feeds
-load_config() and resolve_params() from main.py with crafted configs and
+load_config() and resolve_params() from settings_io.py with crafted configs and
 checks the contract:
 
 * missing required fields raise;
-* an unknown profile raises;
-* work_scale is clamped to 0.25..1.0 (the slider can never ask for less);
+* a stale profile falls back to Natural;
+* work_scale is clamped to 0.1..1.0 (the slider can never ask for less);
 * an unknown lang falls back to the default;
 * resolve_params merges the profile with non-null overrides.
 """
@@ -16,10 +16,10 @@ import tempfile
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent  # the project root
-sys.path.insert(0, str(BASE))  # the project modules (main.py, display.py, ...)
+sys.path.insert(0, str(BASE))  # the project modules (settings_io.py, display.py, ...)
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # tests/ (autocheck)
 
-from main import DEFAULT_LANG, PROFILES, WORK_SCALE_MAX, WORK_SCALE_MIN, load_config, resolve_params  # noqa: E402
+from settings_io import DEFAULT_LANG, PROFILES, WORK_SCALE_MAX, WORK_SCALE_MIN, load_config, resolve_params  # noqa: E402
 
 GOOD = {
     "monitor": 0, "width": 3840, "height": 2160, "fullscreen": True,
