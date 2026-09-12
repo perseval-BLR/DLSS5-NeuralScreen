@@ -285,15 +285,22 @@ def release_notes_short():
         encoding="utf-8", errors="replace")
     if r.returncode != 0:
         return False, f"gh: {r.stderr.strip()[:100]}"
-    en_part = r.stdout.split("---")[0]
-    # 3000, not 2500: the guard exists so release notes do not drift into a
-    # manual, and 1.6.1 is the first release that had to describe a
-    # multi-issue fix set - the second monitor, the idle skip, a GPU that
-    # locked the program on itself. Raised deliberately, with the same
-    # purpose (user, 12.09: "the main thing is to describe it in detail").
-    if len(en_part) > 3000:
-        return False, f"the EN part is {len(en_part)} characters - too long"
-    return True, f"the EN part is {len(en_part)} characters"
+    body = r.stdout
+    # The WHOLE body, not the part before the first "---". That split dates
+    # from when the notes were written in two languages and the rule "one
+    # language" (user, 12.09) retired it - and it had quietly made this
+    # check vacuous: a markdown table starts with a |---| row, so the split
+    # fired on the first table and measured 505 characters of a 4639
+    # character body.
+    #
+    # 5000, and the purpose is unchanged: the notes must not drift into a
+    # manual. 1.7.0 is the first release to carry a feature, an
+    # architectural change and twenty fixes at once, and the user asked for
+    # the fixes to be spelled out ("the things that were fixed - describe
+    # them, definitely").
+    if len(body) > 5000:
+        return False, f"the release body is {len(body)} characters - too long"
+    return True, f"the release body is {len(body)} characters"
 
 
 # --- driving the running program (the GUI and smoke checks share this) ---
