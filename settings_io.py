@@ -163,7 +163,7 @@ def _valid_preset_value(key: str, value) -> bool:
     """
     try:
         value = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
     lo = SKIN_MIN if key == "skin_structure" else PARAM_MIN
     return lo <= value <= PARAM_MAX
@@ -221,11 +221,15 @@ def load_config(path: Path) -> dict:
     """Load and validate config.json."""
     with open(path, "r", encoding="utf-8") as fh:
         cfg = json.load(fh)
+    if not isinstance(cfg, dict):
+        raise ValueError("config.json: root must be an object")
     required = {"monitor", "width", "height", "fullscreen", "warmup", "profile",
                 "intensity", "local_tone", "local_structure", "skin_structure"}
     missing = required - set(cfg)
     if missing:
         raise ValueError(f"config.json: missing fields: {sorted(missing)}")
+    if not isinstance(cfg["profile"], str):
+        raise ValueError("config.json: field profile must be a string")
     if cfg["profile"] not in PROFILES:
         # A user preset name, or a stale reference to a deleted preset.
         # A stale reference must not take the program down - fall back to
@@ -235,9 +239,14 @@ def load_config(path: Path) -> dict:
                   f"falling back to 'Natural'", file=sys.stderr)
             cfg["profile"] = "Natural"
     for key in ("width", "height", "warmup"):
-        if not isinstance(cfg[key], int) or cfg[key] <= 0:
+        if isinstance(cfg[key], bool) or not isinstance(cfg[key], int) or cfg[key] <= 0:
             raise ValueError(f"config.json: field {key} must be a positive integer")
-    # work_scale: 0.25..1.0 - the NGX processing resolution relative to the output
+    for key in ("intensity", "local_tone", "local_structure", "skin_structure"):
+        if (cfg[key] is not None
+                and (isinstance(cfg[key], bool)
+                     or not _valid_preset_value(key, cfg[key]))):
+            raise ValueError(f"config.json: field {key} must be a finite number in range")
+    # work_scale: 0.1..1.0 - the NGX processing resolution relative to the output
     scale = float(cfg.get("work_scale", 1.0))
     cfg["work_scale"] = min(WORK_SCALE_MAX, max(WORK_SCALE_MIN, scale))
     # lang: the language of the HUD/alerts/menu (en/ru, DEFAULT_LANG by default)
