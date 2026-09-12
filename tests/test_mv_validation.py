@@ -60,9 +60,13 @@ def main() -> int:
     if mag.max() < 1.0:
         failures.append(f"a 4 px shift was zeroed: max {mag.max():.3f}")
 
-    # 3. A sub-floor shift (0.2 px in flow space): zeroed.
+    # 3. A sub-floor shift in WORK pixels, independent of the flow grid.
     g3 = TemporalGuideGenerator(W, H, flow_width=FW, emit_small=True)
     g3.process(_frame(0))
+    from types import SimpleNamespace
+    noise = np.zeros((FH, FW, 2), np.float32)
+    noise[..., 0] = .1 * FW / W
+    g3.dis = SimpleNamespace(calc=lambda *_: noise)
     out3 = g3.process(_frame(1))  # 1 px at 1280 wide = 0.25 px in flow space
     mag3 = np.hypot(out3.motion[..., 0], out3.motion[..., 1])
     if mag3.max() > 0.5:

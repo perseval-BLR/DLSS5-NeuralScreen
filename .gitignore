@@ -52,3 +52,4 @@ _render_*.py
 _mockup_*.py
 test_bake_menu.py
 requirements.txt
+native/nvngx_dlss.dll
