@@ -435,6 +435,53 @@ def refresh_gpu_ok(st) -> None:
                 "This GPU cannot run the neural pass - the picture stays unprocessed"))
 
 
+def warn_hdr(st) -> None:
+    """Say once that the captured display is in HDR.
+
+    The worker asks the OUTPUT it duplicates for its colour space, so this
+    is about the screen being processed rather than about some monitor in
+    the registry. The network is trained on SDR and an HDR desktop comes
+    out looking blown out with sliders that appear to do nothing - a report
+    we have had (issue #27) and a notice a user asked for (issue #33).
+    """
+    if st.hdr_alerted:
+        return
+    for line in reversed(st.worker_logs[-200:]):
+        if "HDR IS ON for the captured display" in line:
+            st.hdr_alerted = True
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "hdr_on",
+                "HDR is on for this display - the picture will look wrong. "
+                "Turn HDR off for it."), duration=6.0)
+            print("[main] HDR is on for the captured display - the network "
+                  "is trained on SDR")
+            return
+
+
+def _gpu_label(index) -> str:
+    """"<dxgi index>: <name>" for the picker - the card that will really run.
+
+    The value in the config is a DXGI index and it can name something that
+    is not an NVIDIA card (a hybrid laptop's integrated GPU sits at 0, which
+    is the shipped default) or nothing at all. The worker treats the index
+    as a wish and falls back to the first usable card; the menu has to agree
+    with it, or the picker shows an empty field on the machines where the
+    setting matters most (issue #34).
+    """
+    adapters = list_adapters()
+    if not adapters:
+        return ""
+    try:
+        wanted = int(index)
+    except (TypeError, ValueError):
+        wanted = None
+    for i, name in adapters:
+        if i == wanted:
+            return f"{i}: {name}"
+    i, name = adapters[0]
+    return f"{i}: {name}"
+
+
 def _worker_idle(st) -> bool:
     """Is the network idling on an unchanged screen right now?
 
@@ -506,8 +553,13 @@ def menu_payload(st) -> dict:
         # reads as "it does not work" (user, 12.09).
         "idle": _worker_idle(st),
         "gpus": [f"{i}: {name}" for i, name in list_adapters()],
-        "gpu": next((f"{i}: {name}" for i, name in list_adapters()
-                     if i == int(st.cfg.get("gpu", 0))), ""),
+        # The saved index may name no NVIDIA card at all. On a hybrid laptop
+        # adapter 0 is the integrated GPU and "gpu": 0 is what the program
+        # ships with, so the picker came up EMPTY on exactly the machines
+        # where the setting matters most (issue #34). The worker already
+        # falls back to the first usable card in that case - the menu says
+        # the same thing now instead of showing a blank.
+        "gpu": _gpu_label(st.cfg.get("gpu")),
         "open_on_start": st.startup_menu,
         "autostart": _autostart_enabled(),
         "split": st.split_pos,

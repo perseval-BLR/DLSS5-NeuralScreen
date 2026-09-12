@@ -479,6 +479,7 @@ def bring_up(st) -> None:
     # is an AttributeError, and the program leaves through main()'s
     # top-level handler (audit F2).
     st.mon_resize = None
+    st.hdr_alerted = False       # the HDR notice is shown once per session
     st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
     st.gray_active = False       # guides take luminance from the worker's gray channel
     st.pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels

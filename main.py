@@ -306,6 +306,7 @@ class _Pipeline:
         "gpu_text",
         "warmup",
         "effective_warmup",
+        "hdr_alerted",
     )
 
 
@@ -517,6 +518,12 @@ def main() -> int:
             # something was added to this loop.
             if st.frame_index % 30 == 0:
                 settings_io.refresh_gpu_ok(st)
+                # And whether the display being captured is in HDR. The
+                # network is trained on SDR: on an HDR desktop the result
+                # reads as "everything is too bright and the sliders do
+                # nothing", which is a report we have had (issue #27) and a
+                # notice a user asked for (issue #33). Once per session.
+                settings_io.warn_hdr(st)
 
             # --- Input for the overlay menu --------------------------
             # Events are read only while the menu is open: the rest of the

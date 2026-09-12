@@ -32,6 +32,7 @@
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <dxgi1_6.h>   // IDXGIOutput6: the captured display's colour space (HDR)
 #include <d3dcompiler.h>
 #include "spout_bridge.h"
 #include <cstdio>
@@ -909,6 +910,21 @@ static int SelectedAdapterIndex()
 }
 
 
+//: The adapter the network ACTUALLY runs on, as a DXGI index. NS_GPU is a
+//: wish: an index that is not a usable NVIDIA adapter falls back to the
+//: first one that is. The capture and the duplication have to land on the
+//: same card - the frame crosses to D3D12 through a shared handle, which
+//: does not cross adapters - so they ask this rather than NS_GPU, which is
+//: what they used to do (issue #34: a hybrid laptop ran the network on the
+//: 4090 and the capture on the iGPU, and showed nothing).
+static int g_adapter_index = -1;
+
+static int ActiveAdapterIndex()
+{
+    return g_adapter_index >= 0 ? g_adapter_index : SelectedAdapterIndex();
+}
+
+
 static bool InitDisguise()
 {
     // Pure D3D12 setup. No window, swapchain, ReShade, RenoDX, or DLSS carrier.
@@ -929,6 +945,8 @@ static bool InitDisguise()
     const int want = SelectedAdapterIndex();
     IDXGIAdapter1 *nvidia = nullptr;
     IDXGIAdapter1 *chosen = nullptr;
+    int nvidia_idx = -1;
+    int chosen_idx = -1;
     for (UINT i = 0; ; ++i)
     {
         IDXGIAdapter1 *candidate = nullptr;
@@ -939,8 +957,9 @@ static bool InitDisguise()
         const bool usable = desc.VendorId == 0x10DE &&
                             !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE);
         if (want >= 0 && static_cast<int>(i) == want && usable)
-        { chosen = candidate; continue; }
-        if (nvidia == nullptr && usable) { nvidia = candidate; continue; }
+        { chosen = candidate; chosen_idx = static_cast<int>(i); continue; }
+        if (nvidia == nullptr && usable)
+        { nvidia = candidate; nvidia_idx = static_cast<int>(i); continue; }
         candidate->Release();
     }
     if (want >= 0 && chosen == nullptr)
@@ -950,9 +969,15 @@ static bool InitDisguise()
     {
         if (nvidia != nullptr) nvidia->Release();
         nvidia = chosen;
+        nvidia_idx = chosen_idx;
         Log("[host] adapter %d selected by NS_GPU", want);
     }
     if (nvidia == nullptr) { factory->Release(); Log("[host] no NVIDIA adapter found"); return false; }
+    // From here on this is THE adapter: the capture and the duplication read
+    // it instead of NS_GPU, so a wish that could not be granted cannot split
+    // the pipeline across two cards (issue #34).
+    g_adapter_index = nvidia_idx;
+    Log("[host] adapter %d runs the network and the capture", nvidia_idx);
 
     hr = create_device(nvidia, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
                        reinterpret_cast<void **>(&h.dev));
@@ -3249,14 +3274,18 @@ static bool EnsureCaptureDevice()
     IDXGIFactory1 *factory = nullptr;
     if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&factory)))
     { Log("[cap] DXGI factory failed"); return false; }
-    // Adapter 0 unless NS_GPU says otherwise: the display normally hangs off
-    // the first adapter, and the capture has to be on the same card as the
-    // network (the frame crosses to D3D12 through a shared handle).
-    const int want = SelectedAdapterIndex();
+    // The adapter the network landed on - NOT the raw NS_GPU. The capture has
+    // to be on the same card as the network, because the frame crosses to
+    // D3D12 through a shared handle and a shared handle does not cross
+    // adapters. Reading NS_GPU here meant that an index the network had
+    // REJECTED (a hybrid laptop's iGPU at index 0, which is also the shipped
+    // default) still got the capture: the network on the 4090, the capture
+    // on the integrated chip, and nothing on screen (issue #34).
+    const int want = ActiveAdapterIndex();
     IDXGIAdapter1 *adapter = nullptr;
     if (FAILED(factory->EnumAdapters1(want >= 0 ? (UINT)want : 0, &adapter)))
     { Log("[cap] no adapter %d", want >= 0 ? want : 0); factory->Release(); return false; }
-    if (want >= 0) Log("[cap] adapter %d selected by NS_GPU", want);
+    if (want >= 0) Log("[cap] adapter %d, the one the network runs on", want);
     D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0;
     const HRESULT hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                                          D3D11_CREATE_DEVICE_BGRA_SUPPORT, &fl, 1,
@@ -3287,7 +3316,10 @@ static IDXGIOutput *EnumCaptureOutput(IDXGIAdapter1 *adapter)
         for (UINT i = 0; ; ++i)
         {
             IDXGIOutput *candidate = nullptr;
-            if (adapter->EnumOutputs(i, &candidate) == DXGI_ERROR_NOT_FOUND) break;
+            // Any failure ends the search, not just NOT_FOUND: on another
+            // error EnumOutputs leaves the pointer null and the GetDesc
+            // below would dereference it (audit, cpp-worker).
+            if (FAILED(adapter->EnumOutputs(i, &candidate)) || candidate == nullptr) break;
             DXGI_OUTPUT_DESC desc = {};
             candidate->GetDesc(&desc);
             const bool match = wcscmp(desc.DeviceName, want) == 0;
@@ -3316,12 +3348,30 @@ static bool OpenDda(UINT w, UINT hgt)
     if (FAILED(hr)) { Log("[dda] factory failed 0x%08X", hr); return false; }
     // Same adapter as the capture device, or DuplicateOutput would be asked
     // to duplicate an output that belongs to another card.
-    const int want_dda = SelectedAdapterIndex();
+    const int want_dda = ActiveAdapterIndex();
     IDXGIAdapter1 *adapter = nullptr;
     if (FAILED(factory->EnumAdapters1(want_dda >= 0 ? (UINT)want_dda : 0, &adapter)))
     { Log("[dda] no adapter %d", want_dda >= 0 ? want_dda : 0); factory->Release(); return false; }
     IDXGIOutput *output = EnumCaptureOutput(adapter);
     if (output == nullptr) { Log("[dda] no output"); adapter->Release(); factory->Release(); return false; }
+    // Is the captured display in HDR? The network is trained on SDR and the
+    // result on an HDR desktop reads as "everything is too bright, and the
+    // sliders do nothing" (issue #27 territory; a user asked for this notice
+    // in issue #33). Asked of the OUTPUT being captured, not of the registry:
+    // the registry answer is per monitor and says nothing about which one is
+    // on screen here.
+    {
+        IDXGIOutput6 *out6 = nullptr;
+        if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), (void **)&out6)))
+        {
+            DXGI_OUTPUT_DESC1 d1 = {};
+            if (SUCCEEDED(out6->GetDesc1(&d1)))
+                Log("[dda] output colour space %d%s", (int)d1.ColorSpace,
+                    d1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                        ? " - HDR IS ON for the captured display" : "");
+            out6->Release();
+        }
+    }
     IDXGIOutput1 *output1 = nullptr;
     if (FAILED(output->QueryInterface(__uuidof(IDXGIOutput1), (void **)&output1)))
     { Log("[dda] no Output1"); output->Release(); adapter->Release(); factory->Release(); return false; }
