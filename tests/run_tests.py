@@ -100,6 +100,7 @@ ABOUT = {
     "test_residual_split.py": "residual and the wipe compose in the same frame",
     "test_resize.py": "the on-the-fly resize reconfigures the feature without a restart",
     "test_reveal.py": "the present window stays hidden until the first Present",
+    "test_focus_z_order.py": "focused target stays below the worker picture and HUD",
     "test_split.py": "the before/after wipe leaves the left side untouched",
     "test_taskbar_window.py": "the taskbar button exists, opens the menu, closes cleanly",
     "test_ui_buttons.py": "every control on every page fires the right command",
