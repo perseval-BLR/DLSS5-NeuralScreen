@@ -52,10 +52,26 @@ def main() -> int:
     if not _hard_failure(logs):
         failures.append("0xBAD00001 in the tail must win over transient lines")
 
-    # 7. The tail window: only the last 40 lines count.
+    # 7. The verdict is not buried by later noise. It used to be: only the
+    #    last 40 lines counted, and the worker prints this ONCE on frame 0
+    #    and then keeps logging - so any forty later diagnostics turned a
+    #    permanently broken card back into a "transient" one and the revive
+    #    loop started again (audit, 12.09). Changed on purpose.
     logs = ["0xBAD00001"] + ["transient"] * 50
+    if not _hard_failure(logs):
+        failures.append("0xBAD00001 must survive later diagnostics - it is "
+                        "printed once and never repeated")
+
+    # 8. ...but a LATER success wins. NGX is reinitialised in place after
+    #    repeated failures, and if the feature came up after the refusal the
+    #    card is not broken. This is the one thing the tail window got right,
+    #    and reading newest-first keeps it.
+    logs = ["[pure] direct feature 18 create failed 0xBAD00001",
+            "[host] NGX reinitialised",
+            "[pure] direct feature 18 ready: 1920x1080"]
     if _hard_failure(logs):
-        failures.append("0xBAD00001 older than the 40-line tail must not count")
+        failures.append("a feature that came up AFTER the refusal must not "
+                        "count as a hard failure")
 
     print("=" * 60)
     if failures:

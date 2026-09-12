@@ -45,6 +45,32 @@ def fresh_worker():
     return True, f"{dll.stat().st_size} bytes, the hook is there, fresh"
 
 
+def personal_config_keys():
+    """Every config key the program itself can write over a user's session.
+
+    The archive's config.json comes from git HEAD, and this is what catches
+    "a maintainer committed a personal value". It used to be a hand-written
+    tuple, and it stopped growing: skip_static, gpu, screenshot_dir,
+    rec_indicator and monitor were all written by _menu_layout_payload and
+    none of them was ever compared. Adding those five would have restarted
+    the same clock, so the set is asked of the payload itself - a key the
+    menu learns to save is covered the day it is added.
+
+    "hotkeys" is included by hand because it is saved on its own path, not
+    through the menu payload.
+    """
+    import settings_io
+    payload = settings_io._menu_layout_payload(
+        {"profile": "Natural", "gpu": 0, "spout": False, "skip_static": True,
+         "rec_indicator": True, "screenshot_dir": "", "presets": {}},
+        {"intensity": 1.0, "local_tone": 1.0, "local_structure": 1.0,
+         "skin_structure": -1.0},
+        0, "en", 0.65, 0.0, True, False,
+        type("M", (), {"user_scale": 1.0, "user_height": None,
+                       "state": {"theme": "light"}, "offset": [0, 0]})())
+    return sorted(set(payload) | {"hotkeys"})
+
+
 def zip_integrity():
     zpath = ROOT / "neuralscreen-v1.6.1-full.zip"
     if not zpath.is_file():
@@ -118,10 +144,7 @@ def zip_integrity():
         except Exception:
             head_cfg = {}
         leak = []
-        for key in ("menu_offset", "menu_scale", "theme", "lang",
-                    "open_menu_on_start", "split", "menu_height",
-                    "hotkeys", "work_scale", "nr_small", "record_audio",
-                    "spout"):
+        for key in personal_config_keys():
             if key not in head_cfg:
                 continue
             if cfg.get(key) != head_cfg[key]:

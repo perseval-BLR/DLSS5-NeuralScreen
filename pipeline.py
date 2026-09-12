@@ -40,7 +40,7 @@ from i18n import STRINGS as UI_STRINGS
 from paths import NATIVE_DIR, WORKER_EXE
 from protocol import (HEADER_FMT, VIDEO_MAGIC, SharedFrameBuffer,
                       WorkerReader, _negotiate_shm, send_dda, send_resize)
-from settings_io import _work_size, hotkey_labels
+from settings_io import _work_size, hotkey_labels, nr_verdict
 from winapi import window_frame_rect
 
 
@@ -643,9 +643,9 @@ GPU_VERDICT_TIMEOUT = 5.0
 def gpu_came_up(st, timeout: float = GPU_VERDICT_TIMEOUT) -> bool:
     """Did the network come up on the card the worker was just started on?
 
-    The worker says so itself: "feature 18 ready" against "feature 18
-    create failed" / "NGX unavailable" - the same lines refresh_gpu_ok
-    reads - and a process that exited says it without words.
+    The worker says so itself, and the lines are named in exactly one
+    place - settings_io.nr_verdict, which the menu's own verdict reads too.
+    A process that exited says it without words.
 
     Silence is NOT failure. A card that takes its time still works, and
     turning a slow start into an automatic revert would be worse than the
@@ -656,13 +656,9 @@ def gpu_came_up(st, timeout: float = GPU_VERDICT_TIMEOUT) -> bool:
         worker = getattr(st, "worker", None)
         if worker is not None and worker.poll() is not None:
             return False
-        for line in reversed(st.worker_logs[-120:]):
-            if "feature 18 ready" in line:
-                return True
-            if ("feature 18 create failed" in line
-                    or "NGX unavailable" in line
-                    or "no NVIDIA adapter found" in line):
-                return False
+        verdict = nr_verdict(reversed(st.worker_logs[-120:]))
+        if verdict is not None:
+            return verdict
         time.sleep(0.1)
     return True
 

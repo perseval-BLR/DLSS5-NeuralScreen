@@ -188,8 +188,30 @@ def _hard_failure(logs: list[str]) -> bool:
     ever clear it, and retrying only spins the restart loop. Transient
     failures (0x00000000 no-frame, timeouts, driver hiccups) can clear
     on their own - those are the ones worth an automatic revive.
+
+    The whole log is scanned, newest line first, and the first decisive one
+    wins. It used to be the last forty lines: the worker says this once, on
+    frame 0, and then keeps running and keeps logging, so forty later
+    diagnostics buried the verdict and a permanently broken card started
+    reading as a transient failure - the restart storm this classifier
+    exists to prevent (audit).
+
+    Reading newest-first is what keeps the tail window's one good property:
+    if the feature DID come up after the refusal (NGX is reinitialised in
+    place after repeated failures), the success is the newer line and it
+    wins. An unconditional "0xBAD00001 anywhere" would have lost that.
+
+    The list is per worker process - a restart hands out a fresh one - and
+    capped at 2000 lines, so "the whole log" is bounded and cannot carry a
+    verdict across a restart that might have cleared it. This runs when a
+    worker dies, not per frame.
     """
-    return any("0xBAD00001" in line for line in logs[-40:])
+    for line in reversed(logs):
+        if "0xBAD00001" in line:
+            return True
+        if "feature 18 ready" in line:
+            return False
+    return False
 
 
 

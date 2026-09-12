@@ -375,6 +375,35 @@ def work_scale_cap(st) -> float:
     return max(0.35, int(raw / 0.05) * 0.05)
 
 
+#: What the worker says about the neural pass, in its own words. ONE set,
+#: read by both places that ask: settings_io.refresh_gpu_ok (which drives
+#: the dot in the menu and the alert) and pipeline.gpu_came_up (which
+#: decides whether a GPU switch is kept or reverted). They used to carry a
+#: token list each, and the lists had already drifted apart - a rename in
+#: the worker would have blinded one of them and left the other working,
+#: which is the worst shape for a bug like this to take.
+NR_VERDICT_OK = ("feature 18 ready",)
+NR_VERDICT_FAIL = ("feature 18 create failed",   # [pure], the direct refusal
+                   "NR feature unavailable",     # [video], SAFE PASSTHROUGH
+                   "NGX unavailable",            # [host], nothing came up
+                   "no NVIDIA adapter found")    # [host], nothing to run on
+
+
+def nr_verdict(lines):
+    """True / False / None from the worker's log lines, NEWEST FIRST.
+
+    None means the worker has not said yet - which is not a failure. A card
+    that takes its time still works, and treating silence as a refusal
+    would be worse than the bug the callers guard against.
+    """
+    for line in lines:
+        if any(token in line for token in NR_VERDICT_OK):
+            return True
+        if any(token in line for token in NR_VERDICT_FAIL):
+            return False
+    return None
+
+
 def refresh_gpu_ok(st) -> None:
     """Whether NR works - from the worker's answer, not the architecture.
 
@@ -385,27 +414,49 @@ def refresh_gpu_ok(st) -> None:
     """
     if st.gpu_ok is not None:
         return
-    for line in reversed(st.worker_logs[-80:]):
-        if "feature 18 ready" in line:
-            st.gpu_ok = True
-            return
-        # The real refusal line from the worker is "[pure] direct
-        # feature 18 create failed"; "Unsupported GPU architecture"
-        # lives inside nvngx_dlssnr.dll and never reaches its stderr.
-        # SAFE PASSTHROUGH (the worker stays alive and shows the raw
-        # frame) is the same verdict: no feature, no NR.
-        if "feature 18 create failed" in line or "NR feature unavailable" in line:
-            st.gpu_ok = False
-            # The red dot alone was not enough: in issue #29 the user picked
-            # a card that cannot run the pass and nothing on screen said so.
-            # One alert per verdict - a fresh worker clears gpu_ok and the
-            # alert can speak again.
-            if not st.gpu_alerted:
-                st.gpu_alerted = True
-                st.display.alert(UI_STRINGS[st.lang].get(
-                    "gpu_nr_fail",
-                    "This GPU cannot run the neural pass - the picture stays unprocessed"))
-            return
+    # The refusal lines are named once, in nr_verdict: the real one from the
+    # worker is "[pure] direct feature 18 create failed" ("Unsupported GPU
+    # architecture" lives inside nvngx_dlssnr.dll and never reaches its
+    # stderr), and SAFE PASSTHROUGH is the same verdict - the worker stays
+    # alive and shows the raw frame, so: no feature, no NR.
+    verdict = nr_verdict(reversed(st.worker_logs[-80:]))
+    if verdict is None:
+        return
+    st.gpu_ok = verdict
+    if not verdict:
+        # The red dot alone was not enough: in issue #29 the user picked a
+        # card that cannot run the pass and nothing on screen said so. One
+        # alert per verdict - a fresh worker clears gpu_ok and the alert can
+        # speak again.
+        if not st.gpu_alerted:
+            st.gpu_alerted = True
+            st.display.alert(UI_STRINGS[st.lang].get(
+                "gpu_nr_fail",
+                "This GPU cannot run the neural pass - the picture stays unprocessed"))
+
+
+def _worker_idle(st) -> bool:
+    """Is the network idling on an unchanged screen right now?
+
+    The worker announces a stretch ONCE - "[skip] no new frame" - and
+    announces its end when the screen moves again. So the state is the
+    LATEST of those two markers, not the presence of the first one in the
+    last few lines: the menu used to look at worker_logs[-3:], and one
+    unrelated line was enough to push the single announcement out and turn
+    the readout back into a frame rate while nothing was being processed
+    (audit).
+
+    The window is bounded because this runs on every frame the menu is open:
+    during a stretch the worker is otherwise quiet, so 200 lines is a long
+    way past the marker, and a scan of the whole 2000-line buffer sixty
+    times a second is not worth the difference.
+    """
+    for line in reversed(st.worker_logs[-200:]):
+        if "[skip] no new frame" in line:
+            return True
+        if "[skip] the screen changed" in line:
+            return False
+    return False
 
 
 def menu_payload(st) -> dict:
@@ -453,8 +504,7 @@ def menu_payload(st) -> dict:
         # worker says so in its log; without this the menu shows a
         # healthy FPS while nothing is being processed, and the skip
         # reads as "it does not work" (user, 12.09).
-        "idle": any("[skip] no new frame" in line
-                    for line in st.worker_logs[-3:]),
+        "idle": _worker_idle(st),
         "gpus": [f"{i}: {name}" for i, name in list_adapters()],
         "gpu": next((f"{i}: {name}" for i, name in list_adapters()
                      if i == int(st.cfg.get("gpu", 0))), ""),
