@@ -177,6 +177,8 @@ class OverlayMenu:
             "nr_small": False,
             "dlss_sr_scale": .65,
             "dlss_sr": False,
+            "frame_generation": False,
+            "frame_multiplier": 2,
             "screen_size": "",
             "profile": "",
             "profiles": [],
@@ -737,6 +739,14 @@ class OverlayMenu:
             # 0.65, and at 1:1 on text, a game scene and photographic content
             # the difference is not visible. The residual is what makes that
             # true: without it the same setting is visibly soft.
+            fg = bool(self.state.get("frame_generation"))
+            toggle("frame_generation", s["frame_generation"], fg)
+            if fg:
+                multiplier = int(self.state.get("frame_multiplier", 2))
+                slider("frame_multiplier", 2, 4, multiplier, s["frame_multiplier"],
+                       value_text=f"×{multiplier}", ends=("×2", "×4"))
+
+
             boost = bool(self.state.get("nr_small"))
             toggle("boost", s["boost"], boost, hint=s["boost_hint"] + "\n" + s["nr_min_hint"])
 
@@ -1341,6 +1351,13 @@ class OverlayMenu:
             return []
         frac = min(1.0, max(0.0, (mouse_x - track.x) / track.w))
         value = item.lo + frac * (item.hi - item.lo)
+        if item.key == "frame_multiplier":
+            value = min(4, max(2, int(value + 0.5)))
+            if value == item.value:
+                return []
+            item.value = value
+            self.state["frame_multiplier"] = value
+            return [("frame_multiplier", value)]
         value = round(round(value / 0.05) * 0.05, 2)
         if abs(value - item.value) < 1e-9:
             return []

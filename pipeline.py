@@ -55,7 +55,7 @@ from winapi import window_frame_rect
 #: Always let through: the pipeline diagnostics. NS_PHASE=1 adds the
 #: per-frame profiler lines ([phase]/[pw]) on top of these.
 _LOG_ALWAYS = ("[host]", "[pure]", "[arch]", "[cap]", "[dda]", "[present]",
-               "[spout]", "[wgc]", "[video]", "[skip]", "[hdr]", "[sr]")
+               "[spout]", "[wgc]", "[video]", "[skip]", "[hdr]", "[sr]", "[fg]")
 #: [video] lines that are a heartbeat rather than a diagnostic: the "delivered
 #: frame N" line is printed every 30 frames and would bury the log.
 _LOG_SKIP = ("delivered frame",)

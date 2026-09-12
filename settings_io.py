@@ -264,6 +264,11 @@ def load_config(path: Path) -> dict:
         sr_scale = .65
     cfg["dlss_sr_scale"] = min(1.0, max(.25, sr_scale))
     cfg["dlss_sr"] = bool(cfg.get("dlss_sr", False))
+    cfg["frame_generation"] = bool(cfg.get("frame_generation", False))
+    try:
+        cfg["frame_multiplier"] = min(4, max(2, int(cfg.get("frame_multiplier", 2))))
+    except (ValueError, TypeError, OverflowError):
+        cfg["frame_multiplier"] = 2
     return cfg
 
 
@@ -381,6 +386,8 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         "skip_static": bool(cfg.get("skip_static", True)),
         "dlss_sr_scale": float(cfg.get("dlss_sr_scale", .65)),
         "dlss_sr": bool(cfg.get("dlss_sr", False)),
+        "frame_generation": bool(cfg.get("frame_generation", False)),
+        "frame_multiplier": min(4, max(2, int(cfg.get("frame_multiplier", 2)))),
         # The user's saved presets. Without this key "Save preset" wrote
         # everything EXCEPT the preset: the menu said "Preset saved", the
         # save really did succeed, and the preset was gone on the next
@@ -601,6 +608,8 @@ def menu_payload(st) -> dict:
         "skip_static": bool(st.cfg.get("skip_static", True)),
         "dlss_sr_scale": float(st.cfg.get("dlss_sr_scale", .65)),
         "dlss_sr": bool(st.cfg.get("dlss_sr", False)),
+        "frame_generation": bool(st.cfg.get("frame_generation", False)),
+        "frame_multiplier": min(4, max(2, int(st.cfg.get("frame_multiplier", 2)))),
         # Is the network idling on an unchanged screen right now? The
         # worker says so in its log; without this the menu shows a
         # healthy FPS while nothing is being processed, and the skip

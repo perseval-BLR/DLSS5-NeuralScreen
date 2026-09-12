@@ -86,6 +86,23 @@ int main()
         dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},result.Get(),&comp);
         auto unchanged=read(result.Get(),8);
         check(memcmp(unchanged.data(),raw.data(),unchanged.size())==0,"zero edit must preserve original FP16 bit for bit");
+        auto pqResult=texture(DXGI_FORMAT_R10G10B10A2_UNORM,nullptr,4,true);
+        comp.hdr=3;
+        dispatch(kHdrCompositeHlsl,{native.Get(),proxy.Get(),proxy.Get()},pqResult.Get(),&comp);
+        auto pqBytes=read(pqResult.Get(),4);
+        for(UINT i=0;i<7;++i) {
+            const UINT packed=((const UINT*)pqBytes.data())[i];
+            const double linear=double(XMConvertHalfToFloat(raw[i*4]))*.008;
+            const double q=std::pow(linear,2610.0/16384.0);
+            const double expected=std::pow((3424.0/4096.0+(2413.0/128.0)*q)/
+                (1+(2392.0/128.0)*q),2523.0/32.0);
+            for(UINT c=0;c<3;++c)
+                check(std::abs(double((packed>>(c*10))&1023)/1023.0-expected)<.0015,
+                      "HDR10 PQ absolute luminance is wrong");
+        }
+        check((((const UINT*)pqBytes.data())[5]&1023) > (((const UINT*)pqBytes.data())[3]&1023),
+              "HDR10 highlights clipped to SDR white");
+        comp.hdr=1;
         auto edits=proxyBytes;
         for(UINT i=0;i<W*H;++i) for(UINT c=0;c<3;++c) edits[i*4+c]=255;
         auto edited=texture(DXGI_FORMAT_R8G8B8A8_UNORM,edits.data(),4);
@@ -118,7 +135,7 @@ int main()
         for(UINT i=0;i<W*H;++i) check(rgba[i*4]==201 && rgba[i*4+1]==93 && rgba[i*4+2]==17 && rgba[i*4+3]==255,"SDR channel regression");
         auto display=QueryHdrDisplay(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY));
         printf("Display probe: HDR=%d, SDR white=%.1f nits\n",display.enabled,display.white*80);
-        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, bypass, wipe, finite edits, SDR output and channel order (WARP)");
+        puts("PASS: HDR10 PQ luminance, HDR shader compilation, highlights, signed gamut, zero-edit identity, bypass, wipe, finite edits, SDR output and channel order (WARP)");
         return 0;
     } catch(const std::exception &e) { fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
 }

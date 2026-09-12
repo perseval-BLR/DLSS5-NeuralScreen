@@ -352,7 +352,7 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
                split: float = 0.0, skip_static: bool = False,
-               prepared: bool = False,
+               frame_generation: bool | None = None, frame_multiplier: int = 2, prepared: bool = False,
                dlss_sr: bool | None = None) -> None:
     """Send a frame to the worker.
 
@@ -381,6 +381,10 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
         flags |= 0x4000 | (0x2000 if dlss_sr else 0)
     if prepared:
         flags |= FRAME_FLAG_PREPARED
+    if frame_generation is not None:
+        # Bits 8-11: enabled, multiplier minus two, explicit UI override.
+        flags |= 0x800 | (0x100 if frame_generation else 0)
+        flags |= (min(4, max(2, int(frame_multiplier))) - 2) << 9
     if split > 0.0:
         # The wipe position rides in the high 16 bits of the same flags field:
         # there is no dedicated field in the header, and widening it for a

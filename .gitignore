@@ -53,3 +53,5 @@ _mockup_*.py
 test_bake_menu.py
 requirements.txt
 native/nvngx_dlss.dll
+
+native/nvngx_dlssg.dll

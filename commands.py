@@ -187,6 +187,12 @@ def apply_menu_action(st, action: tuple) -> None:
     elif kind == "dlss_sr_scale":
         st.cfg["dlss_sr_scale"] = min(1.0, max(.25, float(action[1])))
         settings_io.save_menu_layout(st)
+    elif kind == "toggle" and action[1] == "frame_generation":
+        st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
+        settings_io.save_menu_layout(st)
+    elif kind == "frame_multiplier":
+        st.cfg["frame_multiplier"] = min(4, max(2, int(action[1])))
+        settings_io.save_menu_layout(st)
     elif kind == "toggle" and action[1] == "skip_static":
         # A per-frame flag in the header, not a worker setting: no restart,
         # the next frame already carries the new state.

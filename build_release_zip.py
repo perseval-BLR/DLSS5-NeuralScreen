@@ -25,6 +25,7 @@ TARGET_ARCHS = "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; RTX 20 cannot r
 
 files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 extra = [
+    "native/nvngx_dlssg.dll",
     "resolution_limits.py",
     "native/nvngx_dlss.dll",
     "NeuralScreen.exe",

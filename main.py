@@ -613,6 +613,8 @@ def main() -> int:
                            bypass=bypass,
                            split=st.split_pos,
                            skip_static=bool(st.cfg.get("skip_static", True)),
+                           frame_generation=bool(st.cfg.get("frame_generation", False)),
+                           frame_multiplier=int(st.cfg.get("frame_multiplier", 2)),
                            prepared=bool(st.gray_active),
                            dlss_sr=bool(st.cfg.get("dlss_sr", False)))
                 _perf("send", t0)

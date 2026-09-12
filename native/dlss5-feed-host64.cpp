@@ -44,6 +44,11 @@
 #include <io.h>
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
 #include "hdr_display.h"
 #include "hdr_shaders.h"
 
@@ -1608,8 +1613,13 @@ static HdrDisplayInfo g_capture_display;
 static float g_hdr_frame_white = 1.0f;
 static UINT g_hdr_split = UINT_MAX;
 static bool PresentHdr(VideoState &v, bool bypass);
+static bool FgRequested();
+static bool FgPresent(VideoState &v, ID3D12Resource *color, D3D12_RESOURCE_STATES state);
+static void StopFgPresentation();
+static void CloseFgResources();
 static void CloseSrResources();
-static bool EnsurePresentFormat(bool hdr);
+static bool g_fg_reset = true;
+static bool EnsurePresentFormat(bool hdr, bool pq = false);
 static void CloseHdrResources();
 
 static VideoHeader g_video_options = {};
@@ -1665,8 +1675,8 @@ static HWND                       g_present_hwnd;
 // every OpenPresent - a monitor switch restarts the worker anyway.
 static int                        g_present_x = 0;
 static int                        g_present_y = 0;
-static bool g_present_shown = false;
-static bool g_present_revealed = false;   // the first Present already happened
+static std::atomic<bool>          g_present_shown{false};      // shared with the FG presenter
+static std::atomic<bool>          g_present_revealed{false};   // the first Present already happened
 static RECT                       g_present_follow = {};   // where the target window was last seen
 // Defined here rather than with the capture code below: the present window
 // has to know whether one window is being captured, and which one, and this
@@ -1785,7 +1795,7 @@ static DWORD WINAPI PresentWindowThread(LPVOID)
 
 static void ClosePresent()
 {
-
+    CloseFgResources();
     if (g_present_swap != nullptr) { g_present_swap->Release(); g_present_swap = nullptr; }
     if (g_present_tid != 0) PostThreadMessageW(g_present_tid, WM_QUIT, 0, 0);
     if (g_present_hwnd != nullptr) { PostMessageW(g_present_hwnd, WM_CLOSE, 0, 0); }
@@ -2000,6 +2010,8 @@ static bool PresentFrame(VideoState &v)
 {
     if (g_hdr_capture) return PresentHdr(v, false);
     if (!EnsurePresentFormat(false)) return false;
+    if (FgRequested() && FgPresent(v, v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return true;
+    StopFgPresentation();
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource),
@@ -2041,6 +2053,7 @@ static bool PresentFrame(VideoState &v)
 // window that PresentModeActive has already checked against the output size.
 static bool PresentBypass(VideoState &v)
 {
+    StopFgPresentation();
     if (g_hdr_capture) return PresentHdr(v, true);
     if (!EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
@@ -2888,7 +2901,7 @@ static void CloseGray()
 
 static void CloseDda()
 {
-
+    CloseFgResources();
     g_dda_active = false;
     g_dda_ready = false;
     g_hdr_capture = false;
@@ -4381,6 +4394,7 @@ static bool DownloadVideoFrame(VideoState &v, std::vector<BYTE> &packed,
     return true;
 }
 
+#include "frame_generation.inl"
 
 static bool ReShadeHasFeature18()
 {
@@ -4537,7 +4551,7 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
 static void ReleaseVideoTextures(VideoState &v)
 {
     CloseSrResources();
-
+    CloseFgResources();
     // The shader descriptors referenced these resources - after they are
     // released the descriptors must be reissued (see BindScaleDescriptors).
     if (v.mv.tex == g_scale_dst_bound) g_scale_dst_bound = nullptr;
@@ -4947,7 +4961,7 @@ static int RunVideo()
         {
             const unsigned scale=std::clamp(fh.reset,25u,100u);
             if (g_sr.scale!=scale) {
-                CloseSrResources();g_sr.scale=scale;g_sr.failed=false;
+                CloseFgResources();CloseSrResources();g_sr.scale=scale;g_sr.failed=false;
                 g_force_next_frame=true;
                 Log("[sr] input scale: %u%% (before NR; Boost ratio unchanged)",scale);
             }
@@ -4968,6 +4982,7 @@ static int RunVideo()
             continue;
         }
         ConfigureSrFrame(fh.reserved);
+        ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
         if (CaptureActive())
         {
@@ -5078,10 +5093,12 @@ static int RunVideo()
                 Log("[pure] direct feature 18 confirmed after %u discarded warmup frames", warmup);
             }
         }
+        const UINT previous_hdr_split = g_hdr_split;
         g_hdr_split = (fh.reserved & FRAME_FLAG_SPLIT) ?
             SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : UINT_MAX;
         const bool bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
         if (bypass) g_sr.history = false;
+        g_fg_reset = frame == 0 || fh.reset != 0 || bypass || previous_hdr_split != g_hdr_split;
         if (!bypass)
         {
             const double t_eval = PhaseNow();
@@ -5173,7 +5190,7 @@ static int RunVideo()
 // ---------------------------------------------------------------------------
 static void CleanupVideoNgx()
 {
-
+    CloseFgResources();
     CloseSrResources();
     if (g_sr.params) { NVSDK_NGX_D3D12_DestroyParameters(g_sr.params); g_sr.params = nullptr; }
 

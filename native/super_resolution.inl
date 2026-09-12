@@ -43,6 +43,7 @@ static void ConfigureSrFrame(uint32_t flags)
     if (!(flags & 0x4000)) return;
     const int enabled = (flags & 0x2000) != 0;
     if (g_sr.ui == enabled) return;
+    CloseFgResources();
     CloseSrResources();
     g_sr.ui = enabled; g_sr.failed = false;
     g_force_next_frame = true;
