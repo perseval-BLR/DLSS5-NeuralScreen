@@ -93,8 +93,24 @@ def main() -> int:
             failures.append(f"a dead card was written to the config: {writes}")
         if rebuilds != [2, 0]:
             failures.append(f"expected a rebuild on 2 then back on 0: {rebuilds}")
+        # The refusal is remembered, so the picker can say which of two
+        # identical-looking entries is the one that does not work - DXGI
+        # lists some cards twice (issue #33).
+        if st.cfg.get("gpu_no_nr") != [2]:
+            failures.append(f"the refused adapter was not remembered: "
+                            f"{st.cfg.get('gpu_no_nr')!r}")
+
         if not st.alerts:
             failures.append("the revert said nothing to the user")
+        # 2b. ...and forgotten again when that same adapter does work - a
+        #     driver update is the usual reason, and a permanent mark would
+        #     be a lie.
+        st = _state(gpu=0)
+        st.cfg["gpu_no_nr"] = [2]
+        _drive(st, 2, ["[pure] direct feature 18 ready: 1920x1080"])
+        if st.cfg.get("gpu_no_nr") != []:
+            failures.append(f"a card that now works kept its mark: "
+                            f"{st.cfg.get('gpu_no_nr')!r}")
 
         # 3. NGX never initialised at all - same outcome.
         st = _state(gpu=0)

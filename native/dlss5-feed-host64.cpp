@@ -977,7 +977,16 @@ static bool InitDisguise()
         if (factory->EnumAdapters1(i, &candidate) == DXGI_ERROR_NOT_FOUND) break;
         DXGI_ADAPTER_DESC1 desc = {};
         candidate->GetDesc1(&desc);
-        Log("[host] adapter %u: %ls vendor=0x%04X", i, desc.Description, desc.VendorId);
+        // VRAM and the LUID go in the line too. One user has a single
+        // RTX 5080 that DXGI reports as adapters 0 AND 2, and only one of
+        // the two can run the neural pass (issue #33) - from the outside
+        // the two entries are identical, and these are the fields that
+        // might tell them apart. Nothing reads them yet; they are here so
+        // the next log settles it instead of another round of guessing.
+        Log("[host] adapter %u: %ls vendor=0x%04X vram=%lluMB luid=%08X:%08X",
+            i, desc.Description, desc.VendorId,
+            (unsigned long long)(desc.DedicatedVideoMemory >> 20),
+            (unsigned)desc.AdapterLuid.HighPart, (unsigned)desc.AdapterLuid.LowPart);
         const bool usable = desc.VendorId == 0x10DE &&
                             !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE);
         if (want >= 0 && static_cast<int>(i) == want && usable)

@@ -358,6 +358,10 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # DXGI enumerates adapters - the same number the worker takes
         # in NS_GPU and prints in its "[host] adapter N" lines.
         "gpu": int(cfg.get("gpu", 0)),
+        # Adapters whose worker could not bring the neural pass up. Kept so
+        # the picker can mark them after a restart too; cleared per adapter
+        # as soon as one of them works (issue #33).
+        "gpu_no_nr": [int(i) for i in (cfg.get("gpu_no_nr") or [])],
         # Skip static frames: no new frame from the capture - the network
         # idles instead of re-running on the same picture. A per-frame flag,
         # so it survives a restart through the config alone.
@@ -467,6 +471,14 @@ def warn_hdr(st) -> None:
             return
 
 
+def _no_nr(st) -> set:
+    """Adapter indices whose worker could not bring the neural pass up."""
+    try:
+        return {int(i) for i in (st.cfg.get("gpu_no_nr") or [])}
+    except (TypeError, ValueError):
+        return set()
+
+
 def _gpu_label(index) -> str:
     """"<dxgi index>: <name>" for the picker - the card that will really run.
 
@@ -561,7 +573,16 @@ def menu_payload(st) -> dict:
         # healthy FPS while nothing is being processed, and the skip
         # reads as "it does not work" (user, 12.09).
         "idle": _worker_idle(st),
-        "gpus": [f"{i}: {name}" for i, name in list_adapters()],
+        # The list, with a note on any adapter whose worker could not bring
+        # the neural pass up. DXGI reports some cards twice (one user has a
+        # single 5080 listed as adapters 0 and 2) and the two entries are
+        # indistinguishable by name - so the menu offered a choice between
+        # two identical-looking lines, one of which kills the pipeline
+        # (issue #33). The note is what we actually know: it was tried and
+        # it did not work. The entry stays selectable.
+        "gpus": [f"{i}: {name}" + (f" - {UI_STRINGS[st.lang].get('gpu_no_nr', 'no neural pass')}"
+                                   if i in _no_nr(st) else "")
+                 for i, name in list_adapters()],
         # The saved index may name no NVIDIA card at all. On a hybrid laptop
         # adapter 0 is the integrated GPU and "gpu": 0 is what the program
         # ships with, so the picker came up EMPTY on exactly the machines

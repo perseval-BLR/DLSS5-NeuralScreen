@@ -616,6 +616,10 @@ def apply_gpu(st, index: int) -> None:
     teardown_pipeline(st)
     rebuild_pipeline(st, UI_STRINGS[st.lang].get("gpu_switched", "GPU switched"))
     if gpu_came_up(st):
+        # It works - so if it was marked as refusing the pass before, that
+        # mark is stale (a driver update is the usual reason) and goes.
+        marked = [i for i in st.cfg.get("gpu_no_nr") or [] if int(i) != int(index)]
+        st.cfg["gpu_no_nr"] = marked
         # Only now: a config that remembers a card the network cannot use
         # comes back on the same dead card at the next launch, and the menu
         # to change it back is inside the overlay that a dead worker hides
@@ -624,6 +628,12 @@ def apply_gpu(st, index: int) -> None:
         return
     print(f"[main] adapter {index} cannot run the network - back to {previous}",
           file=sys.stderr)
+    # Remember it, so the picker can say so instead of offering two entries
+    # that look identical - DXGI lists some cards twice and only one of the
+    # two can run the pass (issue #33). A note, not a lock: the entry stays
+    # selectable, and the mark is dropped the moment it does work.
+    marked = sorted({int(i) for i in (st.cfg.get("gpu_no_nr") or [])} | {int(index)})
+    st.cfg["gpu_no_nr"] = marked
     st.cfg["gpu"] = previous
     os.environ["NS_GPU"] = str(previous)
     st.gpu_switch_pending = False
