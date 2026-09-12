@@ -697,7 +697,22 @@ static NVSDK_NGX_Result SafeEvaluateDLSS(NVSDK_NGX_D3D12_DLSS_Eval_Params *ep, D
 static void SafeReleaseFeature(NVSDK_NGX_Handle *f)
 {
     if (f == nullptr) return;
-    __try { NVSDK_NGX_D3D12_ReleaseFeature(f); }
+    // Give the handle back to whoever issued it. The feature is created
+    // through nvngx_dlssnr.dll (g_nr_create), and this released it through
+    // the NGX CORE instead - a different implementation, which knows nothing
+    // about that handle. Nothing was freed: every recreate left the model
+    // and its scratch behind, ~420 MB a time, and dragging a slider (one
+    // RNSZ per step) filled a 16 GB card in half a minute (issue #48,
+    // measured: +12.6 GB over 30 rebuilds).
+    //
+    // g_nr_release is set on both paths - to the forwarder on the direct
+    // one, to the core's own function under NS_NGX_VIA_CORE - so this is
+    // simply "the matching release", not a special case.
+    __try
+    {
+        if (g_nr_release != nullptr) g_nr_release(f);
+        else NVSDK_NGX_D3D12_ReleaseFeature(f);
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) { Log("[host] ReleaseFeature raised 0x%08X (ignored)", GetExceptionCode()); }
 }
 
@@ -942,6 +957,21 @@ static int SelectedAdapterIndex()
 //: what they used to do (issue #34: a hybrid laptop ran the network on the
 //: 4090 and the capture on the iGPU, and showed nothing).
 static int g_adapter_index = -1;
+//: Kept for QueryVideoMemoryInfo - what this process has on the card right
+//: now. Logged on every feature create, so a leak shows up in a user's log
+//: as a number that climbs instead of "it crashed after a while" (#48).
+static IDXGIAdapter3 *g_adapter3 = nullptr;
+
+static void LogVideoMemory(const char *where)
+{
+    if (g_adapter3 == nullptr) return;
+    DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+    if (SUCCEEDED(g_adapter3->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+        Log("[host] video memory after %s: %llu MB of %llu MB budget", where,
+            (unsigned long long)(info.CurrentUsage >> 20),
+            (unsigned long long)(info.Budget >> 20));
+}
 
 static int ActiveAdapterIndex()
 {
@@ -1011,6 +1041,9 @@ static bool InitDisguise()
     // the pipeline across two cards (issue #34).
     g_adapter_index = nvidia_idx;
     Log("[host] adapter %d runs the network and the capture", nvidia_idx);
+    if (FAILED(nvidia->QueryInterface(__uuidof(IDXGIAdapter3),
+                                      reinterpret_cast<void **>(&g_adapter3))))
+        g_adapter3 = nullptr;
 
     hr = create_device(nvidia, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
                        reinterpret_cast<void **>(&h.dev));
@@ -1159,6 +1192,7 @@ static bool CreateFeature(UINT w, UINT h_, int flags, NVSDK_NGX_Result *out_r, U
     { Log("[pure] direct feature 18 create failed 0x%08X (%s)", rf, NgxResultName(rf)); h.feature = nullptr; return false; }
     Log("[pure] direct feature 18 ready: %ux%u%s preset=%u result=0x%08X", w, h_,
         upscale ? " (upscaling full->work->full)" : "", NrPresetHint(), rf);
+    LogVideoMemory("feature create");
     return true;
 }
 
