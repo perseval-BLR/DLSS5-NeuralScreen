@@ -98,11 +98,19 @@ def main() -> int:
         if autocheck.wait_for(offset, "NR ON | FPS", 60.0) is None:
             print("FAIL: the pipeline never came up")
             return 1
-        time.sleep(2.0)   # the present window is created after the first frame
 
-        wins = _windows("NeuralScreen")
-        # The 1x1 taskbar helper is not an output window.
-        outputs = [w for w in wins if w[3] > 16 and w[4] > 16]
+        # The worker's present window is created after the first frame, and
+        # under the load of a full suite run "after" is not a fixed number of
+        # seconds - a flat sleep(2) made this fail once in three. Wait for
+        # the pair to appear instead, and only then judge where they are.
+        deadline = time.monotonic() + 15.0
+        while True:
+            wins = _windows("NeuralScreen")
+            # The 1x1 taskbar helper is not an output window.
+            outputs = [w for w in wins if w[3] > 16 and w[4] > 16]
+            if len(outputs) >= 2 or time.monotonic() > deadline:
+                break
+            time.sleep(0.25)
         for title, x, y, w, h in wins:
             print(f"    {title[:28]:30} at ({x}, {y}) {w}x{h}")
         if len(outputs) < 2:

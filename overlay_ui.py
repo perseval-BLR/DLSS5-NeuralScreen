@@ -1173,7 +1173,14 @@ class OverlayMenu:
                 # config.
                 self.user_height = (None if self._max_scroll == 0
                                     else self.panel_rect.h)
-        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+        elif (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
+                and not self.open_choice):
+            # One Esc closes what is on top. With a drop-down open that is
+            # the drop-down (handled in the branch below, which used to be
+            # unreachable - this branch matched first and shut the whole
+            # panel while someone was stepping down the language list).
+            # Every toolkit on this desktop behaves that way, and the
+            # comment on the branch below already promised it (audit).
             out.append(("button", "close"))
         elif event.type == pygame.KEYDOWN and self.open_choice:
             # The expanded list is keyboard-navigable: Up/Down move the

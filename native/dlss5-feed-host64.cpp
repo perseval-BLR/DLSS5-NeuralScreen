@@ -4474,6 +4474,12 @@ static int RunVideo()
                 CloseMotionScaler();
                 CloseDda();
                 CloseGray();
+                // The Spout2 sender too: it holds a D3D11 device, a context
+                // and a 4K shared texture with an NT handle, and it was the
+                // one subsystem left to the process exit while everything
+                // around it was torn down explicitly (audit). Safe when the
+                // bridge was never enabled - every pointer is null.
+                SpoutBridgeShutdown();
                 return 0;
             }
             Log("[video] truncated frame %u", frame); return 5;
@@ -4848,6 +4854,7 @@ static int RunVideo()
     CloseMotionScaler();
     CloseDda();
     CloseGray();
+    SpoutBridgeShutdown();
     return 0;
 }
 
@@ -5091,8 +5098,10 @@ static int Serve(DWORD game_pid)
         }
     }
     // Normal exit: release the NGX resources, otherwise a quick worker restart
-    // conflicts with the leftovers (exit 127 / a hang on frame 0).
+    // conflicts with the leftovers (exit 127 / a hang on frame 0). The Spout2
+    // sender goes the same way - a DX11 device and a 4K shared texture.
     CleanupVideoNgx();
+    SpoutBridgeShutdown();
     return 0;
 }
 
