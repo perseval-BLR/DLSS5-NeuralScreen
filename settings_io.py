@@ -535,8 +535,7 @@ def menu_payload(st) -> dict:
         # Natural" is visible instead of remembered.
         "param_defaults": {
             k: float(v) for k, v in
-            (PROFILES.get(st.cfg["profile"])
-             or st.presets.get(st.cfg["profile"]) or {}).items()
+            (PROFILES.get(st.cfg["profile"]) or {}).items()
             if k in ("intensity", "local_tone", "local_structure",
                      "skin_structure")},
         "lang": st.lang,
