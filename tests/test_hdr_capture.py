@@ -124,8 +124,76 @@ def run(desktop=False):
     print(f"PASS: {'DDA' if desktop else 'WGC'} HDR capture/present, NR, bypass, wipe, SDR export and HDR->SDR transition ({results} frames)")
 
 
+def primary_is_hdr():
+    """Is HDR on for the display this test would capture?
+
+    The same question hdr_display.h asks the same way (QueryDisplayConfig ->
+    GET_ADVANCED_COLOR_INFO), asked here independently: if Windows says HDR
+    and the worker's log does not say "capture=FP16 scRGB", the two
+    disagree and the assertions below catch it.
+
+    Returns True, False, or None when Windows would not answer at all.
+    """
+    import ctypes
+    from ctypes import wintypes
+    try:
+        user32 = ctypes.windll.user32
+        monitor = user32.MonitorFromPoint(wintypes.POINT(0, 0), 1)  # PRIMARY
+        info = ctypes.create_string_buffer(40 + 32 * 2)
+        ctypes.memmove(info, struct.pack("<I", len(info)), 4)
+        if not user32.GetMonitorInfoW(monitor, info):
+            return None
+        primary = ctypes.wstring_at(ctypes.addressof(info) + 40, 32).split("\0")[0]
+
+        paths = wintypes.UINT(0)
+        modes = wintypes.UINT(0)
+        if user32.GetDisplayConfigBufferSizes(2, ctypes.byref(paths),  # ACTIVE
+                                              ctypes.byref(modes)):
+            return None
+        path_buf = ctypes.create_string_buffer(paths.value * 72)
+        mode_buf = ctypes.create_string_buffer(modes.value * 64)
+        if user32.QueryDisplayConfig(2, ctypes.byref(paths), path_buf,
+                                     ctypes.byref(modes), mode_buf, None):
+            return None
+        for index in range(paths.value):
+            path = path_buf[index * 72:(index + 1) * 72]
+            src_adapter, src_id = path[0:8], struct.unpack_from("<I", path, 8)[0]
+            tgt_adapter, tgt_id = path[20:28], struct.unpack_from("<I", path, 28)[0]
+            # GET_SOURCE_NAME (1): which \\.\DISPLAYn this path drives.
+            name = ctypes.create_string_buffer(84)
+            ctypes.memmove(name, struct.pack("<II", 1, 84) + src_adapter
+                           + struct.pack("<I", src_id), 20)
+            if user32.DisplayConfigGetDeviceInfo(name):
+                continue
+            if ctypes.wstring_at(ctypes.addressof(name) + 20, 32).split("\0")[0] != primary:
+                continue
+            # GET_ADVANCED_COLOR_INFO (9): bit 1 is advancedColorEnabled,
+            # bit 2 wideColorEnforced - wide gamut without HDR is not HDR.
+            color = ctypes.create_string_buffer(32)
+            ctypes.memmove(color, struct.pack("<II", 9, 32) + tgt_adapter
+                           + struct.pack("<I", tgt_id), 20)
+            if user32.DisplayConfigGetDeviceInfo(color):
+                return None
+            bits = struct.unpack_from("<I", color, 20)[0]
+            return bool(bits & 2) and not bool(bits & 4)
+    except Exception as exc:
+        print(f"(HDR probe failed: {exc!r})")
+    return None
+
+
 if __name__ == "__main__":
     if "--run" in sys.argv or "--desktop" in sys.argv:
         run("--desktop" in sys.argv)
     else:
-        print("SKIP: opt-in HDR/GPU test; use --run (WGC) or --desktop (DDA)")
+        # Run by the suite with no argument: take the test when the machine
+        # can actually answer it. A skip that always skips is a green tick
+        # for nothing, and this is the only test that exercises the HDR
+        # path end to end on real hardware.
+        hdr = primary_is_hdr()
+        if hdr:
+            print("the primary display is in HDR - running the WGC variant")
+            run(False)
+        else:
+            print("SKIP: the primary display is "
+                  + ("not in HDR" if hdr is False else "not readable")
+                  + " (Win+Alt+B turns it on); --desktop runs the DDA variant")

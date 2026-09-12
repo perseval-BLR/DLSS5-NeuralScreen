@@ -38,10 +38,21 @@ def fresh_worker():
     data = dll.read_bytes()
     if b"NS_ARCH_SPOOF" not in data:
         return False, "no NS_ARCH_SPOOF in the binary (an old build?)"
-    # freshness: the mtime must not be older than the cpp
-    cpp = ROOT / "native" / "dlss5-feed-host64.cpp"
-    if dll.stat().st_mtime < cpp.stat().st_mtime:
-        return False, "the dll is older than the cpp - rerun build-host.bat"
+    # freshness: the mtime must not be older than any source it is built
+    # from. The .cpp is not alone any more - the HDR path lives in headers
+    # and an .inl included by it, and editing one of those without a
+    # rebuild leaves a binary that disagrees with the tree in silence.
+    sources = [ROOT / "native" / "dlss5-feed-host64.cpp",
+               ROOT / "native" / "hdr_display.h",
+               ROOT / "native" / "hdr_shaders.h",
+               ROOT / "native" / "hdr_present.inl",
+               ROOT / "native" / "ns_forwarder.cpp",
+               ROOT / "native" / "spout_bridge.cpp",
+               ROOT / "native" / "spout_bridge.h"]
+    stale = [s.name for s in sources
+             if s.exists() and dll.stat().st_mtime < s.stat().st_mtime]
+    if stale:
+        return False, f"the dll is older than {', '.join(stale)} - rerun build-host.bat"
     return True, f"{dll.stat().st_size} bytes, the hook is there, fresh"
 
 
