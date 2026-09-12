@@ -453,10 +453,17 @@ def drain_commands(st) -> bool:
                         # revive it - a fresh process may succeed (a
                         # transient GPU conflict, a driver hiccup).
                         st.worker_failed = False
+                        # The automatic revive is disarmed by the manual one.
+                        # It used to stay armed: the user brought the worker
+                        # back by hand, and up to 30 s later the deadline came
+                        # round and restarted the healthy worker underneath
+                        # them - a black screen out of nowhere (audit F4).
+                        st.next_auto_revive = 0.0
                         print("[main] reviving the worker after the failure")
                         try:
                             st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
-                                st.worker, st.params, st.work_w, st.work_h, st.warmup,
+                                st.worker, st.params, st.work_w, st.work_h,
+                                st.effective_warmup,
                                 st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                                 st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
                                 st.worker_stop, st.shm)

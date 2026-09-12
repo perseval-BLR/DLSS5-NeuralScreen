@@ -335,6 +335,13 @@ def bring_up(st) -> None:
         print(f"[main] pre-Blackwell GPU: warmup {st.warmup} -> "
               f"{effective_warmup} to avoid a false frame-0 watchdog "
               f"timeout")
+    # Every later (re)start has to use the same number. It used to read the
+    # raw config value instead, so on a pre-Blackwell card the shortening
+    # applied to the launch and to nothing else: the first revive brought
+    # the 120-frame warm-up back, it outlived the 5 s watchdog, and the
+    # restarts climbed to NR OFF - the exact storm the shortening exists to
+    # prevent (audit F3).
+    st.effective_warmup = effective_warmup
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
         st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
     print(f"[main] worker started (pid {st.worker.pid}), header sent "
@@ -465,6 +472,13 @@ def bring_up(st) -> None:
     st.last_foreground = 0       # the last focused window that was not ours
     st.follow_pos = None         # where the overlay currently sits (window mode)
     st.follow_resize = None      # a pending size change, waiting to settle
+    # A pending MONITOR size change, same idea. follow_monitor assigns it on
+    # the "nothing changed" path, so the field looked initialised - but the
+    # very first call on a screen whose size already disagrees with the
+    # config takes the other branch and READS it first. With __slots__ that
+    # is an AttributeError, and the program leaves through main()'s
+    # top-level handler (audit F2).
+    st.mon_resize = None
     st.mon_w, st.mon_h = st.width, st.height  # the full monitor size (for the menu layer)
     st.gray_active = False       # guides take luminance from the worker's gray channel
     st.pending_shot: Path | None = None  # a screenshot waiting for a frame with pixels

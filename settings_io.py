@@ -353,6 +353,12 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # idles instead of re-running on the same picture. A per-frame flag,
         # so it survives a restart through the config alone.
         "skip_static": bool(cfg.get("skip_static", True)),
+        # The user's saved presets. Without this key "Save preset" wrote
+        # everything EXCEPT the preset: the menu said "Preset saved", the
+        # save really did succeed, and the preset was gone on the next
+        # launch - the code's own "it will not survive a restart" branch
+        # could never fire, because nothing had failed (audit F1).
+        "presets": dict(cfg.get("presets") or {}),
     }
 
 

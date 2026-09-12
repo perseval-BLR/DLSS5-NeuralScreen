@@ -277,7 +277,8 @@ def rebuild_pipeline(st, note: str) -> None:
     full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
     st.shm = SharedFrameBuffer(st.width, st.height)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-        st.params, st.work_w, st.work_h, st.warmup, full_w, full_h, st.shm)
+        st.params, st.work_w, st.work_h, st.effective_warmup, full_w, full_h,
+        st.shm)
     # The window and the menu are rebuilt, keeping the user settings.
     # A soft resize instead of close()+recreate: the old code went
     # through pygame.quit() and built a fresh window - the screen went

@@ -751,6 +751,14 @@ class WorkerReader:
                 got, payload = self._queue.get(timeout=remaining)
             except queue.Empty:
                 continue
+            # The worker is gone. Every other wait_* re-raises this; here it
+            # used to be skipped as if it were a stale frame, so a dead
+            # worker cost the whole budget and then reported a timeout -
+            # "did not acknowledge within 2s" instead of "the worker
+            # stopped", and the caller fell back to a full restart two
+            # seconds later than it had to (audit F7).
+            if got is None:
+                raise payload if isinstance(payload, Exception) else EOFError("the worker stopped")
             if got == "rack":
                 ok, ngx_result = payload
                 if not ok:

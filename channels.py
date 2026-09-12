@@ -190,6 +190,12 @@ def enable_wgc(st) -> bool:
         send_wgc(st.worker, st.window_hwnd)
         aw, ah = st.reader.wait_wgak(timeout=15.0)
         st.dda_mode = True
+        # The same as in DDA: the chosen card is capturing, so nothing is
+        # split and the question a GPU switch asked is answered. Left armed,
+        # the flag sat there until some later, unrelated DDA refusal fired a
+        # "the chosen card drives no display" alert about a switch made long
+        # ago (audit F5).
+        st.gpu_switch_pending = False
         sync_gray(st)
         print(f"[main] window capture inside the worker (WGCW): "
               f"{aw}x{ah}, no colour through the pipe")
