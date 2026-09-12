@@ -72,9 +72,9 @@ def personal_config_keys():
 
 
 def zip_integrity():
-    zpath = ROOT / "neuralscreen-v1.6.1-full.zip"
+    zpath = ROOT / "neuralscreen-v1.7.0-full.zip"
     if not zpath.is_file():
-        return False, "no neuralscreen-v1.6.1-full.zip"
+        return False, "no neuralscreen-v1.7.0-full.zip"
     required = [
         "main.py", "gpuinfo.py", "overlay_ui.py", "i18n.py", "recorder.py",
         "display.py", "guides.py", "hotkeys.py", "tray.py", "capture.py",
@@ -163,8 +163,8 @@ def zip_integrity():
         zsha = hashlib.sha256(zip_dll).hexdigest()
         if f"sha256 {zsha}" not in vt:
             return False, "VERSION.txt runtime sha != the DLL inside the archive"
-        if "NeuralScreen 1.6.1" not in vt:
-            return False, "VERSION.txt version does not match v1.6.1"
+        if "NeuralScreen 1.7.0" not in vt:
+            return False, "VERSION.txt version does not match v1.7.0"
     return True, f"{zpath.stat().st_size} bytes, all files, the hook, a default config, a truthful manifest"
 
 
