@@ -115,7 +115,7 @@ def _set_autostart(enabled: bool) -> bool:
 
 # The version shown in the menu header. Kept in sync with native/launcher.rc
 # (FileVersion/ProductVersion) and build_release_zip.py at release time.
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 
 # The channel label: the header shows the version, the channel lives in the
