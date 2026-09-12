@@ -24,6 +24,22 @@ from i18n import STRINGS as UI_STRINGS
 # numbers size the shared motion buffer in the SHMI handshake.
 from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
 from winapi import list_capturable_windows
+from library_updates import checker as library_checker
+
+
+def show_update_notice(st):
+    if not library_checker.take_notice():
+        return
+    menu = st.display.menu
+    menu.set_state(menu_payload(st))
+    menu.page = "updates"
+    menu.scroll = 0
+    menu.open_choice = None
+    menu.capturing = None
+    menu.visible = True
+    st.display.set_menu_opaque(True)
+    st.display.set_menu_input(True)
+    print('[libraries] startup update notice opened')
 
 
 def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
@@ -568,6 +584,7 @@ def menu_payload(st) -> dict:
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "spout": bool(st.cfg.get("spout", False)),
         "skip_static": bool(st.cfg.get("skip_static", True)),
+        "library_updates_enabled": st.cfg.get("library_updates_enabled", False) is True,
         # Is the network idling on an unchanged screen right now? The
         # worker says so in its log; without this the menu shows a
         # healthy FPS while nothing is being processed, and the skip
@@ -607,6 +624,7 @@ def menu_payload(st) -> dict:
             (f"{h:X}: {t}" for h, t in wins if h == st.window_hwnd), ""),
         "version": APP_VERSION,
         "channel": CHANNEL_LABEL,
+        "library_updates": library_checker.snapshot(),
     }
 
 
