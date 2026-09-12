@@ -3460,6 +3460,23 @@ static bool OpenDda(UINT w, UINT hgt)
     hr = output1->DuplicateOutput(g_dda_d11, &g_dda_dup);
     output1->Release(); output->Release(); adapter->Release(); factory->Release();
     if (FAILED(hr)) { Log("[dda] DuplicateOutput failed 0x%08X", hr); return false; }
+    // How the display is rotated, in the duplication's own words. Nothing
+    // acts on it yet: a rotated desktop is duplicated UNROTATED, so on
+    // "Landscape (flipped)" the picture we hand back is upside down, and on
+    // a portrait mode the width and the height are swapped as well (issue
+    // #47). Reading it is the half that can be shipped without a rotated
+    // display to test on - the next log says what Windows actually reports
+    // for that mode, which is what a fix has to key off.
+    {
+        DXGI_OUTDUPL_DESC dd = {};
+        g_dda_dup->GetDesc(&dd);
+        static const char *kRot[] = { "unspecified", "none", "90", "180", "270" };
+        const unsigned r = (unsigned)dd.Rotation;
+        Log("[dda] desktop rotation: %s%s", r < 5 ? kRot[r] : "?",
+            (r == DXGI_MODE_ROTATION_ROTATE90 || r == DXGI_MODE_ROTATION_ROTATE180
+             || r == DXGI_MODE_ROTATION_ROTATE270)
+                ? " - NOT handled yet, the picture will not match the screen" : "");
+    }
     g_dda_w = w; g_dda_h = hgt; g_dda_active = true;
     Log("[dda] capture %ux%u active", w, hgt);
     return true;

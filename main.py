@@ -937,7 +937,18 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n[main] interrupted (Ctrl+C)")
     except Exception as exc:
+        # With the traceback, not without it. A user on an RTX 3060 sent a
+        # log whose entire account of the failure was
+        #   [main] ERROR: <built-in function get> returned a result with an
+        #   exception set
+        # - a SystemError, which means some C call had already left an error
+        # set and the next builtin tripped over it. Without a traceback
+        # there is no way to say which builtin, in which function, and the
+        # reporter ended up guessing at a fix (issue #41, PR #42). The frames
+        # cost nothing on a path that runs once, at the end.
+        import traceback
         print(f"[main] ERROR: {exc}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
         if st.worker is not None and st.worker.poll() is not None:
             print("[main] the worker crashed; last stderr lines:", file=sys.stderr)
             for line in st.worker_logs[-40:]:
