@@ -92,7 +92,7 @@ static void DumpExperimentFlow(ID3D12Resource *texture)
 static bool InitFlowExperiment()
 {
  auto &f=g_flow_exp;
- if(f.rs) return true;
+ if(f.rs) return f.down && f.flow && f.expand && f.heap;
  D3D12_DESCRIPTOR_RANGE ranges[2]={};
  ranges[0]={D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,0,0,0};
  ranges[1]={D3D12_DESCRIPTOR_RANGE_TYPE_UAV,1,0,0,3};
@@ -125,6 +125,7 @@ static bool InitFlowExperiment()
 static bool RunGpuMotionExperiment(VideoState &v,bool reset)
 {
  if(!g_gray_uav || !InitFlowExperiment()) return false;
+ static bool reported=false; if(!reported) { Log("[gpu-flow] experimental GPU Lucas-Kanade active");reported=true; }
  auto &f=g_flow_exp;
  const bool fresh=f.w!=g_gray_w || f.hgt!=g_gray_h;
  if(fresh) {

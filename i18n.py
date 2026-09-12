@@ -1555,3 +1555,9 @@ STRINGS = {
 def tr(lang: str, key: str) -> str:
     """Translate a STRINGS key; an unknown key comes back unchanged."""
     return STRINGS.get(lang, STRINGS[DEFAULT_LANG]).get(key, key)
+
+for _table in STRINGS.values():
+    _table["gpu_motion"] = "GPU motion estimation (experimental)"
+    _table["gpu_motion_hint"] = "May distort fast motion. Off: CPU DIS. Switching restarts processing."
+STRINGS["ru"]["gpu_motion"] = "Расчёт движения на GPU (эксперимент)"
+STRINGS["ru"]["gpu_motion_hint"] = "При резком движении возможны искажения.\nВыключено: CPU DIS. Смена режима перезапускает обработку."

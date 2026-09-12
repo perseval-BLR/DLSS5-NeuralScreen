@@ -95,3 +95,10 @@ Next useful step: improve robustness to larger displacement (deeper pyramid,
 coarse matching and confidence rejection), then rerun the same A/B timing and
 quality checks. Extra quality work will consume some of the measured savings.
 Main application and published PR branches were not changed by this experiment.
+
+## Interactive preview
+
+Branch `feature/gpu-motion-preview` adds a persisted `gpu_motion` checkbox to
+the main menu. It defaults off. Switching restarts the worker; CPU DIS is used
+when off. Start this worktree through its `NeuralScreen.vbs`. The GPU algorithm
+is unchanged and still fails the large-motion quality gate described above.

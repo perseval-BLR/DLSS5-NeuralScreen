@@ -271,6 +271,7 @@ def configure(st) -> None:
     # the bridge costs a full-frame GPU copy on every Present, and it is
     # only useful to someone recording through OBS.
     _apply_spout_env(st.cfg)
+    os.environ["NS_GPU_FLOW_EXPERIMENT"] = "1" if st.cfg.get("gpu_motion") is True else "0"
     # And HDR compatibility, read once per worker process as well.
     _apply_hdr_env(st.cfg)
     # The same for the card: NS_GPU is read once per worker process.
