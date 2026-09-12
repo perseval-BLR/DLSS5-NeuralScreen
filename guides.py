@@ -49,9 +49,8 @@ class TemporalGuideGenerator:
         # static desktop produces small noise vectors (capture noise,
         # cursor jitter, UI shimmer). Vectors below the noise floor are
         # zeroed - NGX would otherwise treat them as real motion and smear
-        # text/UI. The floor is in flow-resolution pixels: 0.5 px at a
-        # 320-wide flow is ~6 px at 4K work resolution, far below any real
-        # motion (a 2 px scroll at 4K is 0.17 px in flow space).
+        # text/UI. The floor is in work-resolution pixels. Applying it on
+        # the small flow grid erased real 1–6 pixel scrolling at high resolution.
         self._flow_noise_floor = 0.5
 
     @property
@@ -117,8 +116,6 @@ class TemporalGuideGenerator:
                 # vectors even on a static screen (capture noise, cursor
                 # jitter); NGX would smear text/UI on them. The mask is
                 # computed on the flow grid (115k elements, not 3M).
-                mag = np.hypot(cur_to_prev[..., 0], cur_to_prev[..., 1])
-                cur_to_prev[mag < self._flow_noise_floor] = 0.0
                 # Scale BEFORE the upscale: 115k elements instead of 3M, and
                 # exactly equivalent because resize is linear (verified: the
                 # two orders differ by 0.002, i.e. float16 rounding).
@@ -126,6 +123,8 @@ class TemporalGuideGenerator:
                             out=self._flow_scaled[..., 0])
                 np.multiply(cur_to_prev[..., 1], self.height / self.flow_height,
                             out=self._flow_scaled[..., 1])
+                mag = np.hypot(self._flow_scaled[..., 0], self._flow_scaled[..., 1])
+                self._flow_scaled[mag < self._flow_noise_floor] = 0.0
                 if self.emit_small:
                     # The worker upscales it on the GPU — all that is left
                     # here is converting 115k values to float16.

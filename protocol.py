@@ -27,6 +27,8 @@ import numpy as np
 from paths import BASE_DIR  # noqa: F401
 
 
+
+
 # NGX feature 18 goes silent at 3840x2160 (verified in isolation: the worker
 # hangs on frame 0 with work=4K, both in legacy and in upscale mode).
 # We cap the work resolution at 2560x1440 - that is known to work.
@@ -222,6 +224,9 @@ def _negotiate_shm(worker: subprocess.Popen, reader: "WorkerReader",
 # v3 (magic D5V3): a header with full_w/full_h - the worker resizes the frames
 # on the GPU itself (NGX Upscaling), Python does not resize on the CPU.
 VIDEO_MAGIC = 0x33563544  # 'DV5' v3
+CAPTURE_MAGIC = 0x31504143  # CAP1: prepare capture before calculating motion
+FRAME_FLAG_PREPARED = 0x1000
+
 FRAME_MAGIC = 0x314D5246  # 'FMR1'
 OUT_MAGIC = 0x3154554F    # 'OUT1'
 
@@ -321,12 +326,34 @@ def _read_exact(stream, size: int) -> bytes:
     return bytes(chunks)
 
 
+SR_SCALE_MAGIC = 0x31435353  # SSC1
+
+
+def sync_sr_scale(worker, reader, scale: float) -> None:
+    percent = min(100, max(25, int(round(scale * 100))))
+    if getattr(worker, "_sr_scale_sent", None) == percent:
+        return
+    worker.stdin.write(struct.pack(FRAME_FMT, SR_SCALE_MAGIC, 0, percent, 0, 0))
+    worker.stdin.flush()
+    reader.recv(0, timeout=5.0)
+    worker._sr_scale_sent = percent
+
+
+def prepare_capture(worker, reader, index: int, pts: int) -> None:
+    """Latch capture and gray together; FRM1 will consume that exact capture."""
+    worker.stdin.write(struct.pack(FRAME_FMT, CAPTURE_MAGIC, index, 0, 0, pts))
+    worker.stdin.flush()
+    reader.recv(index, timeout=5.0)
+
+
 def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
                motion: np.ndarray, reset: bool, pts: int,
                shm: "SharedFrameBuffer | None" = None,
                want_pixels: bool = False, motion_small: bool = False,
                no_color: bool = False, bypass: bool = False,
-               split: float = 0.0, skip_static: bool = False) -> None:
+               split: float = 0.0, skip_static: bool = False,
+               prepared: bool = False,
+               dlss_sr: bool | None = None) -> None:
     """Send a frame to the worker.
 
     With shared memory agreed, only the 24-byte header with the
@@ -350,6 +377,10 @@ def send_frame(worker: subprocess.Popen, index: int, rgba: np.ndarray,
             (FRAME_FLAG_NO_COLOR if no_color else 0) | \
             (FRAME_FLAG_BYPASS if bypass else 0) | \
             (FRAME_FLAG_SKIP_STATIC if skip_static else 0)
+    if dlss_sr is not None:
+        flags |= 0x4000 | (0x2000 if dlss_sr else 0)
+    if prepared:
+        flags |= FRAME_FLAG_PREPARED
     if split > 0.0:
         # The wipe position rides in the high 16 bits of the same flags field:
         # there is no dedicated field in the header, and widening it for a
