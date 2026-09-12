@@ -18,11 +18,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "NeuralScreen - DLSS 5 Neural Rendering overlay"
-            VALUE "FileVersion", "1.7.1.0"
+            VALUE "FileVersion", "1.8.0.0"
             VALUE "InternalName", "NeuralScreen"
             VALUE "OriginalFilename", "NeuralScreen.exe"
             VALUE "ProductName", "NeuralScreen"
-            VALUE "ProductVersion", "1.7.1"
+            VALUE "ProductVersion", "1.8.0"
         END
     END
     BLOCK "VarFileInfo"
