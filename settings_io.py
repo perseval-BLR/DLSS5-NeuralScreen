@@ -254,6 +254,7 @@ def load_config(path: Path) -> dict:
     if lang not in UI_STRINGS:
         lang = DEFAULT_LANG
     cfg["lang"] = lang
+    cfg["gpu_motion"] = cfg.get("gpu_motion") is True
     return cfg
 
 

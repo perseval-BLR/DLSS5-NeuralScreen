@@ -1,4 +1,4 @@
-"""Isolated WGC -> guides -> NR -> optional FG -> present A/B benchmark.
+"""Isolated WGC -> guides -> NR -> present A/B benchmark.
 No changes to user config. Synthetic repeatable scrolling, not a game benchmark.
 """
 import ctypes, json, os, struct, subprocess, sys, threading, time
@@ -21,7 +21,7 @@ def exact(p,n):
         b.extend(c)
     return b
 
-def run(mode,fg=False,quality=False,round_id=0,static=False):
+def run(mode,quality=False,round_id=0,static=False):
     w,h=(1280,720) if quality else (2560,1440)
     screen=pygame.display.set_mode((w,h),pygame.NOFRAME)
     rng=np.random.default_rng(123)
@@ -33,10 +33,10 @@ def run(mode,fg=False,quality=False,round_id=0,static=False):
         rgb=cv2.cvtColor(cv2.resize(gray,(w,h),interpolation=cv2.INTER_LINEAR),cv2.COLOR_GRAY2RGB)
         surfaces.append(pygame.surfarray.make_surface(rgb.transpose(1,0,2)))
     screen.blit(surfaces[0],(0,0));pygame.display.flip()
-    tag=f'{mode}-fg{int(fg)}-q{int(quality)}-r{round_id}'+('-static' if static else '')
+    tag=f'{mode}-q{int(quality)}-r{round_id}'+('-static' if static else '')
     folder=OUT/tag;folder.mkdir(exist_ok=True)
     env=dict(os.environ,NS_HDR='1',NS_NR_SMALL='1',NS_GPU_FLOW_EXPERIMENT=str(int(mode=='gpu')),
-             NS_FRAMEGEN='0',NS_DLSS_SR='0',NS_PHASE_TIMING='1')
+             NS_PHASE_TIMING='1')
     if quality and mode=='gpu':env['NS_FLOW_DUMP']=str(folder)
     else:env.pop('NS_FLOW_DUMP',None)
     p=subprocess.Popen([str(ROOT/'native/nvngx.dll'),'--live'],cwd=ROOT/'native',env=env,
@@ -61,15 +61,14 @@ def run(mode,fg=False,quality=False,round_id=0,static=False):
             pygame.event.pump();screen.blit(surfaces[0 if static else i%16],(0,0));pygame.display.flip()
             if quality:time.sleep(.025)
             t0=time.perf_counter()
-            p.stdin.write(struct.pack(wire.FRAME_FMT,wire.CAPTURE_MAGIC,i,0,0,i));p.stdin.flush();ack(wire.OUT_FMT)
             t1=time.perf_counter();gray=shm.read_gray().copy().reshape(180,320)
             g=guide.process(gray=gray,compute_motion=mode=='cpu')
             t2=time.perf_counter()
-            wire.send_frame(p,i,None,g.motion,g.reset,i,no_color=True,motion_small=True,prepared=True,
-                            frame_generation=fg,frame_multiplier=2,dlss_sr=False,want_pixels=False)
+            wire.send_frame(p,i,None,g.motion,g.reset,i,no_color=True,motion_small=True,want_pixels=False)
             a=ack(wire.OUT_FMT)
             if a[3]:exact(p.stdout,a[3])
             t3=time.perf_counter()
+            if quality and mode == "gpu": gray=shm.read_gray().copy().reshape(180,320)
             changed=prev is not None and np.mean(cv2.absdiff(gray,prev))>.255
             if i>=40:rows.append({'prepare_ms':(t1-t0)*1000,'guides_ms':(t2-t1)*1000,'worker_ms':(t3-t2)*1000,'total_ms':(t3-t0)*1000,'changed':bool(changed)})
             if quality and i>0:
@@ -98,7 +97,7 @@ def run(mode,fg=False,quality=False,round_id=0,static=False):
         if p.poll() is None:p.kill();p.wait()
         watchdog.cancel();drain.join(timeout=2);shm.close()
         (folder/'worker.log').write_bytes(b''.join(logs))
-    result={'mode':mode,'fg':fg,'quality':quality,'round':round_id,'static':static,'rows':rows,'quality_rows':quality_rows}
+    result={'mode':mode,'quality':quality,'round':round_id,'static':static,'rows':rows,'quality_rows':quality_rows}
     if rows:
         result['summary']={k:{'median':float(np.median([r[k] for r in rows])),'mean':float(np.mean([r[k] for r in rows])),'p95':float(np.percentile([r[k] for r in rows],95))} for k in ['prepare_ms','guides_ms','worker_ms','total_ms']}
         result['changed_fraction']=float(np.mean([r['changed'] for r in rows]))
@@ -110,11 +109,9 @@ if __name__=='__main__':
     pygame.init()
     try:
         if '--static' in sys.argv:
-            for fg in [False,True]:
-                for m in ['cpu','gpu']:run(m,fg=fg,static=True)
+            for m in ['cpu','gpu']:run(m,static=True)
         elif '--quality' in sys.argv:
             for m in ['cpu','gpu']:run(m,quality=True)
         else:
-            for fg in [False,True]:
-                for i,m in enumerate(['cpu','gpu','gpu','cpu']):run(m,fg=fg,round_id=i)
+            for i,m in enumerate(['cpu','gpu','gpu','cpu']):run(m,round_id=i)
     finally:pygame.quit()
