@@ -181,6 +181,18 @@ def apply_menu_action(st, action: tuple) -> None:
         st.cfg["rec_indicator"] = not bool(st.cfg.get("rec_indicator", True))
         settings_io.save_menu_layout(st)
         print(f"[main] recording indicator: {'on' if st.cfg['rec_indicator'] else 'off'}")
+    elif kind == "toggle" and action[1] == "dlss_sr":
+        st.cfg["dlss_sr"] = not bool(st.cfg.get("dlss_sr", False))
+        settings_io.save_menu_layout(st)
+    elif kind == "dlss_sr_scale":
+        st.cfg["dlss_sr_scale"] = min(1.0, max(.25, float(action[1])))
+        settings_io.save_menu_layout(st)
+    elif kind == "toggle" and action[1] == "frame_generation":
+        st.cfg["frame_generation"] = not bool(st.cfg.get("frame_generation", False))
+        settings_io.save_menu_layout(st)
+    elif kind == "frame_multiplier":
+        st.cfg["frame_multiplier"] = min(4, max(2, int(action[1])))
+        settings_io.save_menu_layout(st)
     elif kind == "toggle" and action[1] == "skip_static":
         # A per-frame flag in the header, not a worker setting: no restart,
         # the next frame already carries the new state.

@@ -43,5 +43,13 @@ static const char kHdrCompositeHlsl[] =
     " float3 result=raw ? original : original+(white+Peak(original))*clamp(b-a,-.25,.25);\n"
     " if(!bypass && split!=0xffffffff && p.x>=split && p.x<split+2)\n"
     "   result=white*ToLinear(float3(.25,.65,1));\n"
-    " if(!hdrDisplay) result=raw ? a : b;\n"
+    " if(!(hdrDisplay & 1)) result=raw ? a : b;\n"
+    // DLSS-G supports HDR10, not scRGB. Convert linear BT.709 (80 nits/unit)
+    // to BT.2020 and ST.2084, preserving absolute luminance up to 10000 nits.
+    " if(hdrDisplay & 2) {\n"
+    "   float3 rec2020=mul(float3x3(.627404,.329283,.043313,\n"
+    "       .069097,.919540,.011362,.016391,.088013,.895595),result);\n"
+    "   float3 q=pow(saturate(rec2020*.008),2610.0/16384.0);\n"
+    "   result=pow((3424.0/4096.0+(2413.0/128.0)*q)/(1+(2392.0/128.0)*q),2523.0/32.0);\n"
+    " }\n"
     " dst[p.xy]=float4(clamp(result,-65504,65504),1); }\n";

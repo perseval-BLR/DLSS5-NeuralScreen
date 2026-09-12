@@ -13,15 +13,16 @@ static void CloseHdrResources()
     if (g_hdr_rs) { g_hdr_rs->Release(); g_hdr_rs = nullptr; }
 }
 
-static bool EnsurePresentFormat(bool hdr)
+static bool EnsurePresentFormat(bool hdr, bool pq)
 {
     DXGI_SWAP_CHAIN_DESC1 desc = {};
     if (FAILED(g_present_swap->GetDesc1(&desc))) return false;
-    const auto format = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
-    const auto space = hdr ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
+    const auto format = pq ? DXGI_FORMAT_R10G10B10A2_UNORM : hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const auto space = pq ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : hdr ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
                            : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     if (desc.Format != format)
     {
+        CloseFgResources();
         // PresentFrame/PresentBypass release each back buffer and wait for GPU
         // work before returning; no old buffer reference survives here.
         // This failure is fatal on either path, and deliberately so: both
@@ -29,7 +30,7 @@ static bool EnsurePresentFormat(bool hdr)
         // mismatched formats is not a wrong picture, it is a removed device.
         if (FAILED(g_present_swap->ResizeBuffers(0, 0, 0, format, desc.Flags)))
         { Log("[hdr] swap chain format change failed"); return false; }
-        Log("[hdr] presentation=%s", hdr ? "FP16 scRGB" : "8-bit SDR");
+        Log("[hdr] presentation=%s", pq ? "HDR10 PQ (DLSS-G)" : hdr ? "FP16 scRGB" : "8-bit SDR");
         g_present_space_set = false;
     }
     // Once per swap chain, not once per frame. The space only changes with
@@ -55,12 +56,13 @@ static bool EnsurePresentFormat(bool hdr)
     return true;
 }
 
-static bool EnsureHdrPipeline(UINT w, UINT height)
+static bool EnsureHdrPipeline(UINT w, UINT height, bool pq)
 {
+    const auto format = pq ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
     if (g_hdr_output)
     {
         const auto d = g_hdr_output->GetDesc();
-        if (d.Width == w && d.Height == height) return true;
+        if (d.Width == w && d.Height == height && d.Format == format) return true;
     }
     // Either a size change or a half-built attempt from last time: both
     // start from nothing.
@@ -92,19 +94,21 @@ static bool EnsureHdrPipeline(UINT w, UINT height)
     heap.NumDescriptors = 4;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(h.dev->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&g_hdr_heap)))) return false;
-    g_hdr_output = MakeTex(w, height, DXGI_FORMAT_R16G16B16A16_FLOAT, true);
+    g_hdr_output = MakeTex(w, height, format, true);
     return g_hdr_output != nullptr;
 }
 
 static bool PresentHdr(VideoState &v, bool bypass)
 {
+    const bool framegen = FgRequested() && !bypass;
+    if (!framegen) StopFgPresentation();
     const UINT w = v.upscale ? v.full_w : v.w;
     const UINT height = v.upscale ? v.full_h : v.hgt;
     if (!g_dda_d12 || !g_dda_ready) return false;
     const auto native_desc = g_dda_d12->GetDesc();
     if (native_desc.Width != w || native_desc.Height != height)
     { Log("[hdr] capture/output size mismatch; refusing stale HDR frame"); return false; }
-    if (!EnsurePresentFormat(true) || !EnsureHdrPipeline(w, height)) return false;
+    if (!EnsurePresentFormat(true, framegen) || !EnsureHdrPipeline(w, height, framegen)) return false;
 
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto cpu = g_hdr_heap->GetCPUDescriptorHandleForHeapStart();
@@ -121,11 +125,11 @@ static bool PresentHdr(VideoState &v, bool bypass)
         cpu.ptr += stride;
     }
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-    uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    uav.Format = g_hdr_output->GetDesc().Format;
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     h.dev->CreateUnorderedAccessView(g_hdr_output, nullptr, &uav, cpu);
     winrt::com_ptr<ID3D12Resource> bb;
-    if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
+    if (!framegen && FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource), bb.put_void()))) return false;
     if (!BeginCommands()) return false;
     D3D12_RESOURCE_BARRIER pre[] = {
@@ -138,20 +142,23 @@ static bool PresentHdr(VideoState &v, bool bypass)
     h.list->SetPipelineState(g_hdr_pso);
     h.list->SetComputeRootDescriptorTable(0, g_hdr_heap->GetGPUDescriptorHandleForHeapStart());
     struct { float white; UINT bypass, split, hdr; } constants = {
-        g_hdr_frame_white, bypass ? 1u : 0u, g_hdr_split, g_capture_display.enabled ? 1u : 0u};
+        g_hdr_frame_white, bypass ? 1u : 0u, g_hdr_split,
+        (g_capture_display.enabled ? 1u : 0u) | (framegen ? 2u : 0u)};
     h.list->SetComputeRoot32BitConstants(1, 4, &constants, 0);
     h.list->Dispatch((w+7)/8, (height+7)/8, 1);
     D3D12_RESOURCE_BARRIER copy[] = {
         Transition(g_hdr_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
         Transition(bb.get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST)};
-    h.list->ResourceBarrier(2, copy);
-    h.list->CopyResource(bb.get(), g_hdr_output);
+    h.list->ResourceBarrier(framegen ? 1 : 2, copy);
+    if (!framegen) h.list->CopyResource(bb.get(), g_hdr_output);
     D3D12_RESOURCE_BARRIER post[] = {
         Transition(g_hdr_output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
         Transition(bb.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
         Transition(g_dda_d12, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
         Transition(v.output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)};
-    h.list->ResourceBarrier(bypass ? 3 : 4, post);
+    h.list->ResourceBarrier(1, post);
+    if (!framegen) h.list->ResourceBarrier(1, post + 1);
+    h.list->ResourceBarrier(bypass ? 1 : 2, post + 2);
     // Existing Spout consumers and the Python recording protocol are SDR.
     ID3D12Resource *export_src = bypass ? v.color.tex : v.output;
     auto rest = bypass ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -162,6 +169,11 @@ static bool PresentHdr(VideoState &v, bool bypass)
     h.list->ResourceBarrier(1, &export_post);
     const auto fence = EndCommands();
     if (!WaitFenceValue(h.fence, fence, 2000)) return false;
+    if (framegen)
+    {
+        if (FgPresent(v, g_hdr_output, D3D12_RESOURCE_STATE_COMMON)) return true;
+        return PresentHdr(v, bypass); // failed FG has disabled itself; ordinary output
+    }
     const bool ok = SUCCEEDED(g_present_swap->Present(0, 0));
     if (ok) { RevealOnFirstPresent(); SpoutBridgeSend(); }
     return ok;
