@@ -44,6 +44,8 @@
 #include <io.h>
 #include <string>
 #include <vector>
+#include "hdr_display.h"
+#include "hdr_shaders.h"
 
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_helpers.h>
@@ -1598,6 +1600,15 @@ struct VideoState
     float residual_strength = 1.0f;
 };
 
+static bool g_hdr_capture = false;
+static HMONITOR g_capture_monitor = nullptr;
+static HdrDisplayInfo g_capture_display;
+static float g_hdr_frame_white = 1.0f;
+static UINT g_hdr_split = UINT_MAX;
+static bool PresentHdr(VideoState &v, bool bypass);
+static bool EnsurePresentFormat(bool hdr);
+static void CloseHdrResources();
+
 static VideoHeader g_video_options = {};
 static uint32_t g_last_eval_result = 0;
 // Static-frame skipping (FRAME_FLAG_SKIP_STATIC): how many frames were skipped
@@ -1975,6 +1986,8 @@ static void RevealOnFirstPresent()
 
 static bool PresentFrame(VideoState &v)
 {
+    if (g_hdr_capture) return PresentHdr(v, false);
+    if (!EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource),
@@ -2016,6 +2029,8 @@ static bool PresentFrame(VideoState &v)
 // window that PresentModeActive has already checked against the output size.
 static bool PresentBypass(VideoState &v)
 {
+    if (g_hdr_capture) return PresentHdr(v, true);
+    if (!EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource),
@@ -2810,6 +2825,7 @@ static bool ScaleMotionInto(VideoState &v, const BYTE *mv, bool mv_was_ready)
 // D3D12), swizzled BGRA->RGBA into v.color.tex, and the client keeps sending
 // only motion. All guarded by g_dda_active, the pipe path stays untouched.
 // ---------------------------------------------------------------------------
+static bool                    g_dda_hdr_mode = false;
 static bool                    g_dda_active = false;   // DDA1 with w>0 has been acked
 static UINT                    g_dda_w = 0, g_dda_h = 0;
 static ID3D11Device           *g_dda_d11 = nullptr;
@@ -2855,6 +2871,8 @@ static void CloseDda()
 {
     g_dda_active = false;
     g_dda_ready = false;
+    g_hdr_capture = false;
+    CloseHdrResources();
     if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
     if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
     if (g_dda_shared) { g_dda_shared->Release(); g_dda_shared = nullptr; }
@@ -2876,29 +2894,14 @@ static void CloseDda()
 static ID3D12RootSignature  *g_dda_rs = nullptr;
 static ID3D12PipelineState  *g_dda_pso = nullptr;
 static ID3D12DescriptorHeap *g_dda_heap = nullptr;
-static const char kDdaSwizzleHlsl[] =
-    "Texture2D<float4>   gSrc : register(t0);\n"
-    "RWTexture2D<float4> gDst : register(u0);\n"
-    "[numthreads(8, 8, 1)]\n"
-    "void CSMain(uint3 id : SV_DispatchThreadID)\n"
-    "{\n"
-    "    uint2 sz; gDst.GetDimensions(sz.x, sz.y);\n"
-    "    if (id.x >= sz.x || id.y >= sz.y) return;\n"
-    "    float4 c = gSrc.Load(int3(id.xy, 0));\n"
-    // A B8G8R8A8 SRV is already decoded by HLSL into RGBA semantics with the
-    // right components: c.r = red, c.b = blue. No swap may be done here -
-    // float4(c.b,...) gave swapped channels (a double swap).
-    "    gDst[id.xy] = c;\n"
-    "}\n";
-
 static bool EnsureDdaSwizzle()
 {
     if (g_dda_pso) return true;
     ID3DBlob *code = nullptr, *err = nullptr;
-    HRESULT hr = D3DCompile(kDdaSwizzleHlsl, sizeof(kDdaSwizzleHlsl) - 1, "dda-swizzle.hlsl",
+    HRESULT hr = D3DCompile(kHdrCaptureHlsl, sizeof(kHdrCaptureHlsl) - 1, "dda-swizzle.hlsl",
                             nullptr, nullptr, "CSMain", "cs_5_0", 0, 0, &code, &err);
     if (FAILED(hr)) { Log("[dda] swizzle compile failed: %s", err ? (char *)err->GetBufferPointer() : "?"); return false; }
-    D3D12_ROOT_PARAMETER prm[2] = {};
+    D3D12_ROOT_PARAMETER prm[3] = {};
     D3D12_DESCRIPTOR_RANGE r0 = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0 };
     D3D12_DESCRIPTOR_RANGE r1 = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0 };
     prm[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -2908,7 +2911,10 @@ static bool EnsureDdaSwizzle()
     prm[1].DescriptorTable.NumDescriptorRanges = 1; prm[1].DescriptorTable.pDescriptorRanges = &r1;
     prm[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_ROOT_SIGNATURE_DESC rsd = {};
-    rsd.NumParameters = 2; rsd.pParameters = prm;
+    prm[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    prm[2].Constants.Num32BitValues = 2;
+    prm[2].Constants.ShaderRegister = 0;
+    rsd.NumParameters = 3; rsd.pParameters = prm;
     ID3DBlob *sig = nullptr;
     if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)))
     { Log("[dda] RS serialize failed"); return false; }
@@ -2939,7 +2945,7 @@ static void BindDdaDescriptors(ID3D12Resource *src)
     const UINT stride = h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = g_dda_heap->GetCPUDescriptorHandleForHeapStart();
     D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Format = src->GetDesc().Format; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sd.Texture2D.MipLevels = 1;
     h.dev->CreateShaderResourceView(src, &sd, cpu);
@@ -3457,7 +3463,22 @@ static bool OpenDda(UINT w, UINT hgt)
     IDXGIOutput1 *output1 = nullptr;
     if (FAILED(output->QueryInterface(__uuidof(IDXGIOutput1), (void **)&output1)))
     { Log("[dda] no Output1"); output->Release(); adapter->Release(); factory->Release(); return false; }
-    hr = output1->DuplicateOutput(g_dda_d11, &g_dda_dup);
+    DXGI_OUTPUT_DESC output_desc = {};
+    output->GetDesc(&output_desc);
+    g_capture_monitor = output_desc.Monitor;
+    g_capture_display = QueryHdrDisplay(g_capture_monitor);
+    g_dda_hdr_mode = HdrEnabled() && g_capture_display.enabled;
+    IDXGIOutput5 *output5 = nullptr;
+    if (g_dda_hdr_mode && SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput5), (void **)&output5)))
+    {
+        const DXGI_FORMAT formats[] = {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM};
+        hr = output5->DuplicateOutput1(g_dda_d11, 0, _countof(formats), formats, &g_dda_dup);
+        output5->Release();
+    }
+    else if (HdrEnabled() && g_capture_display.enabled)
+        hr = E_NOINTERFACE; // Never silently truncate HDR through legacy duplication.
+    else
+        hr = output1->DuplicateOutput(g_dda_d11, &g_dda_dup);
     output1->Release(); output->Release(); adapter->Release(); factory->Release();
     if (FAILED(hr)) { Log("[dda] DuplicateOutput failed 0x%08X", hr); return false; }
     // How the display is rotated, in the duplication's own words. Nothing
@@ -3502,8 +3523,14 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
     frame->GetDesc(&fd);
     if (out_w != nullptr) *out_w = fd.Width;
     if (out_h != nullptr) *out_h = fd.Height;
+    if (fd.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+        fd.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+    { Log("[hdr] unsupported capture format %u", fd.Format); return StageResult::Failed; }
     if (g_dda_shared == nullptr)
     {
+        g_hdr_capture = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        Log("[hdr] capture=%s; neural processing=SDR proxy; export=SDR",
+            g_hdr_capture ? "FP16 scRGB" : "SDR");
         D3D11_TEXTURE2D_DESC sd = {};
         sd.Width = fd.Width; sd.Height = fd.Height; sd.MipLevels = 1; sd.ArraySize = 1;
         sd.Format = fd.Format; sd.SampleDesc.Count = 1; sd.Usage = D3D11_USAGE_DEFAULT;
@@ -3563,7 +3590,7 @@ static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT 
     {
         D3D11_TEXTURE2D_DESC sd = {};
         g_dda_shared->GetDesc(&sd);
-        if (sd.Width != fd.Width || sd.Height != fd.Height)
+        if (sd.Width != fd.Width || sd.Height != fd.Height || sd.Format != fd.Format)
             return StageResult::SizeChanged;
         D3D11_BOX box = { 0, 0, 0, sd.Width, sd.Height, 1 };
         g_dda_ctx->CopySubresourceRegion(g_dda_shared, 0, 0, 0, 0, frame, 0, &box);
@@ -3621,6 +3648,13 @@ fail_capture:
 // frame the optical-flow guides need.
 static bool SwizzleCaptureIntoColor(VideoState &v)
 {
+    static ULONGLONG last_display_query = 0;
+    if (GetTickCount64() - last_display_query > 1000 || last_display_query == 0)
+    {
+        g_capture_display = QueryHdrDisplay(g_capture_monitor);
+        last_display_query = GetTickCount64();
+    }
+    g_hdr_frame_white = g_capture_display.white;
     if (!BeginCommands()) return false;
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_d12, D3D12_RESOURCE_STATE_COMMON,
                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -3635,6 +3669,8 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     g1.ptr += h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     h.list->SetComputeRootDescriptorTable(0, g0);
     h.list->SetComputeRootDescriptorTable(1, g1);
+    struct { UINT is_float; float white; } hdr = {g_hdr_capture ? 1u : 0u, g_hdr_frame_white};
+    h.list->SetComputeRoot32BitConstants(2, 2, &hdr, 0);
     h.list->Dispatch((g_dda_w + 7) / 8, (g_dda_h + 7) / 8, 1);
     // copy swizzled dst into v.color.tex
     D3D12_RESOURCE_BARRIER pre_color = Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -3681,10 +3717,24 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     return true;
 }
 
+#include "hdr_present.inl"
+
 // Grab the latest desktop frame into v.color.tex (RGBA, GPU-resident).
 static bool DdaGrab(VideoState &v)
 {
     if (!g_dda_active) return false;
+    static ULONGLONG last_mode_query = 0;
+    if (GetTickCount64() - last_mode_query > 1000)
+    {
+        g_capture_display = QueryHdrDisplay(g_capture_monitor);
+        last_mode_query = GetTickCount64();
+        if (g_dda_hdr_mode != (HdrEnabled() && g_capture_display.enabled))
+        {
+            Log("[hdr] desktop display mode changed; recreating capture");
+            OpenDda(g_dda_w, g_dda_h);
+            return false;
+        }
+    }
     IDXGIResource *res = nullptr;
     DXGI_OUTDUPL_FRAME_INFO fi = {};
     const double t_acq = PhaseNow();
@@ -3747,6 +3797,7 @@ struct WgcSession
     ns_wgc::Direct3D11CaptureFramePool pool{nullptr};
     ns_wgc::GraphicsCaptureSession session{nullptr};
     ns_wgdx::Direct3D11::IDirect3DDevice device{nullptr};
+    bool hdr = false;
 };
 
 static WgcSession *g_wgc = nullptr;   // g_wgc_active / g_wgc_hwnd live up with the present window
@@ -3824,8 +3875,12 @@ static bool OpenWgc(HWND hwnd)
         const auto size = s->item.Size();
         if (size.Width <= 0 || size.Height <= 0)
         { Log("[wgc] the window has no size (minimised?)"); delete s; return false; }
+        g_capture_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        g_capture_display = QueryHdrDisplay(g_capture_monitor);
+        s->hdr = HdrEnabled() && g_capture_display.enabled;
         s->pool = ns_wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            s->device, ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
+            s->device, s->hdr ? ns_wgdx::DirectXPixelFormat::R16G16B16A16Float
+                                    : ns_wgdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, size);
         s->session = s->pool.CreateCaptureSession(s->item);
         try { s->session.IsCursorCaptureEnabled(false); }
         catch (winrt::hresult_error const &) { Log("[wgc] cursor capture stays on"); }
@@ -3860,6 +3915,21 @@ static bool OpenWgc(HWND hwnd)
 static bool WgcGrab(VideoState &v)
 {
     if (!g_wgc_active || g_wgc == nullptr) return false;
+    const HMONITOR monitor = MonitorFromWindow(g_wgc_hwnd, MONITOR_DEFAULTTONEAREST);
+    static ULONGLONG last_mode_query = 0;
+    if (monitor != g_capture_monitor || GetTickCount64() - last_mode_query > 1000)
+    {
+        g_capture_monitor = monitor;
+        g_capture_display = QueryHdrDisplay(monitor);
+        last_mode_query = GetTickCount64();
+        if (g_wgc->hdr != (HdrEnabled() && g_capture_display.enabled))
+        {
+            const HWND hwnd = g_wgc_hwnd;
+            Log("[hdr] window display mode changed; recreating capture");
+            OpenWgc(hwnd);
+            return false;
+        }
+    }
     try
     {
         const double t_acq = PhaseNow();
@@ -4923,6 +4993,8 @@ static int RunVideo()
                 Log("[pure] direct feature 18 confirmed after %u discarded warmup frames", warmup);
             }
         }
+        g_hdr_split = (fh.reserved & FRAME_FLAG_SPLIT) ?
+            SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : UINT_MAX;
         const bool bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
         if (!bypass)
         {

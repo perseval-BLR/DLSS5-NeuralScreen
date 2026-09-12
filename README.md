@@ -139,15 +139,16 @@ cursor, and the overlay only shows that one. Borderless fixes it.
 
 **The picture is soft.** Turn *Boost* off, or move its slider up a step.
 
-**Everything is too bright and the sliders do nothing.** HDR is on for that
-display. Turn it off (Win+Alt+B) — the network is trained on SDR.
+**The HDR picture looks wrong.** Check the capture format in `NeuralScreen.log`.
+HDR capture and scRGB output are experimental; see [HDR setup](docs/HDR.md).
+If capture falls back to SDR, switch the display to SDR (Win+Alt+B).
 
 **A key does nothing.** Something else claimed it; reassign it in the menu.
 
 ## Known limitations
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
-- **HDR displays** are not supported: switch to SDR (Win+Alt+B). The program says so when it sees one.
+- **HDR displays:** experimental FP16 capture and scRGB output; recording and Spout exports remain SDR. See [HDR setup and limitations](docs/HDR.md).
 - **Windows 10, two NVIDIA cards and a rotated display are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 

@@ -22,6 +22,7 @@ window to cover the target with at this stage.
 Run:  runtime\\python.exe test_wgc_capture.py
 """
 import ctypes
+import os
 import struct
 import subprocess
 import sys
@@ -144,6 +145,9 @@ def main() -> int:
                          float(params["skin_structure"]), 0, 0)
 
     worker = subprocess.Popen([str(WORKER_EXE), "--live"],
+                              # This fixture compares literal SDR bytes. Native HDR
+                              # tone mapping is exercised by test_hdr_capture instead.
+                              env=dict(os.environ, NS_HDR="0"),
                               cwd=str(WORKER_EXE.parent),
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE)
