@@ -59,6 +59,11 @@ def personal_config_keys():
     "hotkeys" is included by hand because it is saved on its own path, not
     through the menu payload.
     """
+    # autocheck is run both through run_tests.py (which puts the project
+    # root on the path) and on its own, where it is not there.
+    import sys
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     import settings_io
     payload = settings_io._menu_layout_payload(
         {"profile": "Natural", "gpu": 0, "spout": False, "skip_static": True,
