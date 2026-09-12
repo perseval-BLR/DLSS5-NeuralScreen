@@ -556,6 +556,7 @@ static bool InitDirectNr(const wchar_t *data_path)
 // ---------------------------------------------------------------------------
 
 static void LogDeviceRemoved(const char *where);   // defined below BeginCommands
+static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms);  // defined below
 
 static bool BeginCommands()
 {
@@ -563,8 +564,10 @@ static bool BeginCommands()
     const UINT64 retire = h.alloc_fence[slot];
     if (retire != 0 && h.fence->GetCompletedValue() < retire)
     {
-        h.fence->SetEventOnCompletion(retire, h.fence_event);
-        if (WaitForSingleObject(h.fence_event, 2000) != WAIT_OBJECT_0)
+        // Through the same helper as every other wait: this one carried a
+        // second copy of the shared-event bug, and it also left a
+        // registration behind on a timeout for the next wait to trip over.
+        if (!WaitFenceValue(h.fence, retire, 2000))
         { Log("[host] GPU did not retire allocator slot %d", slot); return false; }
     }
     if (FAILED(h.alloc[slot]->Reset()))
@@ -631,13 +634,34 @@ static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms)
     // false success (code review finding). Check it first.
     if (f->GetCompletedValue() == UINT64_MAX) return false;
     if (f->GetCompletedValue() >= v) return true;
-    f->SetEventOnCompletion(v, h.fence_event);
-    if (WaitForSingleObject(h.fence_event, ms) != WAIT_OBJECT_0) return false;
-    // The event can be signalled by a LATER fence value (the event is
-    // shared); re-check the actual value before declaring success.
-    const UINT64 now = f->GetCompletedValue();
-    if (now == UINT64_MAX) return false;
-    return now >= v;
+    // One auto-reset event serves every wait in this process - several
+    // fences among them - and SetEventOnCompletion is NOT cancelled when a
+    // wait returns. So the event can arrive already signalled by a
+    // registration made for an older value, or be signalled by one while
+    // this wait is asleep. Returning false on such a wake was the bug: the
+    // next wait inherited the next stale signal and the pipeline stayed
+    // exactly one completion out of step, for good. In the wild that read
+    // as 2766 consecutive "[cap] swizzle fence timeout" lines, every one of
+    // them 30 ms apart rather than the 10 s the timeout asks for, ending
+    // only when a monitor switch tore the pipeline down and built it again
+    // (issue #33: "NR worked on the second try").
+    //
+    // So: drop any stale signal, re-check, and treat an early wake as what
+    // it is - not this wait's completion. Keep waiting until the value is
+    // really reached or the deadline passes.
+    ResetEvent(h.fence_event);
+    if (f->GetCompletedValue() >= v) return true;
+    if (FAILED(f->SetEventOnCompletion(v, h.fence_event))) return false;
+    const ULONGLONG deadline = GetTickCount64() + ms;
+    for (;;)
+    {
+        const ULONGLONG now_ms = GetTickCount64();
+        const DWORD left = now_ms >= deadline ? 0 : (DWORD)(deadline - now_ms);
+        if (WaitForSingleObject(h.fence_event, left) != WAIT_OBJECT_0) return false;
+        const UINT64 now = f->GetCompletedValue();
+        if (now == UINT64_MAX) return false;
+        if (now >= v) return true;
+    }
 }
 
 static void CloseListGuarded()
@@ -3366,9 +3390,24 @@ static bool OpenDda(UINT w, UINT hgt)
         {
             DXGI_OUTPUT_DESC1 d1 = {};
             if (SUCCEEDED(out6->GetDesc1(&d1)))
+            {
+                // Every PQ (ST.2084) colour space counts, not just the one
+                // a display most commonly reports: full and studio range,
+                // RGB and YCbCr. Matching a single value would miss an HDR
+                // display that reports one of the others - a false NEGATIVE,
+                // which is the harmless direction but still wrong.
+                //
+                // The raw number is logged either way, so a case this list
+                // does not cover can be settled from a user's log instead of
+                // by guesswork.
+                const bool hdr =
+                    d1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+                    d1.ColorSpace == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020 ||
+                    d1.ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020 ||
+                    d1.ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020;
                 Log("[dda] output colour space %d%s", (int)d1.ColorSpace,
-                    d1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
-                        ? " - HDR IS ON for the captured display" : "");
+                    hdr ? " - HDR IS ON for the captured display" : "");
+            }
             out6->Release();
         }
     }
