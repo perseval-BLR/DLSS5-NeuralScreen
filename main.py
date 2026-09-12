@@ -501,6 +501,23 @@ def main() -> int:
             if st.want_out_shm and not st.out_shm and not st.out_attempted:
                 channels.enable_out_shm(st)
 
+            # Has the worker said whether the neural pass came up on this
+            # card? The answer fires the "this GPU cannot run the neural
+            # pass" alert, and it used to be asked only inside menu_payload
+            # - which the loop builds only while the menu is OPEN. With the
+            # menu closed (the usual state) a refused feature arrived in
+            # total silence: the red dot was there for nobody to see. That
+            # is the issue #29 gap the alert was added to close, still open
+            # (audit F12).
+            #
+            # refresh_gpu_ok caches its verdict, so this costs one attribute
+            # check once the worker has spoken; every thirtieth frame is
+            # twice a second before that, which is soon enough for an alert
+            # and far from the per-frame work that cost 29 FPS the last time
+            # something was added to this loop.
+            if st.frame_index % 30 == 0:
+                settings_io.refresh_gpu_ok(st)
+
             # --- Input for the overlay menu --------------------------
             # Events are read only while the menu is open: the rest of the
             # time the window is click-through, there are no events, and an

@@ -302,7 +302,11 @@ class Display:
             # The HUD/alert fonts follow the language: CJK scripts have no
             # glyphs in the default font (tofu boxes).
             self._font = self._load_font(size=self.font_size, mono=True)
-            self._alert_font = self._load_font(size=ALERT_FONT_SIZE)
+            # Scaled, the way __init__ builds it. Without the ui_scale the
+            # alert shrank the first time the language changed and stayed
+            # small - on a 125% display 45 px became 37 (audit).
+            self._alert_font = self._load_font(
+                size=max(10, int(round(ALERT_FONT_SIZE * self.ui_scale))))
 
     def set_visible(self, visible: bool) -> None:
         """Show/hide the window (SW_SHOW/SW_HIDE).
@@ -960,7 +964,15 @@ class Display:
                 return
             if rect.right <= rect.left or rect.bottom <= rect.top:
                 return
-            r = pygame.Rect(rect.left, rect.top,
+            # GetWindowRect answers in VIRTUAL-DESKTOP coordinates; this
+            # surface is the chosen monitor, whose corner is self._origin.
+            # Without the subtraction the outline drew at the window's
+            # absolute x - off the right edge on a second monitor, and on
+            # the wrong place on any monitor that is not the primary. The
+            # same origin mistake as issues #28/#33/#35, in the one place
+            # that had not been fixed.
+            ox, oy = getattr(self, "_origin", (0, 0))
+            r = pygame.Rect(rect.left - ox, rect.top - oy,
                             rect.right - rect.left, rect.bottom - rect.top)
             lw = 3
             pygame.draw.rect(self.screen, (0x0D, 0x11, 0x17), r, lw + 2,

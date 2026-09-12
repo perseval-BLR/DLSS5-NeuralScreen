@@ -1731,8 +1731,14 @@ class OverlayMenu:
         label = self._font.render(item.extra.get("label", item.key), True, _rgb(self.c["text"]))
         surface.blit(label, (item.rect.x, item.rect.y))
 
-        strip = pygame.Rect(item.rect.x, item.rect.y + label_h,
-                            item.rect.w, item.rect.h - label_h)
+        # The field is the CONTROL, not the rest of the row. A row with a
+        # hint is taller, and taking "everything under the label" drew the
+        # box over the hint - and, worse, wrote that rectangle back into
+        # extra["strip"], which is the hit target: a click on the
+        # explanation opened the drop-down (audit). The layout already
+        # measured it; this only falls back to the same height.
+        strip = item.extra.get("strip") or pygame.Rect(
+            item.rect.x, item.rect.y + label_h, item.rect.w, self._u(CTRL_H))
         pygame.draw.rect(surface, _rgb(self.c["surface"]), strip,
                          border_radius=self._u(RADIUS // 2))
         pygame.draw.rect(surface, _rgb(self.c["border"]), strip, self._u(1),
