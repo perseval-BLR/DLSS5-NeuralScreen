@@ -601,8 +601,16 @@ class OverlayMenu:
             section(s["sec_capture"])
             monitors = self.state.get("monitors") or []
             if monitors:
+                # The hint is here because two people asked the same question
+                # in different words (#33, #35): they tried to DRAG the
+                # picture onto another screen, and with Win+Shift+arrow. It
+                # is not a window - it is a layer covering the whole chosen
+                # monitor - so nothing happens, and this row is the control
+                # they were looking for. Only shown with more than one
+                # monitor: on a single display the sentence is noise.
                 choice("monitor", s.get("monitor", "Monitor"),
-                       str(self.state.get("monitor", "0")), monitors)
+                       str(self.state.get("monitor", "0")), monitors,
+                       hint=s.get("monitor_hint", "") if len(monitors) > 1 else "")
             # The card the network and the capture run on. Shown only when
             # there is something to choose: on one card the row would be a
             # control that cannot do anything.
