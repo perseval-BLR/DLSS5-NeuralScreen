@@ -117,9 +117,17 @@ def main() -> int:
                                     f"github={remote_zip[:12]}")
                 else:
                     print(f"    [OK] zip digest matches GitHub ({local_zip[:12]})")
-        latest = _gh(["release", "list", "--limit", "1"])
-        if not latest.startswith(tag):
-            failures.append(f"{tag} is not the Latest release")
+        # Asked of the API, not inferred from the first column of
+        # "gh release list". That column is the release TITLE, and every
+        # release until 1.7.0 happened to start its title with the tag - so
+        # the check really tested a naming habit. 1.7.0 led with what the
+        # release does and the verifier called a perfectly correct Latest
+        # release wrong.
+        latest = _gh(["api", "repos/perseval-BLR/DLSS5-NeuralScreen/releases/latest",
+                      "--jq", ".tag_name"])
+        if latest != tag:
+            failures.append(f"{tag} is not the Latest release (GitHub says "
+                            f"{latest!r})")
 
     # 4. The repository description carries the current feature markers.
     desc = _gh(["repo", "view", "perseval-BLR/DLSS5-NeuralScreen",
