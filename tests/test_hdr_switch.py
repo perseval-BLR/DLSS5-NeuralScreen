@@ -190,14 +190,8 @@ def main() -> int:
             lang_failures.append(
                 f"{lang}: the label is clipped "
                 f"({menu._font.size(table['hdr_mode'])[0]} > {room} px)")
-        for line in str(table["hdr_mode_hint"]).split("\n"):
-            if menu._small_font.size(line)[0] > row.rect.w:
-                lang_failures.append(
-                    f"{lang}: a hint line is clipped "
-                    f"({menu._small_font.size(line)[0]} > {row.rect.w} px): "
-                    f"{line[:40]}...")
-        if str(table["hdr_mode_hint"]).count("\n") > 2:
-            lang_failures.append(f"{lang}: the hint is more than three lines")
+        # The hint under it is measured by test_settings_hints, together
+        # with every other hint on both pages - one line, and it fits.
     failures.extend(lang_failures)
     print(f"    languages checked: {len(STRINGS)}, "
           f"problems: {len(lang_failures)}")
