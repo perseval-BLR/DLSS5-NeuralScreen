@@ -103,7 +103,9 @@ def _patch(calls, probe=FULLSCREEN, rack_raises=False, probe_raises=False):
 
     pipeline.send_resize = resize_fn
     pipeline.switch_window = lambda st, hwnd: calls.append("restart")
-    pipeline.TemporalGuideGenerator = lambda w, h, emit_small=False: \
+    # **kw: the stub stands in for the generator, it does not pin its
+    # signature - the real one also takes the flow preset now.
+    pipeline.TemporalGuideGenerator = lambda w, h, emit_small=False, **kw: \
         calls.append(f"guides:{w}x{h}") or types.SimpleNamespace(
             motion_width=w, motion_height=h)
     channels.probe_window_capture = probe_fn

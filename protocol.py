@@ -36,6 +36,21 @@ WORK_MAX_W = 2560
 WORK_MAX_H = 1440
 
 
+#: How many destination buffers read_out() rotates through, at most. A frame
+#: that comes back is handed on by REFERENCE and outlives the call: the
+#: recorder queues up to QUEUE_DEPTH (4) of them for its encoder thread and
+#: the main loop keeps the newest as st.output_rgba for a screenshot, so the
+#: ring has to be longer than everything that can be in flight at once.
+#:
+#: A cap, not an allocation - slots are created on demand, and only when
+#: pixels actually come back (a recording or a screenshot asked for them).
+#: An idle session allocates none of it.
+#:
+#: Not imported from recorder: protocol.py is a leaf module, and
+#: tests/test_module_layers.py is what keeps it one.
+OUT_RING_SLOTS = 6
+
+
 class SharedFrameBuffer:
     """Shared memory for the worker's input frame (the SHMI command).
 
@@ -79,6 +94,12 @@ class SharedFrameBuffer:
         self.out_name = ""
         self._out_mm: mmap.mmap | None = None
         self._out_buf: np.ndarray | None = None  # (h, w, 4) uint8
+        # read_out()'s destinations, reused instead of freshly allocated.
+        # Grown on demand (see _next_out_slot) rather than here: the channel
+        # is negotiated for every worker, while pixels only travel back when
+        # something asks for them.
+        self._out_ring: list[np.ndarray] = []
+        self._out_slot = 0
 
     def open_gray(self, w: int, h: int) -> None:
         """Open a gray section of w*h bytes (create it if there was none).
@@ -115,6 +136,38 @@ class SharedFrameBuffer:
         self._out_mm = mmap.mmap(-1, self.out_bytes, tagname=self.out_name)
         self._out_buf = np.ndarray((h, w, 4), dtype=np.uint8, buffer=self._out_mm, offset=8)
 
+    def _next_out_slot(self) -> np.ndarray:
+        """A destination buffer nobody else is still holding.
+
+        The ring is SCANNED rather than simply advanced, because a frame that
+        comes back is handed on by reference and lives as long as its
+        consumer needs it: the recorder queues it for the encoder thread,
+        the main loop keeps the newest one for a screenshot. Writing into a
+        slot that is still queued would rewrite a frame the encoder has not
+        read yet - a torn picture in the file, which is a worse bug than the
+        allocation this ring exists to remove.
+
+        The refcount is what answers the question. A slot nobody else holds
+        is referenced twice here - once by the ring list, once by the local
+        `buf` - and getrefcount adds its own argument on top, so 3 means
+        free and 4 or more means in flight. That threshold was measured, not
+        assumed.
+
+        When every slot is busy the answer is a fresh array: slower for that
+        one frame, and always correct.
+        """
+        n = len(self._out_ring)
+        for _ in range(n):
+            buf = self._out_ring[self._out_slot % n]
+            self._out_slot = (self._out_slot + 1) % n
+            if sys.getrefcount(buf) <= 3:
+                return buf
+        if n < OUT_RING_SLOTS:
+            buf = np.empty_like(self._out_buf)
+            self._out_ring.append(buf)
+            return buf
+        return np.empty_like(self._out_buf)
+
     def read_out(self) -> np.ndarray | None:
         """A copy of the frame from the section, guarded by the seqlock.
 
@@ -124,14 +177,25 @@ class SharedFrameBuffer:
         the worker is mid-write (odd) or the sequence changed while we
         copied, we retry a few times and then fall back to None (the caller
         skips the frame).
+
+        The destination comes from a REUSED ring, not from a fresh
+        allocation. A 4K frame is 33 MB and `.copy()` mapped a new one every
+        time: measured with four frames held alive (the recorder's queue
+        depth), 12.0 ms per frame against 2.6 ms into a pre-allocated buffer
+        - 2.8 GB/s against 12.7 GB/s. The difference is page faults on
+        freshly mapped memory, not the memcpy. And it runs on the reader
+        thread INSIDE the recv the main loop is blocked on, so it was ~9 ms
+        of every recorded frame: the "recv 17.5 -> 24.5 ms while recording"
+        left over in TECHNICAL.md after the pipe copy was removed is this.
         """
         if self._out_buf is None:
             return None
+        buf = self._next_out_slot()
         for _ in range(4):
             seq1 = int.from_bytes(self._out_mm[0:8], "little")
             if seq1 & 1:
                 continue  # worker is writing - not ready yet
-            buf = self._out_buf.copy()
+            np.copyto(buf, self._out_buf)
             seq2 = int.from_bytes(self._out_mm[0:8], "little")
             if seq1 == seq2:
                 return buf
@@ -148,6 +212,10 @@ class SharedFrameBuffer:
             self._out_mm = None
         self.out_bytes = 0
         self.out_w = self.out_h = 0
+        # The ring is shaped like the section that just closed - a new one
+        # means new dimensions, so the slots go with it.
+        self._out_ring = []
+        self._out_slot = 0
 
     def read_gray(self) -> np.ndarray | None:
         """Return a copy of the gray frame (320x180 uint8), or None if it is

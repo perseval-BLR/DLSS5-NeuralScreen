@@ -225,7 +225,8 @@ def _log_environment(cfg: dict) -> None:
         print(f"[env] Num Lock: {'on' if numlock else 'off'} | "
               f"lang: {cfg.get('lang', 'en')} | "
               f"profile: {cfg.get('profile', '?')} | "
-              f"work_scale: {cfg.get('work_scale', '?')}")
+              f"work_scale: {cfg.get('work_scale', '?')} | "
+              f"flow: {cfg.get('flow_preset', 'fast')}")
     except Exception:
         pass
 
@@ -450,7 +451,8 @@ def bring_up(st) -> None:
     # stole focus from the game and dragged the whole of tcl/tk into the
     # runtime.
 
-    st.guides = TemporalGuideGenerator(st.work_w, st.work_h)
+    st.guides = TemporalGuideGenerator(
+        st.work_w, st.work_h, preset=st.cfg.get("flow_preset", "fast"))
 
     # A reused buffer: every frame allocated ~100 MB (a 4K grab plus the
     # resizes plus flow), the GC could not keep up -> OOM around frame 1900.

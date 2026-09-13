@@ -152,6 +152,32 @@ PERF_LOG_INTERVAL = 5.0  # seconds, log of the mean pipeline stage timings
 PERF_KEYS = ("grab", "resize_full", "guides", "send", "recv", "show")
 
 
+def _resize_interp(src: np.ndarray, dst_w: int, dst_h: int) -> int:
+    """Which cv2 filter the fallback resize uses.
+
+    Only the fallback path resizes at all: with the capture in the worker
+    (DDA1/WGCW) the GPU hands over a frame that is already the right size.
+    This runs when dxcam is doing the grabbing and its frame disagrees with
+    the configured size - a hybrid laptop on the iGPU display, or a display
+    mode change caught in flight.
+
+    It used to be INTER_LANCZOS4 in either direction, which measured 11.76 ms
+    for 2560x1440 -> 4K against 1.53 ms for INTER_AREA and 1.64 ms for
+    INTER_LINEAR: ten milliseconds of the frame budget on the one path that
+    exists BECAUSE the fast path was unavailable - i.e. on the slowest
+    hardware in the fleet.
+
+    AREA when shrinking, LINEAR when growing: AREA is a box filter and
+    degenerates towards nearest neighbour on an upscale, while LINEAR aliases
+    on a large downscale, and guides.py says what aliasing does to the flow
+    field. A Lanczos kernel's extra sharpness was never going to survive NGX
+    resampling the frame again anyway.
+    """
+    if dst_w * dst_h < src.shape[1] * src.shape[0]:
+        return cv2.INTER_AREA
+    return cv2.INTER_LINEAR
+
+
 
 
 
@@ -411,6 +437,7 @@ def main() -> int:
                         channels.forget_present(st)
                         channels.forget_dda(st)
                         channels.forget_out(st)
+                        channels.forget_verdict(st)
                         channels.sync_motion_size(st)
                         st.frame_index = 0
                         st.pts = 0
@@ -555,12 +582,12 @@ def main() -> int:
                 if frame.shape[1] != st.width or frame.shape[0] != st.height:
                     t0 = time.perf_counter()
                     try:
-                        cv2.resize(frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(frame, (st.width, st.height), interpolation=_resize_interp(frame, st.width, st.height), dst=st.buf_full)
                     except cv2.error:
                         # The monitor resolution changed: buf_full was
                         # preallocated for the old size - recreate and retry
                         st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
-                        cv2.resize(frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(frame, (st.width, st.height), interpolation=_resize_interp(frame, st.width, st.height), dst=st.buf_full)
                     _perf("resize_full", t0)
                     frame = st.buf_full
                 else:
@@ -574,7 +601,26 @@ def main() -> int:
             # the program does not fall over.
             try:
                 t0 = time.perf_counter()
-                if st.gray_active:
+                if bypass:
+                    # NR OFF: the worker skips the NGX evaluate, so nothing
+                    # ever reads this motion field. Computing it anyway cost
+                    # 2.9 ms of DIS per frame (measured, 320x180 flow, moving
+                    # content) - and it cost it on the mode that runs
+                    # FASTEST, 121-133 FPS in bypass, where it came to about
+                    # half a core spent filling a buffer the worker throws
+                    # away. The frame still CARRIES a motion field: the
+                    # header's size contract does not change just because the
+                    # effect is off.
+                    #
+                    # previous_gray goes with it. Keeping the last pre-bypass
+                    # frame as history would mean correlating against a
+                    # screen that is minutes old the moment NR comes back on,
+                    # and the first real flow field would be garbage.
+                    # Cleared, the first NR frame reports a scene cut
+                    # instead - which is what a resumed pipeline is.
+                    st.guides.previous_gray = None
+                    guide = st.guides.zero_guide()
+                elif st.gray_active:
                     guide = st.guides.process(gray=st.shm.read_gray())
                 else:
                     guide = st.guides.process(st.work_frame)
@@ -652,6 +698,7 @@ def main() -> int:
                 channels.forget_present(st)
                 channels.forget_dda(st)
                 channels.forget_out(st)
+                channels.forget_verdict(st)
                 channels.sync_motion_size(st)
                 st.frame_index = 0
                 st.pts = 0
@@ -674,10 +721,10 @@ def main() -> int:
                 if next_frame.shape[1] != st.width or next_frame.shape[0] != st.height:
                     t0 = time.perf_counter()
                     try:
-                        cv2.resize(next_frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(next_frame, (st.width, st.height), interpolation=_resize_interp(next_frame, st.width, st.height), dst=st.buf_full)
                     except cv2.error:
                         st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
-                        cv2.resize(next_frame, (st.width, st.height), interpolation=cv2.INTER_LANCZOS4, dst=st.buf_full)
+                        cv2.resize(next_frame, (st.width, st.height), interpolation=_resize_interp(next_frame, st.width, st.height), dst=st.buf_full)
                     _perf("resize_full", t0)
                     next_frame = st.buf_full
                 else:
@@ -755,6 +802,7 @@ def main() -> int:
                 channels.forget_present(st)
                 channels.forget_dda(st)
                 channels.forget_out(st)
+                channels.forget_verdict(st)
                 channels.sync_motion_size(st)
                 st.frame_index = 0
                 st.pts = 0

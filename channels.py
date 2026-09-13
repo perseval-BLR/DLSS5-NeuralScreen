@@ -221,6 +221,31 @@ def forget_out(st) -> None:
     st.out_attempted = False
 
 
+def forget_verdict(st) -> None:
+    """The worker restarted - its verdict on feature 18 died with it.
+
+    st.gpu_ok is latched on purpose: refresh_gpu_ok() decides once and
+    returns immediately ever after, which is what keeps it off the per-frame
+    path. But the latch belongs to ONE worker process - a replacement calls
+    CreateFeature again and can answer differently, so the answer has to be
+    forgotten along with the process that gave it.
+
+    Without this a revived worker inherited the dead one's verdict. A card
+    that started working kept the red dot; worse, a pipeline that came back
+    BROKEN kept the green one - while TECHNICAL.md tells the user that dot
+    is the thing to trust ("it goes green only when the worker actually
+    created feature 18"). rebuild_pipeline cleared the pair itself, so the
+    monitor and window switches were already right; the four restart paths
+    (a lost worker, a silent worker, the auto-revive, and do_restart's
+    fallback) were not.
+
+    NOT called for a live RNSZ resize (resize_window_live): that keeps the
+    same process, so the verdict it gave still stands.
+    """
+    st.gpu_ok = None
+    st.gpu_alerted = False
+
+
 def probe_window_capture(st, hwnd: int) -> tuple:
     """Ask the CURRENT worker for the capture size of a window.
 

@@ -47,11 +47,21 @@ class VideoRecorder:
     #: How many frames wait for the encoder. More means more memory (33 MB per
     #: frame at 4K), less means we start dropping frames earlier on spikes.
     QUEUE_DEPTH = 4
-    #: How long to wait for room in the queue before dropping a frame. Stalling
-    #: the pipeline for the sake of the recording is not acceptable: the user
+    #: How long close() waits for room to post the sentinel. Generous on
+    #: purpose: by then there is no picture left to stall.
+    PUT_TIMEOUT_S = 0.25
+    #: How long write() waits for room before dropping a frame. Stalling the
+    #: pipeline for the sake of the recording is not acceptable: the user
     #: looks at the screen, not at the file. A dropped frame does not affect
     #: timing - pts comes from the clock.
-    PUT_TIMEOUT_S = 0.25
+    #:
+    #: ONE frame period, not the quarter second above. write() runs on the
+    #: main loop, so this wait IS a freeze of the picture: 0.25 s is about 14
+    #: frames at 55 FPS, a visible stutter spent protecting a file whose
+    #: duration the clock-based pts keeps correct with or without that frame.
+    #: The queue only fills when the encoder has stalled, and a stalled
+    #: encoder is exactly when the screen must not be held hostage to it.
+    FRAME_PUT_TIMEOUT_S = 1.0 / 60.0
 
     #: NVENC codecs, best first. AV1 is the newest and most efficient, but the
     #: RTX 30 series has no AV1 encoder at all - on those cards the first
@@ -410,7 +420,7 @@ class VideoRecorder:
         self._reserved = False
         pts = self._frame_idx
         try:
-            self._queue.put((pts, rgba), timeout=self.PUT_TIMEOUT_S)
+            self._queue.put((pts, rgba), timeout=self.FRAME_PUT_TIMEOUT_S)
         except queue.Full:
             # The encoder cannot keep up. Dropping the frame is more honest than
             # holding up the main loop: the user would notice on screen, not in

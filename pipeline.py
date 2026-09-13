@@ -358,7 +358,9 @@ def rebuild_pipeline(st, note: str) -> None:
         if st.window_hwnd is not None:
             st.display.set_fullscreen_layer(st.mon_w, st.mon_h)
     # guides and the buffers follow the new resolution.
-    st.guides = TemporalGuideGenerator(st.work_w, st.work_h, emit_small=st.motion_small)
+    st.guides = TemporalGuideGenerator(
+        st.work_w, st.work_h, emit_small=st.motion_small,
+        preset=st.cfg.get("flow_preset", "fast"))
     st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
     # Pipeline flags - the new worker knows nothing.
     st.present_mode = False
@@ -370,8 +372,7 @@ def rebuild_pipeline(st, note: str) -> None:
     st.motion_attempted = False
     st.out_shm = False
     st.out_attempted = False
-    st.gpu_ok = None  # a new worker means a new verdict on feature 18
-    st.gpu_alerted = False           # and a fresh chance for the alert to speak
+    channels.forget_verdict(st)  # a new worker means a new verdict on feature 18
     st.frame_index = 0
     st.pts = 0
     st.work_frame = None
@@ -612,7 +613,9 @@ def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
     # The guides carry the work size in their buffers, and the worker reads
     # exactly that many bytes of motion - they change together or the stream
     # desynchronises (see do_restart).
-    st.guides = TemporalGuideGenerator(new_w, new_h, emit_small=st.motion_small)
+    st.guides = TemporalGuideGenerator(
+        new_w, new_h, emit_small=st.motion_small,
+        preset=st.cfg.get("flow_preset", "fast"))
     channels.sync_motion_size(st)
     channels.sync_gray(st)
     # Both of these are sized for the old frame. Re-negotiated here rather
@@ -986,6 +989,7 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
         # desync and a restart loop.
         channels.forget_dda(st)
         channels.forget_out(st)
+        channels.forget_verdict(st)
 
     # The order matters: work_w/work_h and guides change TOGETHER,
     # otherwise the motion size drifts away from what the worker
@@ -995,7 +999,9 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
     # would come back as a scene cut and the network would start its
     # temporal accumulation again, which is visible as a small settle.
     if (new_w, new_h) != (st.work_w, st.work_h) or st.guides is None:
-        st.guides = TemporalGuideGenerator(new_w, new_h, emit_small=st.motion_small)
+        st.guides = TemporalGuideGenerator(
+            new_w, new_h, emit_small=st.motion_small,
+            preset=st.cfg.get("flow_preset", "fast"))
     st.work_w, st.work_h = new_w, new_h
     channels.sync_motion_size(st)  # the flow resolution may have changed
     channels.sync_gray(st)         # the gray channel lives in the worker, size = guides flow
