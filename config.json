@@ -22,7 +22,7 @@
   "open_menu_on_start": true,
   "split": 0.0,
   "record_audio": true,
-  "nr_small": false,
+  "nr_small": true,
   "spout": false,
   "skip_static": true,
   "menu_height": null,

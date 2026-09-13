@@ -2,6 +2,8 @@
 #include "spout_bridge.h"
 #include "spout/SpoutDX.h"
 
+#include <dxgi1_2.h>
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -24,11 +26,62 @@ bool SpoutBridgeInit(ID3D12Device *dev)
         return false;   // disabled - the bridge costs nothing
 
     g_dev12 = dev;
+    // The D3D11 device has to be on the SAME adapter as the worker. It was
+    // created on the default one, which is adapter 0: with NS_GPU pointing
+    // at another card, every present then copied the frame across the bus
+    // into a texture living on a different GPU. It works - the resource is
+    // shared with an NT handle - and it costs milliseconds a frame for
+    // nothing, silently, on exactly the machines that had to choose a card
+    // in the first place (audit).
+    const LUID want = dev->GetAdapterLuid();
+    IDXGIFactory1 *factory = nullptr;
+    IDXGIAdapter1 *adapter = nullptr;
+    if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                     reinterpret_cast<void **>(&factory))))
+    {
+        IDXGIAdapter1 *candidate = nullptr;
+        for (UINT i = 0; factory->EnumAdapters1(i, &candidate) != DXGI_ERROR_NOT_FOUND; ++i)
+        {
+            DXGI_ADAPTER_DESC1 ad = {};
+            if (candidate == nullptr) continue;
+            if (SUCCEEDED(candidate->GetDesc1(&ad)) &&
+                ad.AdapterLuid.LowPart == want.LowPart &&
+                ad.AdapterLuid.HighPart == want.HighPart)
+            { adapter = candidate; break; }
+            candidate->Release();
+            candidate = nullptr;
+        }
+    }
+    if (adapter == nullptr)
+        fprintf(stderr, "[spout] the worker's adapter was not found by LUID - "
+                        "falling back to the default one\n");
     D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT, &fl, 1,
+    // With an explicit adapter the driver type MUST be UNKNOWN - passing
+    // both is an invalid-argument failure, not a preference.
+    HRESULT hr = D3D11CreateDevice(adapter,
+                                   adapter != nullptr ? D3D_DRIVER_TYPE_UNKNOWN
+                                                      : D3D_DRIVER_TYPE_HARDWARE,
+                                   nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, &fl, 1,
                                    D3D11_SDK_VERSION, &g_d11, nullptr, &g_ctx);
+    if (adapter != nullptr) adapter->Release();
+    if (factory != nullptr) factory->Release();
     if (FAILED(hr)) { fprintf(stderr, "[spout] D3D11 device failed 0x%08X\n", (unsigned)hr); return false; }
+    {
+        // Say which card it landed on: a mismatch here is invisible in the
+        // picture and shows only as frames that cost more than they should.
+        IDXGIDevice *dxgi_dev = nullptr;
+        IDXGIAdapter *got = nullptr;
+        DXGI_ADAPTER_DESC gd = {};
+        if (SUCCEEDED(g_d11->QueryInterface(__uuidof(IDXGIDevice),
+                                            reinterpret_cast<void **>(&dxgi_dev))) &&
+            SUCCEEDED(dxgi_dev->GetAdapter(&got)) && SUCCEEDED(got->GetDesc(&gd)))
+            fprintf(stderr, "[spout] D3D11 on %ls (luid %08lX:%08lX, the worker's: "
+                            "%08lX:%08lX)\n", gd.Description,
+                    (unsigned long)gd.AdapterLuid.HighPart, (unsigned long)gd.AdapterLuid.LowPart,
+                    (unsigned long)want.HighPart, (unsigned long)want.LowPart);
+        if (got != nullptr) got->Release();
+        if (dxgi_dev != nullptr) dxgi_dev->Release();
+    }
 
     g_spout = new spoutDX();
     if (!g_spout->OpenDirectX11(g_d11))

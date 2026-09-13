@@ -58,6 +58,10 @@ class _Display:
 def _state(frame_size):
     st = types.SimpleNamespace(
         window_hwnd=0x1707D8, worker_failed=False,
+        # Not capturing in the worker: follow_window then takes the rebuild
+        # road, which is the one this test is about. The live road has its
+        # own test (test_live_resize).
+        dda_mode=False,
         width=CAPTURE[0], height=CAPTURE[1],
         follow_pos=(100, 100), follow_resize=None, follow_size=frame_size,
         frame_index=1, display=_Display())
@@ -130,6 +134,26 @@ def main() -> int:
         pipeline.switch_window = real_switch
     if rebuilds:
         failures.append(f"a drag in progress rebuilt {len(rebuilds)} times")
+
+    # 3b. A pixel or two is not a resize. A 4K log shows one maximised
+    #     browser described as 3840x2160 and 3840x2159 by the two sides of
+    #     the same question, and a rebuild costs a second of veil. Two
+    #     pixels of stale overlay geometry cost nothing - the worker
+    #     re-opens its own capture when the window really changes size.
+    for dw, dh in ((1, 0), (0, 1), (2, 2), (-2, -1)):
+        st = _state(FRAME)
+        rebuilds = []
+        _drive(st, (100, 100, FRAME[0] + dw, FRAME[1] + dh), 3.0, rebuilds)
+        if rebuilds:
+            failures.append(f"a {dw}x{dh} px difference rebuilt the pipeline "
+                            f"{len(rebuilds)} times")
+    # ... and three pixels still is one.
+    st = _state(FRAME)
+    rebuilds = []
+    _drive(st, (100, 100, FRAME[0] + 3, FRAME[1]), 3.0, rebuilds)
+    if len(rebuilds) != 1:
+        failures.append(f"a 3 px resize produced {len(rebuilds)} rebuilds, "
+                        f"expected 1 - the guard must not swallow real ones")
 
     # 4. With no remembered size (a pipeline built before the window could be
     #    measured) the first frame adopts what it sees instead of rebuilding.

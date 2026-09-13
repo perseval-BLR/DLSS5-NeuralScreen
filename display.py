@@ -5,8 +5,9 @@ menu. The window is hidden at creation and revealed on the first real
 frame (no blank flash at launch); it is excluded from screen capture
 via SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) so that
 screen-capture tools (dxcam, OBS) do not see it. Mode switches (Num5,
-monitor change) are covered by a semi-transparent blur + spinner
-overlay (enter_switch_mode / exit_switch_mode).
+monitor change) are covered by a semi-transparent veil (a blur of the
+last frame) with an assembling mark (enter_switch_mode /
+exit_switch_mode).
 
 Usage:
     disp = Display(2560, 1440)
@@ -26,6 +27,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import struct
 import sys
 import time
 from ctypes import wintypes
@@ -39,6 +41,8 @@ user32 = ctypes.windll.user32
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SetWindowPos.restype = wintypes.BOOL
+user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+user32.FindWindowW.restype = wintypes.HWND
 user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowLongW.restype = wintypes.LONG
 user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
@@ -110,6 +114,14 @@ from i18n import STRINGS
 BG_COLOR = (0x0D, 0x11, 0x17)      # #0D1117 dark background
 BG_ALPHA = 235                     # HUD panel translucency (nearly opaque, so text stays readable)
 SWITCH_ALPHA = 170                 # mode-switch overlay: the live desktop shows through it
+# The veil eases in and out instead of cutting to full strength: a hard
+# cut from the picture to the dim freeze reads as a flash (user: the
+# switch must be smooth). The entrance is a short SYNCHRONOUS ramp drawn
+# inside enter_switch_mode (the caller blocks the loop right after, so a
+# time-based ramp would never get a frame); the exit is time-based and
+# animated by the loop. Seconds.
+SWITCH_FADE_IN = 0.21
+SWITCH_FADE_OUT = 0.26
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
 # Chroma key for HUD mode: pixels of exactly this colour are not drawn at all
@@ -129,6 +141,11 @@ CJK_FONTS = fonts.CJK_FONTS
 FONT_SIZE = 18
 UI_BASE_HEIGHT = 1800
 ALERT_FONT_SIZE = 28
+# How far below the top of the SCREEN an alert sits, in unscaled pixels.
+# A fixed number, not a share of the height: 4.5% is 65 px on a 1440-tall
+# screen and 13 px on a 300-tall window, and neither of those is the same
+# margin (user, 13.09).
+ALERT_TOP_MARGIN = 28
 
 
 def ui_scale_for(height: int) -> float:
@@ -139,6 +156,70 @@ def ui_scale_for(height: int) -> float:
     raised from 1440 to 1800 - at 1.5 the interface came out too large.
     """
     return max(1.0, float(height) / UI_BASE_HEIGHT)
+
+
+# The mode-switch mark: five tiles fly into a tight cluster, hold, then
+# scatter - the shape the switch overlay shows while the worker warms up.
+# Geometry only (no pygame), so the phases can be pinned by a test.
+SWITCH_MARK_PERIOD = 3.0        # one assemble-hold-scatter cycle, seconds
+SWITCH_MARK_ASSEMBLE = 0.6      # flight in
+SWITCH_MARK_HOLD_END = 2.35     # the cluster holds until here
+SWITCH_MARK_SCATTER_END = 2.95  # flight out
+SWITCH_MARK_TILE = 0.018        # tile size, of min(w, h)
+SWITCH_MARK_ORBIT = 0.075       # scatter orbit radius, of min(w, h)
+SWITCH_MARK_GAP = 1.35          # cluster spacing, in tile sizes
+
+
+def _ease_out(t: float) -> float:
+    return 1.0 - (1.0 - t) ** 3
+
+
+def _ease_in_out(t: float) -> float:
+    if t < 0.5:
+        return 4.0 * t * t * t
+    return 1.0 - ((-2.0 * t + 2.0) ** 3) / 2.0
+
+
+def _assemble_tiles(t: float, w: int, h: int) -> list:
+    """Tile centres for the mode-switch mark at time t.
+
+    Returns (cx, cy, size, accent) per tile: the middle tile carries the
+    accent colour, the other four are neutral. Tiles fly in from a loose
+    orbit (assemble), hold as a tight cluster with a slight breathing,
+    then scatter back out; the loop repeats every SWITCH_MARK_PERIOD.
+    """
+    cx, cy = w / 2.0, h / 2.0
+    m = float(min(w, h))
+    tile = m * SWITCH_MARK_TILE
+    gap = tile * SWITCH_MARK_GAP
+    orbit = m * SWITCH_MARK_ORBIT
+    offsets = ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))
+    t = max(0.0, t)
+    cycle = t % SWITCH_MARK_PERIOD
+    if cycle < SWITCH_MARK_ASSEMBLE:
+        f = _ease_out(cycle / SWITCH_MARK_ASSEMBLE)
+        breathe = 1.0
+    elif cycle < SWITCH_MARK_HOLD_END:
+        f = 1.0
+        breathe = 1.0 + 0.05 * math.sin(t * 2.5)
+    else:
+        q = min(1.0, (cycle - SWITCH_MARK_HOLD_END)
+                / (SWITCH_MARK_SCATTER_END - SWITCH_MARK_HOLD_END))
+        f = 1.0 - _ease_in_out(q)
+        breathe = 1.0
+    tiles = []
+    for i, (ox, oy) in enumerate(offsets):
+        tx, ty = cx + ox * gap, cy + oy * gap
+        # The orbit rocks gently and returns to its start every cycle -
+        # a continuous drift would make the mark jump on the wrap.
+        ang = i * (2.0 * math.pi / 5.0) + \
+            0.35 * math.sin(cycle * (2.0 * math.pi / SWITCH_MARK_PERIOD))
+        sx, sy = cx + math.cos(ang) * orbit, cy + math.sin(ang) * orbit
+        x = tx + (sx - tx) * (1.0 - f)
+        y = ty + (sy - ty) * (1.0 - f)
+        size = tile * (0.62 + 0.38 * f) * breathe
+        tiles.append((x, y, size, i == 0))
+    return tiles
 
 
 class Display:
@@ -216,6 +297,12 @@ class Display:
         self.clock = pygame.time.Clock()
         self._hud: Dict = {}
         self._alerts: List[tuple[str, float]] = []  # (text, expires_at)
+        # Window mode: where the layer belongs when no alert is up,
+        # and whether an alert is currently holding it open.
+        # One-window mode: where the captured window is (the frame blit
+        # needs it) and how big the frame is. The LAYER is always the screen.
+        self._window_layer: tuple[int, int, int, int] | None = None
+        self._frame_size: tuple[int, int] | None = None
         # Interface scale and the layout sizes derived from it.
         self.ui_scale = ui_scale_for(self.height)
         self.font_size = max(8, int(round(FONT_SIZE * self.ui_scale)))
@@ -252,13 +339,27 @@ class Display:
         self._hud_only = False
         self._last_overlay = 0.0
         self._last_alert_count = 0
-        # The mode-switch overlay (blur + spinner): shown while the pipeline
-        # is rebuilt and the new worker warms up, so the screen does not sit
-        # bare for a second on every Num5 (user: mode-switch flashes).
+        # The mode-switch veil (blur + assembling mark): shown while the
+        # pipeline is rebuilt and the new worker warms up, so the screen
+        # does not sit bare for a second on every Num5 (user: mode-switch
+        # flashes). The veil owns the layer for the whole switch - follow
+        # and shrink paths must not touch its geometry.
         self._switch_active = False
-        self._switch_bg: "pygame.Surface | None" = None
-        self._switch_dim: "pygame.Surface | None" = None
-        self._switch_t0 = 0.0
+        self._switch_phase = "off"  # off | in | on | out
+        # The sharp copy the dim fades in over (plain mode; the HUD path
+        # fades the window's own alpha instead and leaves this None).
+        self._switch_base: "pygame.Surface | None" = None
+        # A single pre-made copy of the dim that carries the per-frame
+        # alpha - copying a 4K surface every frame of the fade would cost
+        # more than the fade is worth.
+        self._switch_dim_soft: "pygame.Surface | None" = None
+        # The flat veil for the no-frame case (WNDO before the first
+        # pixels): also cached, also faded by alpha.
+        self._switch_fill: "pygame.Surface | None" = None
+        self._switch_mark_t0 = 0.0   # when the mark's cycle started
+        self._switch_alpha = 0.0     # current veil alpha, 0..SWITCH_ALPHA
+        self._switch_alpha0 = 0.0    # the alpha the fade-out started from
+        self._switch_ramp_t0 = 0.0   # when the fade-out started
         self._switch_ret = (0, 0)  # layer size to restore on exit
         self._switch_pending = None  # deferred resize (w, h) while active
 
@@ -364,6 +465,16 @@ class Display:
         the way (the insert-after argument), so a game raising itself does not
         end up above the HUD.
         """
+        # The layer covers the screen, so it does not travel with the window
+        # any anymore - it only has to remember where the window is, for the
+        # frame blit when the worker is not presenting. This used to be a
+        # SetWindowPos on every frame the target moved.
+        self._window_layer = (int(x), int(y),
+                              self._frame_size[0] if self._frame_size else 0,
+                              self._frame_size[1] if self._frame_size else 0)
+        screen = self._screen_rect()
+        if screen is not None and (self.width, self.height) == (screen[2], screen[3]):
+            return
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             # SWP_NOSIZE | SWP_NOACTIVATE - move only, never take the focus.
@@ -567,11 +678,24 @@ class Display:
         The recreated window loses EVERYTHING (layered attributes, capture
         affinity, input styles) - restore them here, once.
 
-        While the mode-switch overlay is up the resize is DEFERRED: the
-        overlay spans the full monitor on purpose (no bare desktop around the
-        spinner), and exit_switch_mode() applies the pipeline size when the
-        overlay comes down.
+        While the mode-switch veil is up the resize is DEFERRED: the
+        veil spans the full monitor on purpose (no bare desktop around
+        the mark), and the teardown applies the pipeline size when it
+        comes down.
         """
+        # The pipeline's size is the FRAME's size, which is the monitor only
+        # in full-screen mode. The layer itself stays the size of the screen
+        # in either mode: shrinking it onto a window put the HUD, the menu
+        # and every alert inside somebody else's window, and the expanding
+        # and shrinking around that cost a set_mode each way - the SDL
+        # window is recreated and every attribute re-applied - which is what
+        # the blinking was (user, 13.09).
+        self._frame_size = (w, h)
+        screen = self._screen_rect()
+        if screen is not None and (w, h) != (screen[2], screen[3]):
+            w, h = screen[2], screen[3]
+            if (self.width, self.height) == (w, h):
+                return          # already the screen: nothing to recreate
         if self._switch_active:
             self._switch_pending = (w, h)
             return
@@ -596,11 +720,11 @@ class Display:
         because the window is recreated (user: menu lost outside a small
         window).
 
-        While the mode-switch overlay is up this is a NO-OP: the layer was
+        While the mode-switch veil is up this is a NO-OP: the layer was
         already expanded to the full screen by enter_switch_mode, and the
         layering attributes (LWA_COLORKEY/ALPHA) belong to the veil until
-        exit_switch_mode re-applies the pipeline's ones - tearing them down
-        mid-spinner turns the translucent veil opaque (audit M1).
+        the teardown re-applies the pipeline's ones - tearing them down
+        mid-veil turns the translucent layer opaque (audit M1).
         """
         if self._switch_active:
             return
@@ -628,15 +752,38 @@ class Display:
             print(f'Display: WARNING cannot expand the layer: {exc}')
 
     def set_window_layer(self, x: int, y: int, w: int, h: int) -> None:
-        """Shrink the HUD layer back onto the captured window."""
+        """Shrink the HUD layer back onto the captured window.
+
+        While the mode-switch veil is up the size is DEFERRED, exactly
+        like resize(): shrinking the layer mid-veil would uncover the
+        desktop around the mark (the reported glitch), so the request
+        waits and the veil's teardown lands the layer on it. The move
+        happens then too - one place applies the geometry, not two.
+        """
+        # Where the captured window is, in desktop pixels. The layer is NOT
+        # shrunk onto it any more - see below - but the frame blit needs the
+        # offset when the worker is not presenting.
+        self._window_layer = (int(x), int(y), int(w), int(h))
+        if self._switch_active:
+            return
+        # It used to shrink the layer onto the window here, and the menu
+        # expanded it again on the way in. That dance cost a
+        # pygame.display.set_mode each way - the SDL window is recreated and
+        # every attribute re-applied - and once alerts started needing the
+        # full screen too it became several per second: "a lot of blinking
+        # of both the alert and the menu when picking windows" (user, 13.09).
+        #
+        # So the layer stays the size of the screen in one-window mode. It is
+        # click-through and colour-keyed, so a layer nobody has drawn on is
+        # not visible; what changes is that the HUD, the menu and the alerts
+        # are placed against the screen instead of against somebody's window,
+        # which is where they were asked to be in the first place.
         try:
-            self.resize(w, h)
-            hwnd = pygame.display.get_wm_info()['window']
-            # Force the physical size AND the position in one call (set_mode
-            # alone does not resize the window in SDL2).
-            user32.SetWindowPos(hwnd, -1, int(x), int(y), w, h, 0x0010)
+            screen = self._screen_rect()
+            if screen is not None and (self.width, self.height) != (screen[2], screen[3]):
+                self.set_fullscreen_layer(screen[2], screen[3])
         except Exception as exc:
-            print(f'Display: WARNING cannot shrink the layer: {exc}')
+            print(f'Display: WARNING cannot hold the layer on the screen: {exc}')
 
     def set_menu_opaque(self, opaque: bool) -> None:
         """Drop the global window translucency while the menu is open.
@@ -697,18 +844,28 @@ class Display:
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
     def raise_topmost(self) -> None:
-        """Raise the window above the worker's window.
+        """Raise the worker picture first and the HUD last.
 
         Both windows are topmost, and inside that group the one raised last
         ends up on top. The worker creates its window after ours, so after
-        every raise of its overlay the HUD has to be brought back up, otherwise
-        it ends up under the frame and becomes invisible.
+        every raise of its overlay the picture is raised first and the HUD is
+        brought back up last, otherwise it ends up under the frame and becomes
+        invisible.
         """
         # SWP_NOACTIVATE: the 30-frame re-assert must not steal the keyboard
         # focus back from the user (audit 10.09 F2: with the menu open the
         # overlay has WS_EX_NOACTIVATE removed, and a SetWindowPos that
         # activates re-steals focus <=0.5 s after Alt+Tab / minimizing
         # another window).
+        # Picture first, HUD last. Keep the two raises independent: a missing
+        # or not-yet-created present window must never hide the HUD raise.
+        try:
+            present = user32.FindWindowW("NeuralScreenPresent", "NeuralScreen")
+            if present:
+                user32.SetWindowPos(present, -1, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            pass
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
@@ -718,44 +875,53 @@ class Display:
 
     def enter_switch_mode(self, last_frame: "np.ndarray | None" = None,
                           full_w: int = 0, full_h: int = 0) -> None:
-        """Freeze a blurred copy of the screen with a spinner on top.
+        """Freeze a blurred copy of the screen with the assembling mark on top.
 
         Called when the pipeline is being rebuilt (window-mode switch, monitor
         change, resolution change): the previous worker dies, the next one
         warms up for ~1 s and the desktop would sit bare underneath. The layer
-        is expanded to the full screen (full_w/full_h) and made opaque - the
-        blur of the last frame (darkened) plus a spinner hide the gap (user:
-        mode-switch flashes black/translucent).
+        is expanded to the full screen (full_w/full_h) and the frozen frame
+        (darkened + blurred) covers the gap (user: mode-switch flashes
+        black/translucent).
+
+        The veil eases IN instead of cutting to full strength - on the HUD
+        path the fade rides on the window's own alpha; on the fallback path
+        the frozen base is re-blitted and the dimmed copy fades in over it.
+        Both ramps are advanced by _draw_switch / _finish_switch_if_due.
         """
         if self._switch_active:
+            # A switch during the fade-out (the pair of calls a window
+            # probe makes, or a second command): bring the veil back to
+            # full instead of letting it dissolve under the rebuild.
+            self._switch_phase = "on"
+            self._switch_alpha = float(SWITCH_ALPHA)
+            if last_frame is not None:
+                self._freeze_switch_frame(last_frame, *self.screen.get_size())
+            self._apply_switch_window_alpha()
+            self.draw_overlay(0.0)
             return
         cw, ch = self.screen.get_size()
         fw = full_w if full_w > 0 else cw
         fh = full_h if full_h > 0 else ch
         self._switch_active = True
-        self._switch_t0 = time.monotonic()
+        self._switch_phase = "on"
+        self._switch_mark_t0 = time.monotonic()
         self._switch_ret = (cw, ch)
+        self._switch_alpha = 0.0
         print(f"[main] switch overlay ON (layer {cw}x{ch} -> {fw}x{fh}, "
               f"frame={'yes' if last_frame is not None else 'none'})")
-        try:
-            bg = None
-            if last_frame is not None:
-                frame = pygame.image.frombuffer(
-                    last_frame, (last_frame.shape[1], last_frame.shape[0]), "RGBX")
-                # Blur cheaply: downscale to a small target in one step,
-                # upscale back. The downscale ratio sets the blur radius.
-                small = pygame.transform.smoothscale(
-                    frame, (max(8, fw // 3), max(8, fh // 3)))
-                bg = pygame.transform.smoothscale(small, (fw, fh))
-            if bg is not None:
-                # Darken the frozen frame: the pipeline is being rebuilt, the
-                # picture is stale. A 40% veil reads as "transition" rather
-                # than "frozen desktop".
-                dim = bg.copy()
-                dim.fill((96, 96, 96), special_flags=pygame.BLEND_RGB_MULT)
-                self._switch_dim = dim
-        except Exception:
-            self._switch_dim = None
+        self._freeze_switch_frame(last_frame, fw, fh)
+        if self._switch_dim_soft is None:
+            # Nothing to freeze: a light semi-opaque veil, NOT black - the
+            # desktop shows through (user: the veil must not go dark). The
+            # alpha rides the same ramp, so this one fades too.
+            try:
+                # No SRCALPHA: the per-frame global alpha must apply on
+                # the blit, and a plain surface is the reliable way.
+                self._switch_fill = pygame.Surface((fw, fh))
+                self._switch_fill.fill((36, 34, 38))
+            except Exception:
+                self._switch_fill = None
         # Expand the layer to the full screen. The overlay is SEMI-transparent
         # (LWA_ALPHA): the live desktop stays visible behind it, so when no
         # frozen frame exists (WNDO mode - the pixels never come to Python)
@@ -769,7 +935,11 @@ class Display:
             x, y = getattr(self, "_origin", (0, 0))
             ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, fw, fh, 0x0004)
             self._set_topmost()
-            user32.SetLayeredWindowAttributes(hwnd, 0, SWITCH_ALPHA, LWA_ALPHA)
+            # The colour key is dropped for the veil: it must not mix with
+            # the veiled pixels into a magenta wash. The global alpha is
+            # the veil's own; the out-fade moves it back to the value the
+            # pipeline expects before the teardown re-applies it.
+            self._apply_switch_window_alpha()
             # set_mode re-created the window: every exstyle bit is gone
             # (TOOLWINDOW/TRANSPARENT/NOACTIVATE/LAYERED). Re-assert them or
             # the overlay gets a taskbar thumbnail again and eats clicks
@@ -780,30 +950,78 @@ class Display:
             self.set_menu_input(self._menu_input)
         except Exception as exc:
             print(f"Display: WARNING cannot set the switch overlay up: {exc}")
-        self.draw_overlay(0.0)
+
+        # A short synchronous fade-in. The caller is about to block the
+        # loop for about a second (the worker stops and a new one warms
+        # up), so a time-based ramp would not get a single frame - the
+        # first frame the loop ever draws would show the veil at full
+        # strength and the entrance would read as a cut. Six steps of
+        # ~35 ms are drawn right here instead: the sharp freeze blurs
+        # into the dim (the blur-in) and the mark arrives, visibly,
+        # whatever happens next.
+        self._switch_phase = "in"
+        self._apply_switch_window_alpha()
+        steps = 6
+        step_s = SWITCH_FADE_IN / steps
+        for i in range(1, steps + 1):
+            frac = i / steps
+            self._switch_alpha = float(SWITCH_ALPHA) * frac
+            try:
+                self._draw_veil(frac, time.monotonic())
+                pygame.display.flip()
+            except Exception as exc:
+                print(f"Display: WARNING switch fade-in: {exc}")
+                break
+            time.sleep(step_s)
+        self._switch_phase = "on"
+        self._switch_alpha = float(SWITCH_ALPHA)
+        self._apply_switch_window_alpha()
 
     def exit_switch_mode(self) -> None:
         """Drop the switch overlay - the first frame of the new pipeline is
-        on its way (the caller shows it right after)."""
+        on its way (the caller shows it right after).
+
+        The veil fades OUT instead of vanishing: the frame underneath is
+        already being presented, and an instant cut back to it reads as a
+        flash. The teardown (layer size restore, HUD attributes) waits
+        until the fade finishes - is_switch_active() stays True for the
+        duration, so follow_window and the resize paths keep their hands
+        off the layer until it is really done.
+        """
         if not self._switch_active:
             return
+        if self._switch_phase == "out":
+            # Already fading out: keep advancing the ramp. main calls this
+            # on every frame of every output branch, so the fade finishes
+            # even when draw_overlay is the only other call site.
+            self._finish_switch_if_due(time.monotonic())
+            return
         print("[main] switch overlay OFF")
-        self._switch_active = False
-        self._switch_bg = None
-        self._switch_dim = None
-        # The resize that was deferred while the overlay was up (the pipeline
-        # rebuilt underneath, the window size changed); apply it now, before
-        # the layered attributes are re-asserted. NOT while the menu is open:
-        # the menu keeps the layer expanded to the full screen
-        # (set_fullscreen_layer owns the size in that state) - shrinking it
-        # here is exactly the clipped-menu regression (user: menu cut off
-        # near the middle after a window-mode switch).
-        #
-        # A pending resize WINS over the restore-to-_switch_ret: on a monitor
-        # switch the pending size IS the new monitor's resolution (the overlay
-        # was expanded to it by enter_switch_mode) - falling through to the
-        # else would shrink the layer back to the OLD monitor size and leave
-        # stale geometry for the whole session (audit C1).
+        self._switch_phase = "out"
+        self._switch_alpha0 = self._switch_alpha
+        self._switch_ramp_t0 = time.monotonic()
+        # The ramp ends at zero in both window modes: in plain mode the
+        # dim fades off the frozen base, in HUD mode the window's own alpha
+        # fades away to reveal the worker's window.
+        self._finish_switch_if_due(time.monotonic())
+
+    def _teardown_switch_overlay(self) -> None:
+        """Drop the veil for good - the fade has finished.
+
+        The resize that was deferred while the veil was up (the pipeline
+        rebuilt underneath, the window size changed); apply it now, before
+        the layered attributes are re-asserted. NOT while the menu is open:
+        the menu keeps the layer expanded to the full screen
+        (set_fullscreen_layer owns the size in that state) - shrinking it
+        here is exactly the clipped-menu regression (user: menu cut off
+        near the middle after a window-mode switch).
+
+        A pending resize WINS over the restore-to-_switch_ret: on a monitor
+        switch the pending size IS the new monitor's resolution (the overlay
+        was expanded to it by enter_switch_mode) - falling through to the
+        else would shrink the layer back to the OLD monitor size and leave
+        stale geometry for the whole session (audit C1).
+        """
         pending = self._switch_pending
         self._switch_pending = None
         if pending is not None and not self.menu.visible and \
@@ -811,7 +1029,7 @@ class Display:
             self.resize(pending[0], pending[1])
         elif pending is None:
             ret = self._switch_ret
-            # The layer was expanded to the full screen for the overlay; put
+            # The layer was expanded to the full screen for the veil; put
             # it back on the size the pipeline expects when no explicit
             # resize came in (resize also re-applies the layered attributes
             # and the capture affinity). Still not while the menu is open -
@@ -821,50 +1039,217 @@ class Display:
                 self.resize(ret[0], ret[1])
         # The layer is back to its regular appearance: transparent for the HUD
         # mode, or an opaque fullscreen layer, whatever the pipeline wants.
+        # In HUD mode the surface still holds the veil's pixels; wipe them
+        # first, or the attribute swap (alpha -> BG_ALPHA) shows the frozen
+        # dim for one frame.
+        if self._hud_only:
+            try:
+                self.screen.fill(CHROMA_KEY)
+            except Exception:
+                pass
         self.set_hud_only(self._hud_only, force=True)
         if not self._hud_only:
             self.set_menu_opaque(self.menu.visible)
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
     def is_switch_active(self) -> bool:
-        """True while the mode-switch overlay (blur + spinner) is up."""
+        """True while the mode-switch veil is up - fading in, holding or
+        fading out. The layer belongs to the veil until this is False."""
         return self._switch_active
 
-    def _draw_switch(self) -> None:
-        """Blit the frozen blurred frame and the spinner (time-based)."""
-        w, h = self.screen.get_size()
-        if self._switch_dim is not None:
-            # The frozen blurred frame, darkened slightly. The window itself
-            # is translucent (SWITCH_ALPHA), so the live desktop also shows
-            # through it - and with a real frame there is no black at all.
-            self.screen.blit(self._switch_dim, (0, 0))
+    def _finish_switch_if_due(self, now: float) -> None:
+        """Complete a fade ramp and, for the out phase, tear the veil down.
+
+        Called from draw_overlay (every frame while the veil animates) and
+        from exit_switch_mode itself, so a veil whose caller stops drawing
+        still comes down. The teardown is the old instant path - restore
+        the pipeline size, the layered attributes, the cursor - now run
+        once the fade is over.
+        """
+        if not self._switch_active:
+            return
+        if self._switch_phase == "out":
+            frac = (now - self._switch_ramp_t0) / SWITCH_FADE_OUT
+            self._switch_alpha = max(0.0, self._switch_alpha0 * (1.0 - frac))
+            self._apply_switch_window_alpha()
+            if self._switch_alpha <= 0.0:
+                self._switch_active = False
+                self._switch_phase = "off"
+                self._switch_alpha = 0.0
+                self._switch_dim_soft = None
+                self._switch_base = None
+                self._switch_fill = None
+                self._teardown_switch_overlay()
+
+    def _freeze_switch_frame(self, last_frame, fw: int, fh: int) -> None:
+        """Build the veil's two layers from the last picture.
+
+        `_switch_base` is the sharp freeze (what the user was just
+        looking at); `_switch_dim_soft` is the blurred and darkened copy
+        the blur-in crossfades to. Both derive from the FRAME, never from
+        the window surface: on the HUD path the surface holds the magenta
+        key, which must not reach the veil. A missing frame leaves both
+        None - the veil falls back to a flat fill.
+        """
+        if last_frame is None:
+            return
+        try:
+            frame = pygame.image.frombuffer(
+                last_frame, (last_frame.shape[1], last_frame.shape[0]), "RGBX")
+            self._switch_base = pygame.transform.smoothscale(frame, (fw, fh))
+            # Blur cheaply: downscale to a small target in one step,
+            # upscale back. The downscale ratio sets the blur radius.
+            small = pygame.transform.smoothscale(
+                frame, (max(8, fw // 3), max(8, fh // 3)))
+            dim = pygame.transform.smoothscale(small, (fw, fh))
+            # Darken the frozen frame: the pipeline is being rebuilt, the
+            # picture is stale. A 40% veil reads as "transition" rather
+            # than "frozen desktop".
+            dim.fill((96, 96, 96), special_flags=pygame.BLEND_RGB_MULT)
+            # One copy carries the per-frame alpha (see _draw_switch).
+            self._switch_dim_soft = dim
+        except Exception as exc:
+            print(f"Display: WARNING cannot freeze the switch frame: {exc}")
+            self._switch_base = None
+            self._switch_dim_soft = None
+
+    def _apply_switch_window_alpha(self) -> None:
+        """The window's global alpha for the veil's current phase.
+
+        With a frozen picture the veil owns the whole screen, and its
+        reveal differs by path: the HUD path fades the veil away to
+        nothing, uncovering the new worker's window below; the plain
+        path returns to the opaque layer while the dim lifts off the
+        fresh frame pixel-side.
+
+        Without a picture (WNDO before the first pixels) there is
+        nothing to hold the desktop back - the window stays at the
+        veil's own alpha in every phase; ramping it would bare the
+        desktop, the flash the veil exists to hide.
+        """
+        ph = self._switch_phase
+        if ph == "off":
+            a = 255.0
+        elif ph == "out":
+            v = max(0.0, min(1.0, self._switch_alpha / float(SWITCH_ALPHA)))
+            if self._hud_only:
+                # Dissolve the veil to nothing, uncovering the new
+                # worker's window below it.
+                a = float(SWITCH_ALPHA) * v
+            else:
+                # Plain path: land on the opaque layer the pipeline
+                # expects - the pixel fade inside it lifts the dim off
+                # the fresh frame, and the window ends where the
+                # teardown picks it up.
+                a = 255.0 - (255.0 - float(SWITCH_ALPHA)) * v
         else:
-            # No frozen frame (WNDO mode - pixels never reach Python): fill
-            # with a light semi-opaque veil, NOT black - the live desktop
-            # keeps showing through (user: the switch overlay is too dark).
+            # "in" and "on": the established veil look - translucent, the
+            # desktop showing through (user: the veil must not go dark).
+            # The entrance crossfade is pixel-side on both paths.
+            a = float(SWITCH_ALPHA)
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+            user32.SetLayeredWindowAttributes(hwnd, 0, int(round(a)), LWA_ALPHA)
+        except Exception as exc:
+            print(f"Display: WARNING cannot set the veil alpha: {exc}")
+
+    def _draw_switch(self) -> None:
+        """The veil, as the loop draws it: advance the fade, then paint.
+
+        The fade-out is the only time-based ramp left (the entrance is
+        synchronous, see enter_switch_mode); when it completes inside
+        this call the teardown has already run and the caller draws the
+        regular layer in the same frame.
+        """
+        now = time.monotonic()
+        self._finish_switch_if_due(now)
+        if not self._switch_active:
+            return
+        strength = max(0.0, min(1.0, self._switch_alpha
+                                 / float(SWITCH_ALPHA)))
+        self._draw_veil(strength, now)
+
+    def _draw_veil(self, strength: float, now: float) -> None:
+        """Paint the veil at the given strength (0..1).
+
+        One painter for both callers: the synchronous entrance passes the
+        ramp fraction it is drawing, the loop's fade-out passes the
+        current alpha over SWITCH_ALPHA. Layer 1 is the frozen picture -
+        the sharp freeze with the blurred dim crossfading over it (the
+        blur-in). Layer 2 is the mark: five tiles fly into a tight
+        cluster, hold with a breath and scatter - the Assemble animation
+        picked from the concept board, drawn procedurally (no assets, no
+        deps). The mark comes up quickly and stays legible over the dim;
+        the veil itself (window alpha on the HUD path, the dim's pixel
+        fade elsewhere) carries the transition around it.
+        """
+        w, h = self.screen.get_size()
+        ph = self._switch_phase
+        strength = max(0.0, min(1.0, strength))
+        # Layer 1: the frozen picture. The sharp freeze goes down first
+        # and the blurred dim crossfades over it - the blur-in - on BOTH
+        # paths (the pixels are ours to draw; the window alpha only ever
+        # carried the veil's translucency). Once the veil starts
+        # dissolving the base is skipped, so the live picture below
+        # (show()'s fresh frame, or the worker's window) shows as the
+        # dim lifts.
+        if self._switch_base is not None and ph != "out":
+            self.screen.blit(self._switch_base, (0, 0))
+        if self._switch_dim_soft is not None:
+            if ph == "in":
+                a = int(round(255 * strength))
+            elif ph == "out" and not self._hud_only:
+                # Plain path: the dim lifts off the fresh frame; on the
+                # HUD path the window's dissolve carries it instead.
+                a = int(round(255 * strength))
+            else:
+                a = 255
+            self._switch_dim_soft.set_alpha(a)
+            self.screen.blit(self._switch_dim_soft, (0, 0))
+        elif self._switch_fill is not None:
+            # No picture to freeze: the flat fill is the veil's body and
+            # rides the same crossfade the dim does.
+            if ph == "in" or (ph == "out" and not self._hud_only):
+                a = int(round(255 * strength))
+            else:
+                a = 255
+            self._switch_fill.set_alpha(a)
+            self.screen.blit(self._switch_fill, (0, 0))
+        else:
             self.screen.fill((36, 34, 38))
-        cx, cy = w // 2, h // 2
-        r = 44  # spinner radius (in 4K pixels, scaled down via ui_scale)
-        r = int(r * self.ui_scale)
-        t = time.monotonic() - self._switch_t0
-        # 12 dots around a circle, a comet: the leading dot (i=0, same angle
-        # as the bright head below) is the brightest, the trail fades out
-        # towards i=11. One full turn per ~1.2 seconds.
-        for i in range(12):
-            ang = i * (2 * math.pi / 12) + t * 1.6
-            dx = math.cos(ang) * r
-            dy = math.sin(ang) * r
-            # Brightness falls off with the distance BEHIND the head: i=0 at
-            # the head's angle is full, i=11 (the tail) is dark.
-            shade = max(0, min(255, int(255 * (1 - i / 12))))
-            pygame.draw.circle(self.screen, (shade, shade, shade),
-                               (cx + int(dx), cy + int(dy)), max(4, r // 10))
-        # A bright leading dot on top.
-        ang = t * 1.6
-        pygame.draw.circle(self.screen, (255, 255, 255),
-                           (cx + int(math.cos(ang) * r),
-                            cy + int(math.sin(ang) * r)),
-                           max(5, r // 8))
+        # Layer 2: the mark.
+        t = now - self._switch_mark_t0
+        appear = min(1.0, t / 0.2)
+        if ph == "out" and not self._hud_only:
+            # Plain path: the mark goes with the dim, or the tiles would
+            # hang over the fresh frame after everything else dissolved.
+            mark_a = appear * strength
+        else:
+            mark_a = appear
+        self._draw_switch_mark(t, mark_a, w, h)
+
+    def _draw_switch_mark(self, t: float, alpha: float, w: int, h: int) -> None:
+        """The assembling mark at time t, drawn at the given alpha.
+
+        Tiles are solid squares with rounded corners; below full alpha
+        each one rides a small per-tile surface so the whole mark can
+        dissolve instead of cutting.
+        """
+        if alpha <= 0.01:
+            return
+        accent = self._rgb(self.theme["accent"])
+        for x, y, size, is_accent in _assemble_tiles(t, w, h):
+            s = max(2, int(round(size)))
+            color = accent if is_accent else (255, 255, 255)
+            pos = (int(round(x - s / 2.0)), int(round(y - s / 2.0)))
+            if alpha >= 0.99:
+                pygame.draw.rect(self.screen, color,
+                                 pygame.Rect(pos[0], pos[1], s, s),
+                                 border_radius=max(1, s // 5))
+            else:
+                pad = pygame.Surface((s, s), pygame.SRCALPHA)
+                pad.fill((*color, int(round(255 * alpha))))
+                self.screen.blit(pad, pos)
 
 
     def refresh_colorkey(self) -> None:
@@ -926,17 +1311,23 @@ class Display:
         # static HUD, but a slider under the mouse jitters at that rate.
         if self.menu.visible:
             min_interval = 0.0
+        if self._switch_active:
+            # The veil animates - the mark must not run at the HUD's 10 Hz.
+            min_interval = 0.0
         if now - self._last_overlay < min_interval and alerts == self._last_alert_count:
             return
         self._last_overlay = now
         self._last_alert_count = alerts
         if self._switch_active:
-            # The switch overlay replaces everything else: no menu, no HUD,
-            # no cursor - just the frozen frame and the spinner. The spinner
-            # animates, so the throttle must not skip the redraw.
+            # The veil replaces everything else: no menu, no HUD, no
+            # cursor - just the frozen picture and the mark. It animates,
+            # so the throttle must not skip the redraw. If the fade-out
+            # finishes inside this call, fall through and draw the
+            # regular layer in the same frame - nothing goes missing.
             self._draw_switch()
-            pygame.display.flip()
-            return
+            if self._switch_active:
+                pygame.display.flip()
+                return
         self.screen.fill(CHROMA_KEY)
         self._draw_alerts()
         self._draw_rec_indicator()
@@ -987,7 +1378,20 @@ class Display:
         self._hud = dict(data)
 
     def alert(self, text: str, duration: float = 2.5) -> None:
-        """Show a pop-up alert centred on the screen (amber border)."""
+        """Show a pop-up alert at the top of the SCREEN (amber border).
+
+        In one-window mode the HUD layer is the size of the captured window
+        and sits on it, so an alert could only be drawn inside that window -
+        and an alert about the graphics card or the monitor has nothing to
+        do with somebody's browser (user, 13.09: wherever it is in
+        full-screen mode, that is where it belongs in window mode too).
+
+        So the layer goes to the whole screen for as long as the alert is
+        up, and back onto the window when it expires. That is the same
+        thing the menu already does for the same reason - it would be
+        clipped by the window bounds otherwise - through the same two
+        calls, which have been carrying the mode switch since 1.6.
+        """
         self._alerts.append((text, time.monotonic() + duration))
 
     def show(self, frame_rgba: np.ndarray) -> None:
@@ -1020,12 +1424,27 @@ class Display:
             surface = pygame.image.frombuffer(
                 frame_rgba.tobytes(), (frame_rgba.shape[1], frame_rgba.shape[0]),
                 "RGBA")
-        # One blit+flip for both paths (the main RGBX and the RGBA fallback)
-        self.screen.blit(surface, (0, 0))
+        # One blit+flip for both paths (the main RGBX and the RGBA fallback).
+        # In one-window mode the layer is the whole screen while the frame is
+        # the size of the captured window, so the frame goes where the window
+        # is. Only reachable when the worker is NOT presenting - with the
+        # worker's own window up, Python draws no frames at all.
+        at = (0, 0)
+        if (self._window_layer is not None
+                and surface.get_width() < self.width):
+            ox, oy = getattr(self, "_origin", (0, 0))
+            at = (self._window_layer[0] - ox, self._window_layer[1] - oy)
+        self.screen.blit(surface, at)
         self._draw_alerts()
         self.menu.set_stats(self._hud)
         self.menu.draw(self.screen)
         self._sync_cursor()
+        # The veil, if one is still fading out: the fresh frame goes
+        # UNDER it and the veil dissolves over it. Without this the
+        # frame would cut in the instant it arrives (the old behaviour)
+        # and the fade-out would never be seen on this path.
+        if self._switch_active:
+            self._draw_switch()
         pygame.display.flip()
 
     def poll_events(self) -> List[str]:
@@ -1098,14 +1517,84 @@ class Display:
         self.screen.blit(surf, (rect.x + dot_d + pad_x,
                                 rect.y + pad_y))
 
+    def _own_rect(self) -> tuple[int, int, int, int] | None:
+        """Where the overlay window itself sits on the desktop."""
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect)):
+                return None
+            return (rect.left, rect.top,
+                    rect.right - rect.left, rect.bottom - rect.top)
+        except Exception:
+            return None
+
+    def _screen_rect(self) -> tuple[int, int, int, int] | None:
+        """The monitor the overlay is on, in desktop coordinates."""
+        try:
+            hwnd = pygame.display.get_wm_info()["window"]
+            monitor = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 2)  # NEAREST
+            if not monitor:
+                return None
+            info = ctypes.create_string_buffer(40 + 32 * 2)
+            ctypes.memmove(info, struct.pack("<I", len(info)), 4)
+            if not user32.GetMonitorInfoW(ctypes.c_void_p(monitor), info):
+                return None
+            left, top, right, bottom = struct.unpack_from("<4i", info, 4)
+            return (left, top, right - left, bottom - top)
+        except Exception:
+            return None
+
+    def _alert_rect(self, w: int, h: int) -> "pygame.Rect":
+        """Where an alert of this size goes, in overlay-local pixels.
+
+        Against the MONITOR, not the overlay: the two are the same thing
+        only in full-screen mode, and in one-window mode the overlay is the
+        size of the window and sits on it. Clamped into the overlay, because
+        an alert drawn outside it is an alert nobody sees - a window in the
+        bottom corner still gets one, as high and as central as that window
+        allows.
+        """
+        margin = int(round(ALERT_TOP_MARGIN * self.ui_scale))
+        screen, own = self._screen_rect(), self._own_rect()
+        if screen is not None and own is not None:
+            x = screen[0] + screen[2] // 2 - own[0] - w // 2
+            y = screen[1] + margin - own[1]
+        else:
+            x, y = (self.width - w) // 2, margin
+        edge = int(round(8 * self.ui_scale))
+        if self.width > w + 2 * edge:
+            x = max(edge, min(x, self.width - w - edge))
+        else:
+            x = 0
+        if self.height > h + 2 * edge:
+            y = max(edge, min(y, self.height - h - edge))
+        else:
+            y = 0
+        return pygame.Rect(x, y, w, h)
+
     def _draw_alerts(self) -> None:
-        """Pop-up alert: the menu palette, top centre.
+        """Pop-up alert: the menu palette, top centre OF THE SCREEN.
 
         It used to hang a third of the way down, centred, as a dark slab with
         an amber border - it clashed with the overall look and got into the
         middle of the frame.
+
+        And then it was centred on the OVERLAY, which is the whole monitor
+        only in full-screen mode. In one-window mode the overlay is the size
+        of the window and sits on it, so an alert about the GPU or the
+        monitor appeared in the middle of somebody's browser (user, 13.09).
+        It is placed against the monitor now, and clamped so that it stays
+        visible when the overlay does not reach that spot - a window in the
+        bottom corner still gets its alert, as high and as central as that
+        window allows.
+
+        The gap from the top is a fixed number of scaled pixels rather than
+        a share of the height: 4.5% of a 1440-tall screen is 65 px and of a
+        window 300 tall is 13, and neither of those is "a small margin".
         """
         now = time.monotonic()
+        had = bool(self._alerts)
         self._alerts = [(text, expires) for text, expires in self._alerts if expires > now]
         if not self._alerts:
             return
@@ -1116,7 +1605,7 @@ class Display:
         pad_y = int(round(14 * self.ui_scale))
         w = surf.get_width() + pad_x * 2
         h = surf.get_height() + pad_y * 2
-        rect = pygame.Rect((self.width - w) // 2, int(round(self.height * 0.045)), w, h)
+        rect = self._alert_rect(w, h)
         radius = int(round(10 * self.ui_scale))
         # The panel is opaque: translucency would blend with the chroma key and
         # give a dirty tint (the colour key does not cut out a blended colour).

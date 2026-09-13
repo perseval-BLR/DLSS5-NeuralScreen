@@ -116,9 +116,32 @@ int main()
         cap.fp=0; dispatch(kHdrCaptureHlsl,{sdrInput.Get()},proxy.Get(),&cap);
         auto rgba=read(proxy.Get(),4);
         for(UINT i=0;i<W*H;++i) check(rgba[i*4]==201 && rgba[i*4+1]==93 && rgba[i*4+2]==17 && rgba[i*4+3]==255,"SDR channel regression");
+        // "Landscape (flipped)": duplication hands back the UNROTATED
+        // desktop, so the shader turns it over as it reads (issue #47).
+        // W and H are odd, which puts one pixel at the centre mapping to
+        // itself and no pair mapping to a neighbour.
+        std::vector<unsigned char> marked(W*H*4);
+        for(UINT y=0;y<H;++y) for(UINT x=0;x<W;++x) {
+            const UINT i=(y*W+x)*4;
+            marked[i]=(unsigned char)(x*13+1); marked[i+1]=(unsigned char)(y*29+2);
+            marked[i+2]=(unsigned char)((x+y)*7+3); marked[i+3]=255; }
+        auto markedTex=texture(DXGI_FORMAT_B8G8R8A8_UNORM,marked.data(),4);
+        cap.fp=0; cap.pad[0]=1;
+        dispatch(kHdrCaptureHlsl,{markedTex.Get()},proxy.Get(),&cap);
+        auto turned=read(proxy.Get(),4);
+        for(UINT y=0;y<H;++y) for(UINT x=0;x<W;++x) {
+            const UINT d=(y*W+x)*4, s=((H-1-y)*W+(W-1-x))*4;
+            check(turned[d]==marked[s+2] && turned[d+1]==marked[s+1] &&
+                  turned[d+2]==marked[s],"180 rotation did not turn the frame over"); }
+        cap.pad[0]=0;
+        dispatch(kHdrCaptureHlsl,{markedTex.Get()},proxy.Get(),&cap);
+        auto upright=read(proxy.Get(),4);
+        for(UINT i=0;i<W*H;++i)
+            check(upright[i*4]==marked[i*4+2] && upright[i*4+1]==marked[i*4+1] &&
+                  upright[i*4+2]==marked[i*4],"the unrotated path moved a pixel");
         auto display=QueryHdrDisplay(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY));
         printf("Display probe: HDR=%d, SDR white=%.1f nits\n",display.enabled,display.white*80);
-        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, bypass, wipe, finite edits, SDR output and channel order (WARP)");
+        puts("PASS: HDR shader compilation, highlights, signed gamut, zero-edit identity, bypass, wipe, finite edits, SDR output, channel order and 180 rotation (WARP)");
         return 0;
     } catch(const std::exception &e) { fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
 }
