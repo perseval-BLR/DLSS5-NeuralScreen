@@ -13,14 +13,20 @@
     "x.b <= .0031308 ? x.b * 12.92 : 1.055 * pow(x.b, 1.0/2.4) - .055); }\n" \
     "float Peak(float3 x) { return max(0, max(x.r, max(x.g, x.b))); }\n"
 
+// rotate180: Desktop Duplication hands back the UNROTATED desktop, so on
+// "Landscape (flipped)" the source is upside down against what the user
+// sees. The frame keeps its size, so reading it from the opposite corner is
+// the whole correction - and it has to happen here, before the network, the
+// optical flow and the gray channel all take their copy (issue #47).
 static const char kHdrCaptureHlsl[] =
     NS_HDR_COLOR_FUNCTIONS
     "Texture2D<float4> src : register(t0);\n"
     "RWTexture2D<float4> dst : register(u0);\n"
-    "cbuffer Params : register(b0) { uint isFloat; float white; };\n"
+    "cbuffer Params : register(b0) { uint isFloat; float white; uint rotate180; };\n"
     "[numthreads(8,8,1)] void CSMain(uint3 p : SV_DispatchThreadID) {\n"
     " uint w,h; dst.GetDimensions(w,h); if(p.x>=w || p.y>=h) return;\n"
-    " float4 c=src.Load(int3(p.xy,0));\n"
+    " int2 s = rotate180 ? int2(w-1-p.x, h-1-p.y) : int2(p.xy);\n"
+    " float4 c=src.Load(int3(s,0));\n"
     " if(isFloat) c=float4(ToSrgb(max(c.rgb,0)/(white+Peak(c.rgb))),1);\n"
     " dst[p.xy]=c; }\n";
 

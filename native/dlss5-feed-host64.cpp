@@ -564,9 +564,68 @@ static bool InitDirectNr(const wchar_t *data_path)
 
 static void LogDeviceRemoved(const char *where);   // defined below BeginCommands
 static bool WaitFenceValue(ID3D12Fence *f, UINT64 v, DWORD ms);  // defined below
+static bool PhaseEnabled();
+static double PhaseNow();
+static LARGE_INTEGER g_qpf;
+static void AbortCommands();
+static bool g_submission_failed;
+
+struct ProfileFrameStamp {
+    double acquire_start, acquired, present_call, source_time;
+    UINT64 source_qpc, capture;
+    const char *kind = "none";
+    UINT64 fence;
+    bool reported;
+};
+static ProfileFrameStamp g_frame_stamp;
+static UINT64 g_capture_generation, g_capture_serial, g_previous_source_qpc;
+static char g_frame_records[256][480];
+static unsigned g_frame_record_count;
+
+static void FlushProfileFrames()
+{
+    for (unsigned i = 0; i < g_frame_record_count; ++i) Log("%s", g_frame_records[i]);
+    g_frame_record_count = 0;
+}
+
+static void ProfileCapture(double acquire_start, UINT64 source_qpc, const char *kind)
+{
+    if (!PhaseEnabled()) return;
+    g_frame_stamp.acquire_start = acquire_start;
+    g_frame_stamp.acquired = PhaseNow();
+    g_frame_stamp.kind = kind;
+    g_frame_stamp.source_qpc = source_qpc;
+    g_frame_stamp.capture = ++g_capture_serial;
+    if (source_qpc && g_qpf.QuadPart > 0 && source_qpc >= g_previous_source_qpc)
+    {
+        const double source_ms = static_cast<double>(source_qpc) * 1000.0 / g_qpf.QuadPart;
+        if (source_ms <= g_frame_stamp.acquired) g_frame_stamp.source_time = source_ms;
+    }
+    if (source_qpc) g_previous_source_qpc = source_qpc;
+}
+
+enum ProfileStage { PS_SWIZZLE, PS_GRAY, PS_MOTION, PS_EVAL, PS_PRESENT, PS_COUNT, PS_NONE = -1 };
+static const char *kProfileStageNames[PS_COUNT] = { "swizzle", "gray", "motion", "eval", "present" };
+static double g_ps_submit_sum[PS_COUNT], g_ps_submit_max[PS_COUNT];
+static double g_ps_wait_sum[PS_COUNT], g_ps_wait_max[PS_COUNT];
+static double g_ps_gpu_sum[PS_COUNT], g_ps_gpu_max[PS_COUNT];
+static double g_ps_gap_sum[PS_COUNT], g_ps_gap_max[PS_COUNT];
+static unsigned g_ps_submit_n[PS_COUNT], g_ps_wait_n[PS_COUNT], g_ps_gpu_n[PS_COUNT], g_ps_gap_n[PS_COUNT];
+static unsigned g_ps_allocator_waits;
+static double g_ps_allocator_wait_sum, g_ps_allocator_wait_max;
+static unsigned g_ps_outstanding_max;
+static int g_ps_active = PS_NONE;
+static int g_ps_slot_stage[Host::kFrames] = { PS_NONE, PS_NONE, PS_NONE };
+static UINT64 g_ps_slot_fence[Host::kFrames];
+static void CollectProfileGpuTimes();
+
+static bool ProfileGpuBegin(ProfileStage stage);
+static void ProfileGpuEnd(ProfileStage stage, unsigned query_count = 2);
+static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms);
 
 static bool BeginCommands()
 {
+    if (g_submission_failed || h.list == nullptr) return false;
     const int slot = h.frame_slot;
     const UINT64 retire = h.alloc_fence[slot];
     if (retire != 0 && h.fence->GetCompletedValue() < retire)
@@ -574,9 +633,19 @@ static bool BeginCommands()
         // Through the same helper as every other wait: this one carried a
         // second copy of the shared-event bug, and it also left a
         // registration behind on a timeout for the next wait to trip over.
+        const bool phase = PhaseEnabled();
+        const double t_wait = phase ? PhaseNow() : 0.0;
         if (!WaitFenceValue(h.fence, retire, 2000))
         { Log("[host] GPU did not retire allocator slot %d", slot); return false; }
+        if (phase)
+        {
+            const double elapsed = PhaseNow() - t_wait;
+            ++g_ps_allocator_waits;
+            g_ps_allocator_wait_sum += elapsed;
+            if (elapsed > g_ps_allocator_wait_max) g_ps_allocator_wait_max = elapsed;
+        }
     }
+    if (PhaseEnabled()) CollectProfileGpuTimes();
     if (FAILED(h.alloc[slot]->Reset()))
     {
         // The allocator Reset() is where a removed device surfaces first
@@ -615,7 +684,17 @@ static void LogDeviceRemoved(const char *where)
 
 static UINT64 EndCommands()
 {
-    h.list->Close();
+    const bool phase = PhaseEnabled();
+    const double t_submit = phase ? PhaseNow() : 0.0;
+    const HRESULT closed = h.list->Close();
+    if (FAILED(closed))
+    {
+        Log("[host] command list Close failed 0x%08X; nothing submitted", closed);
+        g_submission_failed = true;
+        g_ps_active = PS_NONE;
+        AbortCommands();
+        return 0;
+    }
     ID3D12CommandList *lists[] = { h.list };
     h.queue->ExecuteCommandLists(1, lists);
     const UINT64 v = ++h.fence_value;
@@ -624,9 +703,33 @@ static UINT64 EndCommands()
     // the failure instead of pretending the commands were submitted
     // (code review finding).
     const HRESULT sig = h.queue->Signal(h.fence, v);
-    if (FAILED(sig)) { Log("[host] queue Signal failed 0x%08X", sig); return 0; }
+    if (FAILED(sig))
+    {
+        Log("[host] queue Signal failed 0x%08X", sig);
+        g_submission_failed = true;
+        g_ps_active = PS_NONE;
+        return 0;
+    }
     h.alloc_fence[h.frame_slot] = v;
+    if (g_ps_active != PS_NONE && g_ps_slot_stage[h.frame_slot] != PS_NONE)
+        g_ps_slot_fence[h.frame_slot] = v;
     h.frame_slot = (h.frame_slot + 1) % Host::kFrames;
+    if (phase)
+    {
+        g_frame_stamp.fence = v;
+        if (g_ps_active >= 0 && g_ps_active < PS_COUNT)
+        {
+            const double elapsed = PhaseNow() - t_submit;
+            g_ps_submit_sum[g_ps_active] += elapsed;
+            if (elapsed > g_ps_submit_max[g_ps_active]) g_ps_submit_max[g_ps_active] = elapsed;
+            ++g_ps_submit_n[g_ps_active];
+        }
+        const UINT64 completed = h.fence->GetCompletedValue();
+        const UINT64 outstanding = completed == UINT64_MAX || completed >= v ? 0 : v - completed;
+        if (outstanding > g_ps_outstanding_max)
+            g_ps_outstanding_max = static_cast<unsigned>(outstanding);
+    }
+    g_ps_active = PS_NONE;
     return v;
 }
 
@@ -679,12 +782,24 @@ static void CloseListGuarded()
 static void AbortCommands()   // never execute a list NGX crashed in
 {
     if (h.list == nullptr) return;
+    UINT64 retire = 0;
+    for (int i = 0; i < Host::kFrames; ++i)
+        if (h.alloc_fence[i] > retire) retire = h.alloc_fence[i];
+    if (retire && !WaitFenceValue(h.fence, retire, 60000))
+    { g_submission_failed = true; Log("[host] cannot retire commands before list replacement"); return; }
     CloseListGuarded();
     h.list->Release();
     h.list = nullptr;
-    if (SUCCEEDED(h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, h.alloc[h.frame_slot], nullptr,
-                                           __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&h.list))))
-        h.list->Close();
+    HRESULT hr = h.dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, h.alloc[h.frame_slot], nullptr,
+                                        __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&h.list));
+    if (SUCCEEDED(hr)) hr = h.list->Close();
+    if (FAILED(hr))
+    {
+        Log("[host] command list replacement failed 0x%08X", hr);
+        if (h.list) h.list->Release();
+        h.list = nullptr;
+        g_submission_failed = true;
+    }
 }
 
 static NVSDK_NGX_Result SafeCreateDLSS(NVSDK_NGX_DLSS_Create_Params *cp, DWORD *code)
@@ -859,7 +974,10 @@ static void InitBanner()
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         h.list->ResourceBarrier(1, &b);
         const UINT64 v = EndCommands();
-        WaitFenceValue(h.fence, v, 2000);
+        // The upload buffer goes back either way: the early return added here
+        // to stop using a banner the GPU never finished copying would
+        // otherwise walk out holding it.
+        if (!WaitFenceValue(h.fence, v, 2000)) { staging->Release(); return; }
     }
     staging->Release();
 
@@ -1607,6 +1725,21 @@ struct VideoState
     float residual_strength = 1.0f;
 };
 
+// Two different questions, and conflating them is what turned a 10-bit
+// desktop black (#58, reproduced here).
+//
+// g_capture_float: the duplicated frame arrived as FP16. That is true on an
+// HDR desktop AND on a plain SDR desktop whose output is set to 10 bits per
+// colour - measured: switching the colour depth to 10bpc makes duplication
+// hand back format 10, not the R10G10B10A2 one might expect. The capture
+// shader has to know, because it must tone-map those values down instead of
+// copying them.
+//
+// g_hdr_capture: the picture is PRESENTED in scRGB. That may only happen
+// when the user has switched HDR compatibility on. Deriving it from the
+// format alone meant a 10-bit SDR desktop silently took the whole HDR
+// presentation path with the switch off, and the screen went black.
+static bool g_capture_float = false;
 static bool g_hdr_capture = false;
 static HMONITOR g_capture_monitor = nullptr;
 static HdrDisplayInfo g_capture_display;
@@ -1695,6 +1828,10 @@ static HANDLE                     g_present_thread;
 static DWORD                      g_present_tid;
 static UINT                       g_present_w, g_present_h;
 static bool                       g_present_capturable;  // debug flag from WNDO
+// The flags the present window was opened with, and whether the swap chain
+// has to be built again before the next frame. See PresentStatus.
+static uint32_t                   g_present_flags = 0;
+static std::atomic<bool>          g_present_stale{false};
 
 // Whether the picture window hides itself from screen capture.
 //
@@ -1729,7 +1866,11 @@ static LRESULT CALLBACK PresentWndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_NCHITTEST:     return HTTRANSPARENT;
     case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
     case WM_ERASEBKGND:    return 1;
-    case WM_CLOSE:         ShowWindow(w, SW_HIDE); return 0;
+    // The window belongs to THIS thread and only this thread can destroy
+    // it. It used to hide instead, which left ClosePresent with nothing
+    // that could ever take the window down - see ClosePresent (audit).
+    case WM_CLOSE:         DestroyWindow(w); return 0;
+    case WM_DESTROY:       PostQuitMessage(0); return 0;
     default: break;
     }
     return DefWindowProcW(w, m, wp, lp);
@@ -1797,15 +1938,33 @@ static void ClosePresent()
 {
     CloseFgResources();
     if (g_present_swap != nullptr) { g_present_swap->Release(); g_present_swap = nullptr; }
-    if (g_present_tid != 0) PostThreadMessageW(g_present_tid, WM_QUIT, 0, 0);
-    if (g_present_hwnd != nullptr) { PostMessageW(g_present_hwnd, WM_CLOSE, 0, 0); }
+    // Only the thread that created the window can destroy it. This used to
+    // post WM_QUIT to the thread FIRST, which ended the message loop before
+    // the WM_CLOSE behind it could be dispatched, and then called
+    // DestroyWindow from here - which fails across threads, silently. The
+    // handle was nulled anyway, so a hidden, topmost, click-through window
+    // survived with nothing left able to destroy it: one per mode switch.
+    // And FindWindowW(L"NeuralScreenPresent", L"NeuralScreen") - how the HUD
+    // is kept above the picture - would happily find a dead one (audit).
+    //
+    // So: ask the window to close, and let its own thread do the work. Its
+    // WM_CLOSE destroys, WM_DESTROY posts the quit, the loop ends.
+    if (g_present_hwnd != nullptr) PostMessageW(g_present_hwnd, WM_CLOSE, 0, 0);
     if (g_present_thread != nullptr)
     {
-        WaitForSingleObject(g_present_thread, 2000);
+        if (WaitForSingleObject(g_present_thread, 2000) != WAIT_OBJECT_0)
+        {
+            // It never got there - the window may not exist yet, or the
+            // thread is stuck. End the loop the blunt way, and say so:
+            // a window left behind here is exactly what this avoids.
+            Log("[present] the window thread did not exit on WM_CLOSE");
+            if (g_present_tid != 0) PostThreadMessageW(g_present_tid, WM_QUIT, 0, 0);
+            WaitForSingleObject(g_present_thread, 1000);
+        }
         CloseHandle(g_present_thread);
         g_present_thread = nullptr;
     }
-    if (g_present_hwnd != nullptr) { DestroyWindow(g_present_hwnd); g_present_hwnd = nullptr; }
+    g_present_hwnd = nullptr;
     g_present_tid = 0;
     g_present_w = g_present_h = 0;
     g_present_state = 0;
@@ -1830,6 +1989,8 @@ static bool OpenPresent(UINT width, UINT height, uint32_t flags)
     g_present_h = height;
     ReadPresentOrigin();
     g_present_capturable = (flags & WINDOW_FLAG_CAPTURABLE) != 0;
+    g_present_flags = flags;
+    g_present_stale = false;
     g_present_state = 0;
     g_present_thread = CreateThread(nullptr, 0, PresentWindowThread, nullptr, 0, &g_present_tid);
     if (g_present_thread == nullptr) { Log("[present] CreateThread failed"); return false; }
@@ -2006,10 +2167,67 @@ static void RevealOnFirstPresent()
     Log("[present] window revealed on the first Present");
 }
 
-static bool PresentFrame(VideoState &v)
+// Present answered - now read the answer properly.
+//
+// DXGI_STATUS_MODE_CHANGED and DXGI_STATUS_MODE_CHANGE_IN_PROGRESS are
+// SUCCESS codes. SUCCEEDED() is true for them, so a present into a swap
+// chain the desktop has moved out from under "worked", and every frame
+// after it went somewhere nobody was looking. A reporter switched the
+// output's colour depth from 8 to 10 bits while the program was running
+// and the picture went black and stayed black (#58) - that is a mode
+// change with no resolution change behind it, so nothing else in the
+// program had any reason to notice.
+//
+// DXGI_STATUS_OCCLUDED means the window is fully covered: the frame was
+// dropped on purpose, the chain is fine, and presenting again is right.
+static bool PresentStatus(HRESULT hr, const char *where)
 {
+    if (hr == DXGI_STATUS_MODE_CHANGED || hr == DXGI_STATUS_MODE_CHANGE_IN_PROGRESS)
+    {
+        Log("[present] %s: the display mode changed under the swap chain "
+            "(0x%08X) - rebuilding the window", where, (unsigned)hr);
+        g_present_stale = true;
+        return true;        // this frame is lost; the next one is not
+    }
+    if (FAILED(hr))
+    {
+        Log("[present] %s failed 0x%08X", where, (unsigned)hr);
+        return false;
+    }
+    return true;
+}
+
+// A mode change left the chain behind (see PresentStatus): build the window
+// again before anything touches it. Every present path calls this, including
+// the bypass and the HDR one - a black screen after switching the output's
+// colour depth does not care which of them was drawing.
+static bool RebuildPresentIfStale()
+{
+    if (!g_present_stale || g_present_w == 0) return true;
+    const UINT w = g_present_w, h = g_present_h;
+    const uint32_t flags = g_present_flags;
+    ClosePresent();
+    if (!OpenPresent(w, h, flags))
+    { Log("[present] could not rebuild after the mode change"); return false; }
+    g_force_next_frame = true;
+    return true;
+}
+
+static bool PresentFrame(VideoState &v, UINT64 *submitted = nullptr)
+{
+    if (!RebuildPresentIfStale()) return false;
+    if (submitted) *submitted = 0;
     if (g_hdr_capture) return PresentHdr(v, false);
-    if (!EnsurePresentFormat(false)) return false;
+    // Only when HDR compatibility is on. With it off there is nothing to put
+    // back: the swap chain was created R8G8B8A8 and no HDR frame has ever
+    // touched it, so the call has nothing to do - and it is not free. 1.8.0
+    // ran it in front of every ordinary present, which put a SetColorSpace1
+    // into a path that had never made one, and a reporter on a hybrid laptop
+    // with an external monitor got a flicker on every cursor move that 1.7.0
+    // did not have (#58). An explicit colour space makes the compositor
+    // re-decide how the window is presented; on that hardware it decided
+    // differently. Off means byte-identical to 1.7.x.
+    if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
     if (FgRequested() && FgPresent(v, v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return true;
     StopFgPresentation();
     ID3D12Resource *bb = nullptr;
@@ -2021,6 +2239,7 @@ static bool PresentFrame(VideoState &v)
     bool ok = false;
     if (BeginCommands())
     {
+        ProfileGpuBegin(PS_PRESENT);
         D3D12_RESOURCE_BARRIER pre[] = {
             Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
             Transition(v.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
@@ -2034,14 +2253,21 @@ static bool PresentFrame(VideoState &v)
             Transition(v.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
         };
         h.list->ResourceBarrier(_countof(post), post);
+        ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
-        if (WaitFenceValue(h.fence, fv, 2000))
+        if (submitted) *submitted = fv;
+        if (ProfileWait(PS_PRESENT, fv, submitted ? 60000 : 2000))
         {
-            ok = SUCCEEDED(g_present_swap->Present(0, 0));
+            if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
+            ok = PresentStatus(g_present_swap->Present(0, 0), "present");
+            if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
         }
         else
-            Log("[present] fence wait timed out");
+        {
+            Log("[present] fence wait failed");
+            return false; // Retain the backbuffer until failing-process teardown.
+        }
     }
     bb->Release();
     if (ok) RevealOnFirstPresent();
@@ -2054,8 +2280,10 @@ static bool PresentFrame(VideoState &v)
 static bool PresentBypass(VideoState &v)
 {
     StopFgPresentation();
+    if (!RebuildPresentIfStale()) return false;
     if (g_hdr_capture) return PresentHdr(v, true);
-    if (!EnsurePresentFormat(false)) return false;
+    // Same as PresentFrame: nothing to restore unless HDR has been on (#58).
+    if (HdrEnabled() && !EnsurePresentFormat(false)) return false;
     ID3D12Resource *bb = nullptr;
     if (FAILED(g_present_swap->GetBuffer(g_present_swap->GetCurrentBackBufferIndex(),
                                          __uuidof(ID3D12Resource),
@@ -2065,6 +2293,7 @@ static bool PresentBypass(VideoState &v)
     bool ok = false;
     if (BeginCommands())
     {
+        ProfileGpuBegin(PS_PRESENT);
         D3D12_RESOURCE_BARRIER pre[] = {
             Transition(bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
             Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -2080,10 +2309,13 @@ static bool PresentBypass(VideoState &v)
                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
         };
         h.list->ResourceBarrier(_countof(post), post);
+        ProfileGpuEnd(PS_PRESENT);
         const UINT64 fv = EndCommands();
-        if (WaitFenceValue(h.fence, fv, 2000))
+        if (ProfileWait(PS_PRESENT, fv, 2000))
         {
-            ok = SUCCEEDED(g_present_swap->Present(0, 0));
+            if (PhaseEnabled()) { g_frame_stamp.present_call = PhaseNow(); g_frame_stamp.fence = fv; }
+            ok = PresentStatus(g_present_swap->Present(0, 0), "present");
+            if (!ok) g_frame_stamp.present_call = 0.0;
             SpoutBridgeSend();
         }
         else
@@ -2106,8 +2338,52 @@ static bool ReadExact(FILE *f, void *p, size_t n)
     return true;
 }
 
+// The protocol pipe, and nobody else's.
+//
+// stdout carries the binary protocol, so anything else in this process that
+// prints lands in the middle of it - NVIDIA's own logging, an injected
+// overlay, a library's stray printf. A user's log showed the SHMI reply
+// coming back as 0x3230325B, which is the bytes "[202": the first four
+// characters of somebody's timestamped line. Every handshake after that
+// timed out at 15 seconds while this worker cheerfully logged OK for each
+// one, and the program spent its life restarting a worker that was
+// answering into a stream nobody could read any more (issue #61).
+//
+// So fd 1 is duplicated into a private handle for the protocol and the real
+// fd 1 is pointed at stderr: our writes go down the pipe, everyone else's
+// go into the log, where they are merely noise.
+static FILE *g_wire = nullptr;
+
+static void OwnTheProtocolPipe()
+{
+    {
+        // NS_SHARED_STDOUT=1: do not take the pipe, the way it was before
+        // this existed. Only test_stdout_noise sets it, and it sets it to
+        // prove that its other half means something - a check that passes
+        // both with and without the thing it is checking is not a check.
+        char v[8] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_SHARED_STDOUT", v, sizeof(v));
+        if (got > 0 && got < sizeof(v) && v[0] == '1')
+        {
+            g_wire = stdout;
+            Log("[video] NS_SHARED_STDOUT=1: the protocol shares stdout");
+            return;
+        }
+    }
+    const int copy = _dup(_fileno(stdout));
+    if (copy < 0) { g_wire = stdout; return; }
+    g_wire = _fdopen(copy, "wb");
+    if (g_wire == nullptr) { g_wire = stdout; return; }
+    _setmode(copy, _O_BINARY);
+    setvbuf(g_wire, nullptr, _IONBF, 0);
+    // From here a printf to stdout is a line in the log, not four bytes in
+    // the middle of a reply.
+    _dup2(_fileno(stderr), _fileno(stdout));
+}
+
 static bool WriteExact(FILE *f, const void *p, size_t n)
 {
+    if (g_submission_failed) return false;
     const BYTE *src = static_cast<const BYTE *>(p);
     while (n != 0)
     {
@@ -2858,7 +3134,17 @@ static bool ScaleMotionInto(VideoState &v, const BYTE *mv, bool mv_was_ready)
 // only motion. All guarded by g_dda_active, the pipe path stays untouched.
 // ---------------------------------------------------------------------------
 static bool                    g_dda_hdr_mode = false;
+// "Landscape (flipped)": Desktop Duplication hands back the UNROTATED
+// desktop, so the picture arrives upside down. Set from DXGI_OUTDUPL_DESC
+// when the duplication opens, consumed by the capture shader. Duplication
+// only - a window captured through WGC is already composed the way the
+// user sees it, and turning that over would be the second rotation.
+static bool                    g_capture_rotate180 = false;
+// Once per dry spell, not once per frame: a recording asks for pixels on
+// every slot, and reopening the capture for each of them would be thrashing.
+static bool                    g_no_colour_retried = false;
 static bool                    g_dda_active = false;   // DDA1 with w>0 has been acked
+static bool                    g_capture_visual_changed = false;
 static UINT                    g_dda_w = 0, g_dda_h = 0;
 static ID3D11Device           *g_dda_d11 = nullptr;
 static ID3D11DeviceContext    *g_dda_ctx = nullptr;
@@ -2902,9 +3188,11 @@ static void CloseGray()
 static void CloseDda()
 {
     CloseFgResources();
+    if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     g_dda_active = false;
     g_dda_ready = false;
     g_hdr_capture = false;
+    g_capture_float = false;
     CloseHdrResources();
     if (g_dda_d12) { g_dda_d12->Release(); g_dda_d12 = nullptr; }
     if (g_dda_nt)  { CloseHandle(g_dda_nt); g_dda_nt = nullptr; }
@@ -2945,7 +3233,7 @@ static bool EnsureDdaSwizzle()
     prm[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     D3D12_ROOT_SIGNATURE_DESC rsd = {};
     prm[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    prm[2].Constants.Num32BitValues = 2;
+    prm[2].Constants.Num32BitValues = 3;   // isFloat, white, rotate180
     prm[2].Constants.ShaderRegister = 0;
     rsd.NumParameters = 3; rsd.pParameters = prm;
     ID3DBlob *sig = nullptr;
@@ -3129,13 +3417,13 @@ static bool DeliverPixels(const std::vector<BYTE> &output, uint32_t index,
         memcpy(g_out_map, &seq, sizeof(seq));
         VideoResultHeader out = { OUT_MAGIC, index, 1u, OUT_BYTES_IN_SHM,
                                   g_last_eval_result, pts };
-        return WriteExact(stdout, &out, sizeof(out));
+        return WriteExact(g_wire, &out, sizeof(out));
     }
     VideoResultHeader out = { OUT_MAGIC, index, 1u,
                               static_cast<uint32_t>(output.size()),
                               g_last_eval_result, pts };
-    return WriteExact(stdout, &out, sizeof(out))
-        && WriteExact(stdout, output.data(), output.size());
+    return WriteExact(g_wire, &out, sizeof(out))
+        && WriteExact(g_wire, output.data(), output.size());
 }
 
 static bool OpenGray(const VideoGrayCmd &gc)
@@ -3200,6 +3488,7 @@ static bool AreaToGray()
 {
     if (!g_gray_mapped || !g_dda_dst) return false;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_GRAY);
     // Is g_dda_dst in COPY_SOURCE after the copy into v.color? No - after the
     // swizzle it goes back to UNORDERED_ACCESS (see DdaGrab). We read it as an SRV.
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_dst, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -3251,8 +3540,9 @@ static bool AreaToGray()
                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     D3D12_RESOURCE_BARRIER backs[2] = { back_uav, back_uav2 };
     h.list->ResourceBarrier(2, backs);
+    ProfileGpuEnd(PS_GRAY);
     const UINT64 fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fence, 10000)) { Log("[gray] fence timeout"); return false; }
+    if (!ProfileWait(PS_GRAY, fence, 10000)) { Log("[gray] fence timeout"); return false; }
     // map the readback -> memcpy into the client mapping. The readback
     // rows are pitch-aligned; the client mapping is packed w*h, so the
     // copy is row by row (code review finding).
@@ -3488,7 +3778,12 @@ static bool OpenDda(UINT w, UINT hgt)
                     d1.ColorSpace == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020 ||
                     d1.ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020 ||
                     d1.ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020;
-                Log("[dda] output colour space %d%s", (int)d1.ColorSpace,
+                // The bit depth belongs in the log too. That a display was
+                // set to 10 bits per colour was something one reporter
+                // found by trying settings until the symptom moved (#58);
+                // it should be a line anyone can read instead.
+                Log("[dda] output colour space %d, %u bits per colour%s",
+                    (int)d1.ColorSpace, d1.BitsPerColor,
                     hdr ? " - HDR IS ON for the captured display" : "");
             }
             out6->Release();
@@ -3543,10 +3838,24 @@ static bool OpenDda(UINT w, UINT hgt)
         g_dda_dup->GetDesc(&dd);
         static const char *kRot[] = { "unspecified", "none", "90", "180", "270" };
         const unsigned r = (unsigned)dd.Rotation;
+        // 180 - "Landscape (flipped)" - is the case that can be undone here
+        // and nowhere else: the frame keeps its size, so turning it over as
+        // it is read is the whole fix. Everything downstream then sees an
+        // upright desktop: the network, the optical flow, the gray channel
+        // and the picture that goes back on screen.
+        //
+        // 90 and 270 swap the width and the height, which changes the size
+        // the whole pipeline was built for - the work resolution, the shared
+        // memory, the overlay. That is not a shader flag, and it stays
+        // unhandled rather than half-handled (issue #47).
+        g_capture_rotate180 = (r == DXGI_MODE_ROTATION_ROTATE180);
+        const bool unhandled = (r == DXGI_MODE_ROTATION_ROTATE90 ||
+                                r == DXGI_MODE_ROTATION_ROTATE270);
         Log("[dda] desktop rotation: %s%s", r < 5 ? kRot[r] : "?",
-            (r == DXGI_MODE_ROTATION_ROTATE90 || r == DXGI_MODE_ROTATION_ROTATE180
-             || r == DXGI_MODE_ROTATION_ROTATE270)
-                ? " - NOT handled yet, the picture will not match the screen" : "");
+            g_capture_rotate180 ? " - turned back over on capture"
+            : unhandled ? " - NOT handled: the width and the height are "
+                          "swapped, the picture will not match the screen"
+                        : "");
     }
     g_dda_w = w; g_dda_h = hgt; g_dda_active = true;
     Log("[dda] capture %ux%u active", w, hgt);
@@ -3567,20 +3876,47 @@ enum class StageResult { Ok, SizeChanged, Failed };
 // Graphics Capture produce the same kind of texture, so this half of the path
 // exists once. The caller owns the source frame and releases it afterwards -
 // duplication may only call ReleaseFrame() once the fence below has fired.
-static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT *out_h)
+static StageResult StageCapturedFrame(ID3D11Texture2D *frame, UINT *out_w, UINT *out_h,
+                                      DXGI_FORMAT *out_format = nullptr)
 {
     D3D11_TEXTURE2D_DESC fd = {};
     frame->GetDesc(&fd);
     if (out_w != nullptr) *out_w = fd.Width;
     if (out_h != nullptr) *out_h = fd.Height;
+    if (out_format != nullptr) *out_format = fd.Format;
+    // R10G10B10A2 belongs here too. An output set to 10 bits per colour can
+    // hand the duplicated desktop back in it, and refusing the format means
+    // refusing every frame: nothing is ever captured again and the picture
+    // stops where it was. That is the shape of "it immediately turns into a
+    // black screen the moment I switch to 10bpc" (#58) - and before this
+    // check existed the same frame went through with an SRV hardcoded to
+    // BGRA, which is the other half of that report.
+    //
+    // Nothing downstream needs to change: the SRV takes the source's own
+    // format, and a UNORM format of any width reads as the same normalised
+    // floats in the capture shader, which writes into an 8-bit destination
+    // either way. The extra two bits per channel are lost there - the
+    // network is 8-bit - but a slightly flatter gradient beats no picture.
     if (fd.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+        fd.Format != DXGI_FORMAT_R10G10B10A2_UNORM &&
         fd.Format != DXGI_FORMAT_R16G16B16A16_FLOAT)
     { Log("[hdr] unsupported capture format %u", fd.Format); return StageResult::Failed; }
     if (g_dda_shared == nullptr)
     {
-        g_hdr_capture = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        g_capture_float = fd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // The switch decides the presentation, never the format on its own.
+        g_hdr_capture = g_capture_float && HdrEnabled();
+        // The format goes into the log every time the capture opens, not
+        // only when it is refused: the last report needed the reporter to
+        // find "10bpc" by trying settings until the symptom moved.
+        Log("[cap] capture format %u (%s)", (unsigned)fd.Format,
+            fd.Format == DXGI_FORMAT_B8G8R8A8_UNORM ? "BGRA8" :
+            fd.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? "RGB10A2 - a 10-bit output" :
+            "FP16");
         Log("[hdr] capture=%s; neural processing=SDR proxy; export=SDR",
-            g_hdr_capture ? "FP16 scRGB" : "SDR");
+            g_capture_float ? (g_hdr_capture ? "FP16 scRGB"
+                                             : "FP16 (10-bit output) - presented as SDR")
+                            : "SDR");
         D3D11_TEXTURE2D_DESC sd = {};
         sd.Width = fd.Width; sd.Height = fd.Height; sd.MipLevels = 1; sd.ArraySize = 1;
         sd.Format = fd.Format; sd.SampleDesc.Count = 1; sd.Usage = D3D11_USAGE_DEFAULT;
@@ -3706,6 +4042,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     }
     g_hdr_frame_white = g_capture_display.white;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_SWIZZLE);
     D3D12_RESOURCE_BARRIER to_srv = Transition(g_dda_d12, D3D12_RESOURCE_STATE_COMMON,
                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     h.list->ResourceBarrier(1, &to_srv);
@@ -3719,8 +4056,12 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
     g1.ptr += h.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     h.list->SetComputeRootDescriptorTable(0, g0);
     h.list->SetComputeRootDescriptorTable(1, g1);
-    struct { UINT is_float; float white; } hdr = {g_hdr_capture ? 1u : 0u, g_hdr_frame_white};
-    h.list->SetComputeRoot32BitConstants(2, 2, &hdr, 0);
+    // rotate180 only for duplication: a WGC window is already composed the
+    // way the user sees it, so turning it over would be a second rotation.
+    struct { UINT is_float; float white; UINT rotate180; } hdr = {
+        g_capture_float ? 1u : 0u, g_hdr_frame_white,
+        (g_dda_active && g_capture_rotate180) ? 1u : 0u };
+    h.list->SetComputeRoot32BitConstants(2, 3, &hdr, 0);
     h.list->Dispatch((g_dda_w + 7) / 8, (g_dda_h + 7) / 8, 1);
     // copy swizzled dst into v.color.tex
     D3D12_RESOURCE_BARRIER pre_color = Transition(v.color.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -3758,12 +4099,15 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
                                                   D3D12_RESOURCE_STATE_COMMON);
     D3D12_RESOURCE_BARRIER post_c[3] = { to_uav, to_nps, to_common };
     h.list->ResourceBarrier(3, post_c);
+    ProfileGpuEnd(PS_SWIZZLE);
     const UINT64 fence = EndCommands();
-    if (!WaitFenceValue(h.fence, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
+    if (!ProfileWait(PS_SWIZZLE, fence, 10000)) { Log("[cap] swizzle fence timeout"); return false; }
     // Hand the client the luminance frame (320x180) for the optical flow
     g_capture_gray_ok = AreaToGray();
+    if (g_submission_failed) return false;
     UpdateAdaptiveExposure();
     g_dda_ready = true;
+    g_no_colour_retried = false;   // the dry spell is over
     return true;
 }
 
@@ -3773,6 +4117,7 @@ static bool SwizzleCaptureIntoColor(VideoState &v)
 static bool DdaGrab(VideoState &v)
 {
     if (!g_dda_active) return false;
+    g_capture_visual_changed = false;
     static ULONGLONG last_mode_query = 0;
     if (GetTickCount64() - last_mode_query > 1000)
     {
@@ -3797,6 +4142,11 @@ static bool DdaGrab(VideoState &v)
         OpenDda(g_dda_w, g_dda_h);
         return false;
     }
+    // LastPresentTime is zero for pointer-only updates. Keep processing them
+    // exactly as before, but do not count them as fresh desktop pictures in
+    // the opt-in performance report.
+    g_capture_visual_changed = fi.LastPresentTime.QuadPart != 0;
+    ProfileCapture(t_acq, static_cast<UINT64>(fi.LastPresentTime.QuadPart), "dda");
     ID3D11Texture2D *frame = nullptr;
     if (FAILED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)&frame)))
     {
@@ -3805,7 +4155,8 @@ static bool DdaGrab(VideoState &v)
         return false;
     }
     UINT new_w = 0, new_h = 0;
-    const StageResult st = StageCapturedFrame(frame, &new_w, &new_h);
+    DXGI_FORMAT new_format = DXGI_FORMAT_UNKNOWN;
+    const StageResult st = StageCapturedFrame(frame, &new_w, &new_h, &new_format);
     frame->Release();
     res->Release();
     // Desktop Duplication requires ReleaseFrame() only AFTER every read of the
@@ -3815,7 +4166,13 @@ static bool DdaGrab(VideoState &v)
     g_dda_dup->ReleaseFrame();
     if (st == StageResult::SizeChanged)
     {
-        Log("[dda] monitor resolution changed -> %ux%u - recreating", new_w, new_h);
+        // Not always the resolution: the staged texture is also rebuilt
+        // when the FORMAT changes, which is what a colour-depth switch
+        // does. The old wording read "resolution changed -> 3840x2160"
+        // while the desktop was still 3840x2160, which is a line that
+        // sends the reader somewhere else (#58).
+        Log("[dda] capture changed -> %ux%u, format %u - recreating",
+            new_w, new_h, (unsigned)new_format);
         OpenDda(new_w, new_h);
         return false;
     }
@@ -3965,6 +4322,7 @@ static bool OpenWgc(HWND hwnd)
 static bool WgcGrab(VideoState &v)
 {
     if (!g_wgc_active || g_wgc == nullptr) return false;
+    g_capture_visual_changed = false;
     const HMONITOR monitor = MonitorFromWindow(g_wgc_hwnd, MONITOR_DEFAULTTONEAREST);
     static ULONGLONG last_mode_query = 0;
     if (monitor != g_capture_monitor || GetTickCount64() - last_mode_query > 1000)
@@ -3989,18 +4347,22 @@ static bool WgcGrab(VideoState &v)
         // DXGI_ERROR_WAIT_TIMEOUT on the duplication path - the caller keeps
         // the previous frame.
         if (frame == nullptr) return false;
+        ProfileCapture(t_acq, 0, "wgc");
+        g_capture_visual_changed = true;
         auto access = frame.Surface().as<INsDxgiInterfaceAccess>();
         ID3D11Texture2D *tex = nullptr;
         if (FAILED(access->GetInterface(__uuidof(ID3D11Texture2D), (void **)&tex)) ||
             tex == nullptr)
         { frame.Close(); return false; }
         UINT new_w = 0, new_h = 0;
-        const StageResult st = StageCapturedFrame(tex, &new_w, &new_h);
+        DXGI_FORMAT new_format = DXGI_FORMAT_UNKNOWN;
+        const StageResult st = StageCapturedFrame(tex, &new_w, &new_h, &new_format);
         tex->Release();
         frame.Close();
         if (st == StageResult::SizeChanged)
         {
-            Log("[wgc] the window resized -> %ux%u - recreating", new_w, new_h);
+            Log("[wgc] the window changed -> %ux%u, format %u - recreating",
+                new_w, new_h, (unsigned)new_format);
             OpenWgc(g_wgc_hwnd);
             return false;
         }
@@ -4022,6 +4384,7 @@ static bool UploadVideoFrame(VideoState &v, const BYTE *color, const BYTE *mv, b
     if (!FillUpload(v.color, color, cw * 4, ch)) return false;
     if (!motion_small && !FillUpload(v.mv, mv, v.w * 4, v.hgt)) return false;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_MOTION);
     if (v.inputs_ready)
     {
         // The colour always goes as a copy; in downscaled-field mode it is
@@ -4050,16 +4413,21 @@ static bool UploadVideoFrame(VideoState &v, const BYTE *color, const BYTE *mv, b
         };
         h.list->ResourceBarrier(_countof(post), post);
     }
+    ProfileGpuEnd(PS_MOTION);
     const UINT64 fence = EndCommands();
+    if (fence == 0) return false;
     v.inputs_ready = true;
-    return WaitFenceValue(h.fence, fence, 30000);
+    return ProfileWait(PS_MOTION, fence, 30000);
 }
 
 // DDA mode: the colour is already in v.color.tex (DdaGrab), we upload only motion.
-static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small)
+static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small,
+                             UINT64 *submitted = nullptr)
 {
+    if (submitted) *submitted = 0;
     if (!motion_small && !FillUpload(v.mv, mv, v.w * 4, v.hgt)) return false;
     if (!BeginCommands()) return false;
+    ProfileGpuBegin(PS_MOTION);
     if (v.inputs_ready)
     {
         D3D12_RESOURCE_BARRIER pre = Transition(v.mv.tex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -4077,13 +4445,16 @@ static bool UploadMotionOnly(VideoState &v, const BYTE *mv, bool motion_small)
                                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         h.list->ResourceBarrier(1, &post);
     }
+    ProfileGpuEnd(PS_MOTION);
     const UINT64 fence = EndCommands();
+    if (fence == 0) return false;
     v.inputs_ready = true;
-    return WaitFenceValue(h.fence, fence, 30000);
+    if (submitted) { *submitted = fence; return true; }
+    return ProfileWait(PS_MOTION, fence, 30000);
 }
 
 // ---------------------------------------------------------------------------
-// How much of the Evaluate time the GPU actually spends computing
+// GPU time for each serial submission boundary, plus the network itself.
 //
 // PH_EVAL measures submit plus the CPU wait on the fence: it includes both
 // queueing the work and waking the thread. Timestamps on the queue answer how
@@ -4110,15 +4481,15 @@ static bool EnsureTimestamps()
     if (h.dev == nullptr || h.queue == nullptr) return false;
     D3D12_QUERY_HEAP_DESC qd = {};
     qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-    qd.Count = 2;
+    qd.Count = 4 * Host::kFrames;
     if (FAILED(h.dev->CreateQueryHeap(&qd, __uuidof(ID3D12QueryHeap),
                                       reinterpret_cast<void **>(&g_ts_heap))))
-    { Log("[phase] CreateQueryHeap failed - nothing to measure eval GPU time with"); return false; }
+    { Log("[phase] CreateQueryHeap failed - no GPU stage timings"); return false; }
     D3D12_HEAP_PROPERTIES rb = {};
     rb.Type = D3D12_HEAP_TYPE_READBACK;
     D3D12_RESOURCE_DESC bd = {};
     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bd.Width = sizeof(UINT64) * 2; bd.Height = 1; bd.DepthOrArraySize = 1;
+    bd.Width = sizeof(UINT64) * 4 * Host::kFrames; bd.Height = 1; bd.DepthOrArraySize = 1;
     bd.MipLevels = 1; bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (FAILED(h.dev->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd,
@@ -4126,20 +4497,59 @@ static bool EnsureTimestamps()
         reinterpret_cast<void **>(&g_ts_readback)))) return false;
     if (FAILED(h.queue->GetTimestampFrequency(&g_ts_freq)) || g_ts_freq == 0) return false;
     g_ts_state = 1;
-    Log("[phase] GPU timestamps around Evaluate are on (frequency %llu Hz)", g_ts_freq);
+    Log("[phase] GPU stage timestamps are on (frequency %llu Hz)", g_ts_freq);
     return true;
 }
 
-static void ReadEvalGpuTime()
+static UINT64 g_ps_previous_gpu_end;
+
+static bool ProfileGpuBegin(ProfileStage stage)
+{
+    if (!PhaseEnabled()) return false;
+    g_ps_active = stage;
+    if (!EnsureTimestamps()) return false;
+    g_ps_slot_stage[h.frame_slot] = stage;
+    h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4);
+    return true;
+}
+
+static void ProfileGpuEnd(ProfileStage, unsigned query_count)
 {
     if (g_ts_state != 1) return;
-    D3D12_RANGE r = { 0, sizeof(UINT64) * 2 };
+    const UINT base = h.frame_slot * 4;
+    h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, base + 1);
+    h.list->ResolveQueryData(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, base, query_count,
+                             g_ts_readback, sizeof(UINT64) * base);
+}
+
+static void ReadProfileGpuTime(int slot)
+{
+    if (g_ts_state != 1) return;
+    const int stage = g_ps_slot_stage[slot];
+    D3D12_RANGE r = { sizeof(UINT64) * slot * 4, sizeof(UINT64) * (slot + 1) * 4 };
     void *mapped = nullptr;
     if (FAILED(g_ts_readback->Map(0, &r, &mapped)) || mapped == nullptr) return;
-    const UINT64 *ts = static_cast<const UINT64 *>(mapped);
+    const UINT64 *ts = static_cast<const UINT64 *>(mapped) + slot * 4;
     if (ts[1] > ts[0])
     {
         const double ms = static_cast<double>(ts[1] - ts[0]) * 1000.0
+                          / static_cast<double>(g_ts_freq);
+        g_ps_gpu_sum[stage] += ms;
+        if (ms > g_ps_gpu_max[stage]) g_ps_gpu_max[stage] = ms;
+        ++g_ps_gpu_n[stage];
+        if (g_ps_previous_gpu_end != 0 && ts[0] >= g_ps_previous_gpu_end)
+        {
+            const double gap = static_cast<double>(ts[0] - g_ps_previous_gpu_end) * 1000.0
+                               / static_cast<double>(g_ts_freq);
+            g_ps_gap_sum[stage] += gap;
+            if (gap > g_ps_gap_max[stage]) g_ps_gap_max[stage] = gap;
+            ++g_ps_gap_n[stage];
+        }
+        g_ps_previous_gpu_end = ts[1];
+    }
+    if (stage == PS_EVAL && ts[3] > ts[2])
+    {
+        const double ms = static_cast<double>(ts[3] - ts[2]) * 1000.0
                           / static_cast<double>(g_ts_freq);
         g_ts_sum += ms;
         if (ms > g_ts_max) g_ts_max = ms;
@@ -4151,10 +4561,44 @@ static void ReadEvalGpuTime()
 
 #include "super_resolution.inl"
 
-static bool EvaluateVideo(VideoState &v, int reset)
+static void CollectProfileGpuTimes()
 {
+    if (g_ts_state != 1) return;
+    const UINT64 completed = h.fence->GetCompletedValue();
+    if (completed == UINT64_MAX) return;
+    // Three slots, consumed in submission order before any region is reused.
+    for (int n = 0; n < Host::kFrames; ++n)
+    {
+        int first = -1;
+        for (int i = 0; i < Host::kFrames; ++i)
+            if (g_ps_slot_fence[i] && g_ps_slot_fence[i] <= completed &&
+                (first < 0 || g_ps_slot_fence[i] < g_ps_slot_fence[first])) first = i;
+        if (first < 0) break;
+        ReadProfileGpuTime(first);
+        g_ps_slot_fence[first] = 0;
+        g_ps_slot_stage[first] = PS_NONE;
+    }
+}
+
+static bool ProfileWait(ProfileStage stage, UINT64 fence, DWORD ms)
+{
+    const double t_wait = PhaseEnabled() ? PhaseNow() : 0.0;
+    const bool ok = WaitFenceValue(h.fence, fence, ms);
+    if (!PhaseEnabled()) return ok;
+    const double elapsed = PhaseNow() - t_wait;
+    g_ps_wait_sum[stage] += elapsed;
+    if (elapsed > g_ps_wait_max[stage]) g_ps_wait_max[stage] = elapsed;
+    ++g_ps_wait_n[stage];
+    if (ok) CollectProfileGpuTimes();
+    return ok;
+}
+
+static bool EvaluateVideo(VideoState &v, int reset, UINT64 *submitted = nullptr)
+{
+    if (submitted) *submitted = 0;
     const bool use_sr = EnsureSr(v);
     if (!BeginCommands()) return false;
+    const bool ts = ProfileGpuBegin(PS_EVAL);
     const UINT cw = v.upscale ? v.full_w : v.w;
     const UINT ch = v.upscale ? v.full_h : v.hgt;
     // What the network is actually handed. In nr_small mode that is the work
@@ -4182,8 +4626,7 @@ static bool EvaluateVideo(VideoState &v, int reset)
     // The timestamps go around the network alone: the scaling passes are our
     // own cost, and folding them into "eval on GPU" would make the number
     // incomparable with every measurement taken so far.
-    const bool ts = PhaseEnabled() && EnsureTimestamps();
-    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 2);
     ID3D12Resource *nr_color = use_sr ? g_sr.nr_in.get() : (v.nr_small ? v.nr_in : v.color.tex);
     ID3D12Resource *nr_result = use_sr ? g_sr.nr_out.get() : (v.nr_small ? v.nr_out : v.output);
     h.params->Reset();
@@ -4213,7 +4656,7 @@ static bool EvaluateVideo(VideoState &v, int reset)
     __except (EXCEPTION_EXECUTE_HANDLER) { code = GetExceptionCode(); }
     g_last_eval_result = static_cast<uint32_t>(result);
     if (code != 0) { AbortCommands(); Log("[pure] direct evaluate exception 0x%08X", code); return false; }
-    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+    if (ts) h.list->EndQuery(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, h.frame_slot * 4 + 3);
     if (use_sr) { ComposeSrInput(v); EvaluateSr(v, reset); }
     else if (v.nr_small)
     {
@@ -4237,14 +4680,14 @@ static bool EvaluateVideo(VideoState &v, int reset)
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         h.list->ResourceBarrier(1, &back);
     }
-    if (ts)
-        h.list->ResolveQueryData(g_ts_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
-                                 g_ts_readback, 0);
+    if (ts) ProfileGpuEnd(PS_EVAL, 4);
     const UINT64 fence = EndCommands();
+    if (submitted) *submitted = fence;
+    if (fence == 0) return false;
     if (NVSDK_NGX_FAILED(result)) { Log("[pure] direct evaluate failed 0x%08X (%s)", result, NgxResultName(result)); return false; }
+    if (submitted) return true;
+    if (!ProfileWait(PS_EVAL, fence, 60000)) return false;
     ++g_eval_count;
-    if (!WaitFenceValue(h.fence, fence, 60000)) return false;
-    if (ts) ReadEvalGpuTime();
     return true;
 }
 
@@ -4552,6 +4995,8 @@ static void ReleaseVideoTextures(VideoState &v)
 {
     CloseSrResources();
     CloseFgResources();
+
+    if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     // The shader descriptors referenced these resources - after they are
     // released the descriptors must be reissued (see BindScaleDescriptors).
     if (v.mv.tex == g_scale_dst_bound) g_scale_dst_bound = nullptr;
@@ -4603,7 +5048,12 @@ static unsigned g_ph_n[PH_COUNT];
 // Present buckets, ms: <5, 5-12, 12-20 (~1 vblank), 20-28, 28-40 (~2 vblank), 40+
 static const double kPresentBins[] = { 5.0, 12.0, 20.0, 28.0, 40.0 };
 static unsigned g_ph_bins[6];
-static LARGE_INTEGER g_qpf;
+static unsigned g_ph_requests;
+static unsigned g_ph_fresh_sources;
+static unsigned g_ph_evaluated;
+static unsigned g_ph_fresh_evaluated;
+static unsigned g_ph_processed;
+static unsigned g_ph_idle;
 static UINT64 g_ph_tick;
 
 // The profiler is turned on by the NS_PHASE=1 environment variable. Off by
@@ -4645,13 +5095,51 @@ static void PhaseAdd(int idx, double t0)
     }
 }
 
+static void ProfileFrameResult(const VideoState &v, const VideoFrameHeader &fh,
+                               bool fresh, const char *disposition)
+{
+    if (!PhaseEnabled()) return;
+    if (g_frame_record_count == _countof(g_frame_records)) FlushProfileFrames();
+    g_frame_stamp.reported = true;
+    const double age = fresh && g_frame_stamp.present_call > 0 && g_frame_stamp.acquired > 0
+        ? g_frame_stamp.present_call - g_frame_stamp.acquired : -1.0;
+    const double source_age = age >= 0 && g_frame_stamp.source_time > 0
+        ? g_frame_stamp.present_call - g_frame_stamp.source_time : -1.0;
+    const UINT cw = v.upscale ? v.full_w : v.w, ch = v.upscale ? v.full_h : v.hgt;
+    sprintf_s(g_frame_records[g_frame_record_count++],
+        "[phase] frame index=%u pts=%lld generation=%llu capture=%llu kind=%s fresh=%u result=%s "
+        "acquire-start=%.3f acquired=%.3f present-call=%.3f age=%.3f source-qpc=%llu source-age=%.3f "
+        "clock=%s fence=%llu color=%ux%u neural=%ux%u output=%ux%u",
+        fh.index, static_cast<long long>(fh.pts), g_capture_generation, g_frame_stamp.capture,
+        g_frame_stamp.kind, fresh ? 1u : 0u, disposition, g_frame_stamp.acquire_start,
+        g_frame_stamp.acquired, g_frame_stamp.present_call, age, g_frame_stamp.source_qpc, source_age,
+        source_age >= 0 ? "dda-qpc" : "acquisition-to-present-call", g_frame_stamp.fence,
+        cw, ch, v.nr_small ? v.nr_w : cw, v.nr_small ? v.nr_h : ch, cw, ch);
+}
+
+struct ProfileRequest
+{
+    const VideoState &video;
+    const VideoFrameHeader &frame;
+    ~ProfileRequest()
+    {
+        if (PhaseEnabled() && !g_frame_stamp.reported)
+        {
+            ProfileFrameResult(video, frame, false, "failure");
+            FlushProfileFrames();
+        }
+    }
+};
+
 static void PhaseReport(bool bypass)
 {
     if (!PhaseEnabled()) return;
     const UINT64 now = GetTickCount64();
     if (g_ph_tick == 0) { g_ph_tick = now; return; }
     if (now - g_ph_tick < 2000) return;
+    const double seconds = static_cast<double>(now - g_ph_tick) / 1000.0;
     g_ph_tick = now;
+    FlushProfileFrames();
 
     char line[640];
     int off = _snprintf_s(line, sizeof(line), _TRUNCATE, "[phase] %s", bypass ? "bypass" : "NR");
@@ -4669,15 +5157,110 @@ static void PhaseReport(bool bypass)
         g_ts_sum = 0.0; g_ts_max = 0.0; g_ts_n = 0;
     }
     Log("%s (mean/max, ms)", line);
+    for (int i = 0; i < PS_COUNT; ++i)
+    {
+        if (g_ps_submit_n[i] == 0 && g_ps_wait_n[i] == 0 && g_ps_gpu_n[i] == 0) continue;
+        Log("[phase] boundary %s: submit %.3f/%.3f wait %.3f/%.3f GPU %.3f/%.3f gap %.3f/%.3f ms",
+            kProfileStageNames[i],
+            g_ps_submit_n[i] ? g_ps_submit_sum[i] / g_ps_submit_n[i] : 0.0, g_ps_submit_max[i],
+            g_ps_wait_n[i] ? g_ps_wait_sum[i] / g_ps_wait_n[i] : 0.0, g_ps_wait_max[i],
+            g_ps_gpu_n[i] ? g_ps_gpu_sum[i] / g_ps_gpu_n[i] : 0.0, g_ps_gpu_max[i],
+            g_ps_gap_n[i] ? g_ps_gap_sum[i] / g_ps_gap_n[i] : 0.0, g_ps_gap_max[i]);
+        g_ps_submit_sum[i] = g_ps_submit_max[i] = 0.0; g_ps_submit_n[i] = 0;
+        g_ps_wait_sum[i] = g_ps_wait_max[i] = 0.0; g_ps_wait_n[i] = 0;
+        g_ps_gpu_sum[i] = g_ps_gpu_max[i] = 0.0; g_ps_gpu_n[i] = 0;
+        g_ps_gap_sum[i] = g_ps_gap_max[i] = 0.0; g_ps_gap_n[i] = 0;
+    }
+    Log("[phase] queue: outstanding-max=%u allocator-waits=%u allocator-wait %.3f/%.3f ms",
+        g_ps_outstanding_max, g_ps_allocator_waits,
+        g_ps_allocator_waits ? g_ps_allocator_wait_sum / g_ps_allocator_waits : 0.0,
+        g_ps_allocator_wait_max);
+    g_ps_outstanding_max = g_ps_allocator_waits = 0;
+    g_ps_allocator_wait_sum = g_ps_allocator_wait_max = 0.0;
+    Log("[phase] activity %.2fs: requests=%u fresh-source=%u evaluated=%u "
+        "fresh-enhanced=%u (%.1f/s) processed=%u idle=%u",
+        seconds, g_ph_requests, g_ph_fresh_sources, g_ph_evaluated,
+        g_ph_fresh_evaluated, g_ph_fresh_evaluated / seconds,
+        g_ph_processed, g_ph_idle);
+    g_ph_requests = g_ph_fresh_sources = g_ph_evaluated = 0;
+    g_ph_fresh_evaluated = g_ph_processed = g_ph_idle = 0;
     Log("[phase] present by bucket, ms: <5=%u 5-12=%u 12-20=%u 20-28=%u 28-40=%u 40+=%u",
         g_ph_bins[0], g_ph_bins[1], g_ph_bins[2], g_ph_bins[3], g_ph_bins[4], g_ph_bins[5]);
     for (int b = 0; b < 6; ++b) g_ph_bins[b] = 0;
+}
+
+static bool GrabCaptureWithRetry(VideoState &v, bool want_pixels)
+{
+    bool got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+            if (g_submission_failed) return false;
+            if (!got && !g_dda_ready && want_pixels)
+            {
+                // Pixels were asked for and there is not one captured frame
+                // to give. That is a screenshot or a recording slot: the
+                // screenshot retries on the next frame and heals itself, the
+                // recording simply ends up with a hole where that slot was.
+                //
+                // The window this happens in is short and self-closing -
+                // g_dda_ready is cleared by every RNSZ and by every capture
+                // restart, and the next real frame sets it again - so one
+                // more attempt is usually the whole difference. The DDA
+                // acquire waits up to 100 ms by itself; WGC returns at once
+                // and wants a moment for its pool to fill. Exactly one
+                // retry: a recording would rather have a rare 100 ms hiccup
+                // than a hole, and would not rather have a long stall
+                // (audit cpp-worker).
+                Sleep(8);
+                got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+                if (g_submission_failed) return false;
+                if (!got && !g_no_colour_retried)
+                {
+                    // Still nothing, and on a screen that is not changing
+                    // there never will be: duplication answers WAIT_TIMEOUT
+                    // and a WGC pool stays empty until the window redraws.
+                    // A FRESH capture session hands over the current content
+                    // as its first frame, which is exactly what is being
+                    // asked for. Once per dry spell - reopening the capture
+                    // on every slot of a recording would be thrashing.
+                    g_no_colour_retried = true;
+                    const bool reopened = g_wgc_active
+                        ? OpenWgc(g_wgc_hwnd) : OpenDda(g_dda_w, g_dda_h);
+                    // A fresh session does not answer the same millisecond:
+                    // the WGC pool fills on its own schedule, a frame
+                    // interval or so. Up to ~120 ms of small steps, which is
+                    // the difference between a hole and a hiccup, and still
+                    // shorter than the acquire timeout we already accept.
+                    for (int i = 0; reopened && !got && i < 12; ++i)
+                    {
+                        Sleep(10);
+                        got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+                        if (g_submission_failed) return false;
+                    }
+                    Log("[video] pixels asked for before the first capture "
+                        "frame: reopened the capture, %s",
+                        got ? "and it answered" : "still nothing");
+                }
+            }
+    return got;
 }
 
 static int RunVideo()
 {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
+    OwnTheProtocolPipe();
+    {
+        // NS_STDOUT_NOISE=1: print into stdout on purpose, the way the
+        // thing that broke issue #61 did. With the protocol on its own
+        // handle this is a line in the log; without it, it is four bytes
+        // in the middle of the next reply. test_stdout_noise drives it.
+        char v[8] = {};
+        const DWORD got = GetEnvironmentVariableA("NS_STDOUT_NOISE", v, sizeof(v));
+        if (got > 0 && got < sizeof(v) && v[0] == '1')
+        {
+            printf("[2026-09-13 00:00:00.000][NOISE] a stray line on stdout\n");
+            fflush(stdout);
+        }
+    }
     VideoHeader vh = {};
     // Accept both the legacy 56-byte header (magic 0x32563544, no full_w/full_h)
     // and the extended 64-byte header (magic 0x33563544, with full_w/full_h).
@@ -4717,6 +5300,7 @@ static int RunVideo()
                        (v.nr_small || !upscale) ? 0 : vh.full_w,
                        (v.nr_small || !upscale) ? 0 : vh.full_h))
     {
+        if (g_submission_failed) return 3;
         // A feature-create refusal is not a reason to kill the desktop
         // overlay. Keep the worker alive and pass raw frames through (the
         // bypass path below shows v.color). This prevents the restart storm
@@ -4751,6 +5335,7 @@ static int RunVideo()
         {
             if (live)
             {
+                FlushProfileFrames();
                 Log("[live] input stream closed after %u frames; %u direct evaluations", frame, g_eval_count);
                 // Explicit NGX resource cleanup BEFORE exiting: without
                 // ReleaseFeature/Shutdown1 the GPU resources (the D3D12 device,
@@ -4782,7 +5367,7 @@ static int RunVideo()
             {
                 Log("[video] RNSZ rejected: invalid work size %ux%u", rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00005u, 0u, fh.pts };
-                if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
+                if (!WriteExact(g_wire, &bad, sizeof(bad))) return 10;
                 continue;
             }
             const bool rup = rc.full_w > 0 && rc.full_h > 0 &&
@@ -4792,7 +5377,36 @@ static int RunVideo()
             {
                 Log("[video] RNSZ rejected: invalid full size %ux%u", rc.full_w, rc.full_h);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0xBAD00005u, 0u, fh.pts };
-                if (!WriteExact(stdout, &bad, sizeof(bad))) return 10;
+                if (!WriteExact(g_wire, &bad, sizeof(bad))) return 10;
+                continue;
+            }
+            // Nothing but the parameters changed? Then nothing has to be
+            // built. The four sliders, the profile, the style, the mask and
+            // the UI correction are Set on h.params before EVERY Evaluate
+            // out of g_video_options - the NGX feature itself depends only
+            // on the sizes and the upscale mode (CreateFeature ignores its
+            // flags argument, and the preset hint is an environment
+            // variable read once per process). Until now a slider still
+            // drained the GPU, released the feature and the textures, and
+            // built them again: 113-148 ms of frozen picture per step, and
+            // it was this release/create pair that leaked 420 MB a time
+            // until 1.7.1 fixed which library does the releasing (#48).
+            const int want_small_now = (rc.flags & RESIZE_FLAG_NR_SMALL) != 0 ? 1 : 0;
+            const bool same_size = rc.width == v.w && rc.height == v.hgt &&
+                                   want_small_now == (v.nr_small ? 1 : 0) &&
+                                   (rup ? (v.upscale && rc.full_w == v.full_w &&
+                                           rc.full_h == v.full_h)
+                                        : !v.upscale);
+            if (same_size && h.feature != nullptr)
+            {
+                memcpy(&g_video_options, &rc, sizeof(g_video_options));
+                g_force_next_frame = true;   // show it on the next frame
+                VideoResizeAck ok = { RESIZE_ACK_MAGIC, 1u,
+                                      static_cast<uint32_t>(NVSDK_NGX_Result_Success),
+                                      0u, fh.pts };
+                if (!WriteExact(g_wire, &ok, sizeof(ok))) return 10;
+                Log("[video] RNSZ: parameters only at %ux%u - the feature stays",
+                    v.w, v.hgt);
                 continue;
             }
             Log("[video] RNSZ: work %ux%u -> %ux%u (full %ux%u), warmup=%u",
@@ -4813,20 +5427,21 @@ static int RunVideo()
             {
                 Log("[video] RNSZ: resource creation failed at %ux%u", rc.width, rc.height);
                 VideoResizeAck bad = { RESIZE_ACK_MAGIC, 0u, 0x7FFFFFFFu, 0u, fh.pts };
-                if (!WriteExact(stdout, &bad, sizeof(bad))) return 3;
+                if (!WriteExact(g_wire, &bad, sizeof(bad))) return 3;
             }
             NVSDK_NGX_Result rr = NVSDK_NGX_Result_Fail;
             if (!CreateFeature(rc.width, rc.height, flags, &rr,
                                (v.nr_small || !rup) ? 0 : rc.full_w,
                                (v.nr_small || !rup) ? 0 : rc.full_h))
             {
+                if (g_submission_failed) return 3;
                 h.feature = nullptr;
                 Log("[video] RNSZ: feature create failed at %ux%u - SAFE PASSTHROUGH",
                     rc.width, rc.height);
             }
             warmup_done = (h.feature == nullptr);   // only warm a real NR feature
             VideoResizeAck ack = { RESIZE_ACK_MAGIC, 1u, static_cast<uint32_t>(rr), 0u, fh.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             g_force_next_frame = true;   // the new setting must be shown on the next frame
             Log("[video] RNSZ applied: feature ready at %ux%u", rc.width, rc.height);
             continue;
@@ -4870,7 +5485,7 @@ static int RunVideo()
                 }
             }
             VideoShmAck ack = { SHM_ACK_MAGIC, ok, 0u, 0u, sc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 4)
@@ -4887,7 +5502,7 @@ static int RunVideo()
                 ok = OpenPresent(wc.width, wc.height, wc.flags) ? 1u : 0u;
             if (ok) g_force_next_frame = true;   // a fresh window gets a picture at once
             VideoWindowAck ack = { WINDOW_ACK_MAGIC, ok, 0u, 0u, wc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 5)
@@ -4896,7 +5511,7 @@ static int RunVideo()
             // upscale it on the GPU.
             const uint32_t ok = OpenMotionScaler(mc.width, mc.height) ? 1u : 0u;
             VideoMotionAck ack = { MOTION_ACK_MAGIC, ok, 0u, 0u, mc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 6)
@@ -4912,7 +5527,7 @@ static int RunVideo()
                 ok = OpenDda(dc.width, dc.height) ? 1u : 0u;
             Log("[video] DDA1 %s (%ux%u)", ok ? "OK" : "FAIL", dc.width, dc.height);
             VideoDdaAck ack = { DDA_ACK_MAGIC, ok, 0u, 0u, dc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 7)
@@ -4928,7 +5543,7 @@ static int RunVideo()
                 ok = OpenGray(gc) ? 1u : 0u;
             Log("[video] GRAY %s (%ux%u)", ok ? "OK" : "FAIL", gc.width, gc.height);
             VideoGrayAck ack = { GRAY_ACK_MAGIC, ok, 0u, 0u, gc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 8)
@@ -4937,7 +5552,7 @@ static int RunVideo()
             const uint32_t ok = OpenOut(oc) ? 1u : 0u;
             Log("[video] OUTS %s (%ux%u)", ok ? "OK" : "FAIL", oc.width, oc.height);
             VideoOutAck ack = { OUTS_ACK_MAGIC, ok, 0u, 0u, oc.pts };
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 9)
@@ -4954,7 +5569,7 @@ static int RunVideo()
                                 ok ? g_dda_h : 0u, g_wgc_cmd.pts };
             Log("[video] WGCW %s (%p -> %ux%u)", ok ? "OK" : "FAIL",
                 (void *)hwnd, ack.width, ack.height);
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         if (msg == 11)
@@ -4966,24 +5581,32 @@ static int RunVideo()
                 Log("[sr] input scale: %u%% (before NR; Boost ratio unchanged)",scale);
             }
             VideoResultHeader ack={OUT_MAGIC,fh.index,1u,0u,0u,fh.pts};
-            if (!WriteExact(stdout,&ack,sizeof(ack))) return 10;
+            if (!WriteExact(g_wire,&ack,sizeof(ack))) return 10;
             continue;
         }
         if (msg == 10)
         {
             if (!CaptureActive()) { Log("[cap] CAP1 requires active capture"); return 10; }
-            prepared_got = g_wgc_active ? WgcGrab(v) : DdaGrab(v);
+            prepared_got = GrabCaptureWithRetry(v, true);
+            if (g_submission_failed) return 6;
             if (g_dda_ready && g_gray_mapped && !g_capture_gray_ok)
             { Log("[cap] gray update failed; refusing mismatched motion"); return 10; }
             prepared_index = fh.index;
             prepared = true;
             VideoResultHeader ack = {OUT_MAGIC, fh.index, 1u, 0u, 0u, fh.pts};
-            if (!WriteExact(stdout, &ack, sizeof(ack))) return 10;
+            if (!WriteExact(g_wire, &ack, sizeof(ack))) return 10;
             continue;
         }
         ConfigureSrFrame(fh.reserved);
         ConfigureFgFrame(fh.reserved);
         const double t_frame = PhaseNow();
+        const bool phase_on = PhaseEnabled();
+        if (phase_on && !(fh.reserved & FRAME_FLAG_PREPARED)) g_frame_stamp = {};
+        ProfileRequest profile_request{ v, fh };
+        if (phase_on) ++g_ph_requests;
+        bool source_fresh = true;
+        bool defer_tail = false;
+        UINT64 upload_done = 0, eval_done = 0, present_done = 0;
         if (CaptureActive())
         {
             // Capture mode: the colour comes from the desktop (DDA1) or from
@@ -4993,8 +5616,12 @@ static int RunVideo()
             const bool use_prepared = (fh.reserved & FRAME_FLAG_PREPARED) != 0;
             if (use_prepared && (!prepared || prepared_index != fh.index))
             { Log("[cap] prepared frame ID mismatch; refusing stale motion"); return 10; }
-            const bool got = use_prepared ? prepared_got : (g_wgc_active ? WgcGrab(v) : DdaGrab(v));
+            bool got = use_prepared ? prepared_got : GrabCaptureWithRetry(v,
+                (fh.reserved & FRAME_FLAG_WANT_PIXELS) != 0);
             prepared = false;
+            if (g_submission_failed) return 6;
+            source_fresh = got && g_capture_visual_changed;
+            if (phase_on && source_fresh) ++g_ph_fresh_sources;
             PhaseAdd(PH_DDA, t_dda);
             if (!got && !g_dda_ready)
             {
@@ -5002,7 +5629,10 @@ static int RunVideo()
                 // paired with an empty OUT1 and wait for the screen to change,
                 // WITHOUT running NGX on an empty colour (evaluate on zero hangs).
                 VideoResultHeader empty = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
-                if (!WriteExact(stdout, &empty, sizeof(empty))) return 10;
+                if (!WriteExact(g_wire, &empty, sizeof(empty))) return 10;
+                ProfileFrameResult(v, fh, false, "idle");
+                if (phase_on) ++g_ph_idle;
+                PhaseReport((fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr);
                 continue;
             }
             if (!got)
@@ -5041,7 +5671,10 @@ static int RunVideo()
                     FollowCapturedWindow();
                     ReassertPresentTopmost();
                     VideoResultHeader idle = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
-                    if (!WriteExact(stdout, &idle, sizeof(idle))) return 10;
+                    if (!WriteExact(g_wire, &idle, sizeof(idle))) return 10;
+                    ProfileFrameResult(v, fh, false, "idle");
+                    if (phase_on) ++g_ph_idle;
+                    PhaseReport(want_bypass);
                     continue;
                 }
             }
@@ -5052,6 +5685,16 @@ static int RunVideo()
                 g_skip_static_count = 0;
                 g_skip_static_logged = false;
             }
+            // Boost is in too (PR #59 left nr_small out). Nothing in the
+            // argument needs it excluded: ScaleColorInto and ResidualCompose
+            // only record into h.list - neither submits - so the reduced
+            // path is still ONE submission ending in one EndCommands, and
+            // the present's fence still cannot complete before it. It is
+            // also the mode where frames are cheapest and most numerous, so
+            // it is the one with the most round trips to save.
+            defer_tail = !g_hdr_capture && !FgRequested() && warmup_done && h.feature != nullptr &&
+                PresentModeActive(v) &&
+                (fh.reserved & (FRAME_FLAG_BYPASS | FRAME_FLAG_SPLIT | FRAME_FLAG_WANT_PIXELS)) == 0;
             // This frame is being processed: remember what it will show, so the
             // next unchanged frame can tell whether anything differs.
             g_last_out_bypass = (fh.reserved & FRAME_FLAG_BYPASS) != 0 || h.feature == nullptr;
@@ -5061,12 +5704,14 @@ static int RunVideo()
             g_force_next_frame = false;
             const double t_up = PhaseNow();
             const bool up_ok = UploadMotionOnly(v, mv_ptr,
-                                  (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
+                                  (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0,
+                                  defer_tail ? &upload_done : nullptr);
             PhaseAdd(PH_UPLOAD, t_up);
-            if (!up_ok) return 6;
+            if (!up_ok || (defer_tail && upload_done == 0)) return 6;
         }
         else
         {
+            if (phase_on) ++g_ph_fresh_sources;
             const double t_up = PhaseNow();
             const bool up_ok = UploadVideoFrame(v, color_ptr, mv_ptr,
                                    (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0);
@@ -5102,9 +5747,17 @@ static int RunVideo()
         if (!bypass)
         {
             const double t_eval = PhaseNow();
-            const bool ev_ok = EvaluateVideo(v, (frame == 0 || fh.reset != 0) ? 1 : 0);
+            const bool ev_ok = EvaluateVideo(v, (frame == 0 || fh.reset != 0) ? 1 : 0,
+                                             defer_tail ? &eval_done : nullptr);
             PhaseAdd(PH_EVAL, t_eval);
             if (!ev_ok) return 9;
+            if (defer_tail && eval_done <= upload_done)
+            { Log("[video] tail token order failed: upload=%llu eval=%llu", upload_done, eval_done); return 9; }
+            if (phase_on && !defer_tail)
+            {
+                ++g_ph_evaluated;
+                if (source_fresh) ++g_ph_fresh_evaluated;
+            }
             if ((fh.reserved & FRAME_FLAG_SPLIT) != 0)
             {
                 // In bypass the wipe is meaningless: both halves would be the
@@ -5123,9 +5776,20 @@ static int RunVideo()
             // NGX evaluate is skipped but the pipeline is alive (window, HUD).
             FollowCapturedWindow();
             ReassertPresentTopmost();
-            const bool pres_ok = bypass ? PresentBypass(v) : PresentFrame(v);
+            const bool pres_ok = bypass ? PresentBypass(v) : PresentFrame(v, defer_tail ? &present_done : nullptr);
             PhaseAdd(PH_PRESENT, t_pres);
             if (!pres_ok) return 9;
+            if (defer_tail)
+            {
+                if (present_done <= eval_done)
+                { Log("[video] tail token order failed: eval=%llu present=%llu", eval_done, present_done); return 9; }
+                ++g_eval_count;
+                if (phase_on)
+                {
+                    ++g_ph_evaluated;
+                    if (source_fresh) ++g_ph_fresh_evaluated;
+                }
+            }
             // Pixels for the client (screenshot/recording) - in bypass mode
             // too: the recording needs exactly the frame that is on screen
             // (the raw capture).
@@ -5144,7 +5808,7 @@ static int RunVideo()
             else
             {
                 VideoResultHeader out = { OUT_MAGIC, fh.index, 1u, 0u, g_last_eval_result, fh.pts };
-                if (!WriteExact(stdout, &out, sizeof(out))) return 10;
+                if (!WriteExact(g_wire, &out, sizeof(out))) return 10;
             }
         }
         else
@@ -5164,12 +5828,15 @@ static int RunVideo()
             if (!DeliverPixels(output, fh.index, fh.pts)) return 10;
         }
         PhaseAdd(PH_FRAME, t_frame);
+        ProfileFrameResult(v, fh, source_fresh && !bypass, bypass ? "bypass" : "enhanced");
+        if (phase_on) ++g_ph_processed;
         PhaseReport(bypass);
         if (frame < 3 || ((frame + 1) % 30) == 0)
             Log("[video] delivered frame %u%s", frame + 1, live ? " (live)" : "");
         ++frame;
         if (!live && frame >= vh.frame_count) break;
     }
+    FlushProfileFrames();
     Log("[pure] complete: %u frames delivered, %u direct evaluations", frame, g_eval_count);
     CleanupVideoNgx();
     CloseOut();
@@ -5387,14 +6054,14 @@ static int Serve(DWORD game_pid)
                     dst.Type      = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
                     D3D12_BOX box = { 0, 0, 0, h.width / 2, h.height, 1 };
                     h.list->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
-                    EndCommands();
-                    done = true;
+                    done = EndCommands() != 0;
                 }
             }
             else
                 done = Evaluate(h.tex[FEED_COLOR], h.tex[FEED_OUTPUT], h.tex[FEED_DEPTH], h.tex[FEED_MV],
                                 h.width, h.height, fm.reset ? 1 : 0, mvsx, mvsy);
 
+            if (g_submission_failed) return 1;
             if (done)
             {
                 h.queue->Signal(h.fence_out, fm.n);

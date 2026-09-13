@@ -102,7 +102,7 @@ static void FgPresenter()
             FAILED(fence->SetEventOnCompletion(value, event)) ||
             WaitForSingleObject(event, 2000) != WAIT_OBJECT_0 ||
             fence->GetCompletedValue() < value) return false;
-        if (FAILED(g_present_swap->Present(0, 0))) return false;
+        if (!PresentStatus(g_present_swap->Present(0, 0), "fg present")) return false;
         RevealOnFirstPresent();
         ++shown;
         return true;

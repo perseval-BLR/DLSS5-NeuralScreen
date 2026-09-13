@@ -266,18 +266,30 @@ def rebuild_pipeline(st, note: str) -> None:
     on them, resetting the per-worker flags so the main loop
     negotiates DDA1/WGCW, GRAY, OUTS and the window again.
     """
-    # Freeze the last picture with a spinner before the old worker
+    # Freeze the last picture under the veil before the old worker
     # dies: the rebuild takes ~1 s (new worker, NGX warm-up) and the
     # bare desktop would flash underneath (user: mode-switch flashes).
-    # The overlay spans the whole monitor even when the next mode is
-    # one window - no bare desktop at the edges of the spinner.
+    # The veil spans the whole monitor even when the next mode is
+    # one window - no bare desktop at its edges.
     st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
     menu_was_open = st.display.menu.visible
     full_w = st.width if (st.work_w != st.width or st.work_h != st.height) else 0
     full_h = st.height if (st.work_w != st.width or st.work_h != st.height) else 0
     st.shm = SharedFrameBuffer(st.width, st.height)
+    # The launch warm-up, not the rebuild's. st.effective_warmup is 120
+    # frames - it exists because a COLD card can take seconds to produce
+    # its first NGX frame and the frame watchdog would kill the worker on
+    # frame 0. By the time anything calls rebuild_pipeline the card has
+    # already been running the network, so those 120 frames are a second
+    # of veil for nothing: measured on a window resize, 1.85 s from the
+    # capture closing to the first real frame, of which ~1 s was the
+    # warm-up. do_restart has used RESTART_WARMUP for a full process
+    # restart since 1.6 and that is the same feature being recreated.
+    # min(), not the constant: a pre-Blackwell card gets 4 and must keep
+    # it (audit F3 - the restart storm the shortening exists to prevent).
+    warmup = min(st.effective_warmup, RESTART_WARMUP)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-        st.params, st.work_w, st.work_h, st.effective_warmup, full_w, full_h,
+        st.params, st.work_w, st.work_h, warmup, full_w, full_h,
         st.shm)
     # The window and the menu are rebuilt, keeping the user settings.
     # A soft resize instead of close()+recreate: the old code went
@@ -477,6 +489,9 @@ def switch_window(st, hwnd: int) -> None:
             print(f"[main] the worker cannot capture that window: {exc}",
                   file=sys.stderr)
             st.display.exit_switch_mode()  # the overlay was raised before the probe
+            rect = window_frame_rect(hwnd) if hwnd else None
+            if rect is not None:
+                st.follow_size = rect[2:]   # do not ask again every half second
             return
         if aw < 64 or ah < 64:
             # Below the work-resolution floor there is nothing to
@@ -491,6 +506,12 @@ def switch_window(st, hwnd: int) -> None:
                   file=sys.stderr)
             st.display.alert(UI_STRINGS[st.lang]["win_fail"])
             st.display.exit_switch_mode()  # the overlay was raised before the probe
+            # The size that was refused is remembered, or follow_window
+            # would ask for the same switch again in half a second and keep
+            # asking (user, 13.09: the alert kept coming back).
+            rect = window_frame_rect(hwnd) if hwnd else None
+            if rect is not None:
+                st.follow_size = rect[2:]
             return
         teardown_pipeline(st)
         st.window_hwnd = int(hwnd)
@@ -531,6 +552,89 @@ def apply_spout(st, enabled: bool) -> None:
     rebuild_pipeline(st, UI_STRINGS[st.lang].get(
         "spout_on" if enabled else "spout_off",
         "Spout2 output ON" if enabled else "Spout2 output OFF"))
+
+
+def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
+    """The followed window changed size: reconfigure, do not restart.
+
+    A resize used to go through switch_window, which kills the worker and
+    starts a new one. Measured on a browser leaving fullscreen: 1.85 s of
+    veil, brought down to 0.97 s by not paying the cold-start warm-up, and
+    the rest is the process itself. Every fullscreen toggle in a captured
+    window cost that, which is what "it dims and animates while I watch a
+    video" turned out to be.
+
+    Nothing about a resize needs a new process. Every piece is already a
+    live command with an ack:
+
+      * WGCW re-points the worker's capture at the window and answers with
+        the size it negotiated - switch_window already sends this one to
+        the LIVE worker, before it tears it down;
+      * RNSZ rebuilds the feature and the textures at the new work and full
+        size inside the running process (~150 ms);
+      * OUTS re-opens the result section - open_out creates a new section
+        under a new name whenever the size changes;
+      * WNDO re-opens the worker's own window, and OpenPresent starts with
+        ClosePresent, so it is a resize;
+      * MOTS and GRAY follow the guides, which follow the work size.
+
+    Returns False when it will not do it, and the caller falls back to the
+    full rebuild. The one that matters: only when the WORKER is capturing.
+    Otherwise the colour still travels through the shared section, whose
+    colour region is sized for the window the pipeline was built for, and a
+    larger window would run off the end of it.
+    """
+    if st.window_hwnd is None or not st.dda_mode:
+        return False
+    try:
+        aw, ah = channels.probe_window_capture(st, st.window_hwnd)
+    except Exception as exc:
+        print(f"[main] live resize: the worker would not re-point at the "
+              f"window ({exc})", file=sys.stderr)
+        return False
+    if aw < 64 or ah < 64:
+        return False
+    new_w, new_h = _work_size(int(aw), int(ah), st.work_scale)
+    new_full_w = int(aw) if (new_w != aw or new_h != ah) else 0
+    new_full_h = int(ah) if (new_w != aw or new_h != ah) else 0
+    try:
+        t0 = time.perf_counter()
+        send_resize(st.worker, st.params, new_w, new_h, RESTART_WARMUP,
+                    new_full_w, new_full_h, st.nr_small)
+        st.reader.wait_rack(timeout=RACK_TIMEOUT)
+        st.reader.set_output_size(new_full_w or new_w, new_full_h or new_h)
+    except Exception as exc:
+        print(f"[main] live resize: RNSZ did not go through ({exc})",
+              file=sys.stderr)
+        return False
+    st.width, st.height = int(aw), int(ah)
+    st.work_w, st.work_h = new_w, new_h
+    # The guides carry the work size in their buffers, and the worker reads
+    # exactly that many bytes of motion - they change together or the stream
+    # desynchronises (see do_restart).
+    st.guides = TemporalGuideGenerator(new_w, new_h, emit_small=st.motion_small)
+    channels.sync_motion_size(st)
+    channels.sync_gray(st)
+    # Both of these are sized for the old frame. Re-negotiated here rather
+    # than through the forget_* flags: those exist for a worker that died,
+    # and forget_present would drop the display out of HUD-only mode for a
+    # frame on the way.
+    channels.forget_out(st)
+    channels.enable_out_shm(st)
+    if st.present_mode:
+        channels.enable_present(st)
+    st.display.resize(st.width, st.height)
+    st.follow_pos = None
+    st.follow_size = (frame_w, frame_h)
+    st.follow_resize = None
+    st.frame_index = 0
+    st.pts = 0
+    st.work_frame = None
+    st.last_restart = time.monotonic()
+    print(f"[main] the window is now {frame_w}x{frame_h} - reconfigured live "
+          f"in {(time.perf_counter() - t0) * 1000:.0f} ms "
+          f"(capture {st.width}x{st.height}, work {new_w}x{new_h})")
+    return True
 
 
 def apply_hdr(st, enabled: bool) -> None:
@@ -713,6 +817,14 @@ def follow_window(st) -> None:
     """
     if st.window_hwnd is None:
         return
+    # The mode-switch veil owns the layer until the first frame of the new
+    # pipeline arrives: it spans the whole monitor, and moving or resizing
+    # it now slides the veil off the desktop - the bare desktop showed
+    # along the top and left edges and the mark drifted with it (the
+    # reported window-mode switch glitch). switch_window resets follow_pos,
+    # so the position re-syncs on the first frame after the veil is down.
+    if getattr(st.display, "is_switch_active", None) and st.display.is_switch_active():
+        return
     # The worker is dead: the overlay must stay hidden (issue #3) -
     # nothing would fill it, and showing it covers the desktop with
     # a black window.
@@ -761,12 +873,41 @@ def follow_window(st) -> None:
     # the two agree, which is why it never showed up here.
     if st.follow_size is None:
         st.follow_size = (w, h)
-    if (w, h) != st.follow_size:
+    # A couple of pixels is not a resize worth a rebuild. Two numbers
+    # describe this window and they already disagree by a border on
+    # Windows 10 (issue #30), and a 4K log shows the pair 3840x2160 /
+    # 3840x2159 for one maximised browser. A rebuild costs a second of
+    # veil; being two pixels stale costs the overlay two pixels, and the
+    # worker re-opens its own capture when the window really changes size.
+    #
+    # Not the cause of the reported video dimming, though: watched at
+    # 100 Hz, a browser leaving fullscreen moves the frame 72 px in one
+    # step with no intermediate value at all. That one is a real resize
+    # and it does rebuild - see the warm-up commit for what it now costs.
+    if max(abs(w - st.follow_size[0]), abs(h - st.follow_size[1])) > 2:
         now = time.monotonic()
         if st.follow_resize is None or st.follow_resize[0] != (w, h):
             st.follow_resize = ((w, h), now)
         elif now - st.follow_resize[1] > 0.5:
             st.follow_resize = None
+            # Below the floor there is nothing to process, and asking is not
+            # free: switch_window probes the worker, puts the capture back on
+            # the desktop and shows an alert. It also used to leave
+            # follow_size alone, so the watcher tried again half a second
+            # later, forever - four "the window is 3840x60 - too small to
+            # process" in one session, with an alert each time (user, 13.09).
+            # Remember the size and wait for it to become usable.
+            if w < 64 or h < 64:
+                if st.follow_size != (w, h):
+                    print(f"[main] the window is {w}x{h} - too small to "
+                          f"process, staying where we are")
+                st.follow_size = (w, h)
+                return
+            # Live first: no new process, no veil, ~150 ms instead of ~1 s.
+            # It refuses when it cannot do it safely, and then the old road
+            # is still there.
+            if resize_window_live(st, w, h):
+                return
             print(f"[main] the window is now {w}x{h} - rebuilding the pipeline")
             switch_window(st, st.window_hwnd)
     else:
@@ -829,6 +970,12 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
             print(f"[main] RNSZ did not go through ({exc}) - full worker restart",
                   file=sys.stderr)
     if not applied:
+        # The worker process is going down and a fresh one warms up for
+        # seconds - the same full-screen veil the mode switches raise (user:
+        # every long switch gets the veil and the mark, never a bare
+        # desktop). The RNSZ path above is fast and keeps the picture, so
+        # it does not raise one.
+        st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
         st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
             st.worker, st.params, new_w, new_h, RESTART_WARMUP,
             new_full_w, new_full_h, st.worker_stop, st.shm)
@@ -843,8 +990,13 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
     # The order matters: work_w/work_h and guides change TOGETHER,
     # otherwise the motion size drifts away from what the worker
     # expects (see the docstring).
+    # A parameter change does not move the work size, and a fresh generator
+    # would throw away the optical-flow history for nothing: the next frame
+    # would come back as a scene cut and the network would start its
+    # temporal accumulation again, which is visible as a small settle.
+    if (new_w, new_h) != (st.work_w, st.work_h) or st.guides is None:
+        st.guides = TemporalGuideGenerator(new_w, new_h, emit_small=st.motion_small)
     st.work_w, st.work_h = new_w, new_h
-    st.guides = TemporalGuideGenerator(st.work_w, st.work_h, emit_small=st.motion_small)
     channels.sync_motion_size(st)  # the flow resolution may have changed
     channels.sync_gray(st)         # the gray channel lives in the worker, size = guides flow
     st.frame_index = 0

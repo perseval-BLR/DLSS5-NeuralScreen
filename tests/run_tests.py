@@ -57,6 +57,14 @@ ABOUT = {
     "test_gpu_select.py": "the GPU picker drives config, environment and restart",
     "test_hdr_switch.py": "HDR compatibility is off by default and switchable in 12 languages",
     "test_settings_hints.py": "every hint is one line and fits its row, in 12 languages",
+    "test_rebuild_warmup.py": "a rebuild warms up briefly; only a cold launch pays 120 frames",
+    "test_param_apply.py": "a parameter change applies without rebuilding the feature",
+    "test_live_resize.py": "a window resize reconfigures the worker instead of replacing it",
+    "test_spout_adapter.py": "the Spout bridge lives on the card the worker runs on",
+    "test_present_window_leak.py": "closing the picture window destroys it, six cycles",
+    "test_pixels_after_resize.py": "a resize does not put a hole in the recording",
+    "test_alert_position.py": "alerts sit at the top centre of the screen, not the overlay",
+    "test_stdout_noise.py": "a stray printf cannot corrupt the worker protocol",
     "test_hdr_shaders.py": "the HDR capture and composite shaders, run on WARP",
     "test_hdr_capture.py": "the whole HDR path on real hardware (runs only on an HDR display)",
     "test_gpu_rollback.py": "a card that cannot run the network reverts itself",
@@ -104,6 +112,7 @@ ABOUT = {
     "test_residual_split.py": "residual and the wipe compose in the same frame",
     "test_resize.py": "the on-the-fly resize reconfigures the feature without a restart",
     "test_reveal.py": "the present window stays hidden until the first Present",
+    "test_focus_z_order.py": "focused target stays below the worker picture and HUD",
     "test_split.py": "the before/after wipe leaves the left side untouched",
     "test_taskbar_window.py": "the taskbar button exists, opens the menu, closes cleanly",
     "test_ui_buttons.py": "every control on every page fires the right command",
@@ -113,6 +122,7 @@ ABOUT = {
     "test_windows_page.py": "the windows page lists, highlights and switches",
     "test_window_mode.py": "the one-window hotkey switches the pipeline and back",
     "test_window_mode_menu.py": "the menu stays fully visible across the window-mode switch",
+    "test_switch_veil.py": "the mode-switch veil eases in/out and owns the layer",
 }
 
 

@@ -119,7 +119,7 @@ def _set_autostart(enabled: bool) -> bool:
 
 # The version shown in the menu header. Kept in sync with native/launcher.rc
 # (FileVersion/ProductVersion) and build_release_zip.py at release time.
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.2"
 
 
 # The channel label: the header shows the version, the channel lives in the
@@ -128,15 +128,23 @@ CHANNEL_LABEL = "@perseval_BLR"
 
 
 # --- DLSS 5 NR profiles (field order as in the converter) -----------------
+#
+# local_tone is half a point lower in every profile than it was through
+# 1.8.1 (user, 13.09). The local tone mapping is the part that lifts
+# shadows and flattens contrast, and at the old values it was doing more of
+# that than the picture wanted - most visibly on dark scenes, where the
+# brightening this program does anyway meets it head on. The four sliders
+# still reach everything they reached: this moves where the profiles sit,
+# not what the range allows.
 PROFILES = {
     "Faithful": dict(profile=0, preset=0, style=0, auto_mask=0, ui_correction=0,
-                     intensity=0.70, local_tone=0.75, local_structure=0.75, skin_structure=-1.0),
+                     intensity=0.70, local_tone=0.25, local_structure=0.75, skin_structure=-1.0),
     "Natural": dict(profile=1, preset=0, style=1, auto_mask=0, ui_correction=0,
-                    intensity=1.00, local_tone=1.00, local_structure=1.00, skin_structure=-1.0),
+                    intensity=1.00, local_tone=0.50, local_structure=1.00, skin_structure=-1.0),
     "Strong / Cinematic": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
-                               intensity=1.65, local_tone=1.40, local_structure=1.50, skin_structure=1.0),
+                               intensity=1.65, local_tone=0.90, local_structure=1.50, skin_structure=1.0),
     "Extreme / Overdrive": dict(profile=2, preset=2, style=2, auto_mask=1, ui_correction=0,
-                                intensity=2.50, local_tone=2.00, local_structure=2.00, skin_structure=1.5),
+                                intensity=2.50, local_tone=1.50, local_structure=2.00, skin_structure=1.5),
 }
 
 

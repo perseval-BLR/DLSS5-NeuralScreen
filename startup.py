@@ -263,7 +263,12 @@ def configure(st) -> None:
     # faster but softer, and an update must not change how the picture looks
     # without being asked. Toggling it later restarts the worker, which is why
     # it lives in the environment rather than in the frame protocol.
-    st.nr_small = bool(st.cfg.get("nr_small", False))
+    # Boost is ON unless a config says otherwise (user, 13.09). It was off
+    # by default because it had been measured on still frames only; it has
+    # been in a release since 1.7.0 now, and on a 5070 Ti at 4K it is
+    # 45.7 -> 72.6 frames for a picture that is indistinguishable at 1:1 -
+    # the residual composite puts the detail back off the native frame.
+    st.nr_small = bool(st.cfg.get("nr_small", True))
     os.environ["NS_NR_SMALL"] = "1" if st.nr_small else "0"
     # The Spout2 bridge is the same story: the worker reads NS_SPOUT once
     # at startup (SpoutBridgeInit), so the config flag becomes the

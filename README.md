@@ -78,17 +78,20 @@ closed, clicks go straight through it.
 
 ### Whole screen or one window
 
-The whole screen is the default. To process one window instead, pick
-**Select window...** in the menu — hovering highlights it, and the overlay
-follows it. **Num5** is the shortcut when the window is already in front of
-you: point at it and press. Back to everything: **Fullscreen** in the menu.
-Minimising the window pauses processing.
+The whole screen is the default. **Source**, at the top of the menu, switches
+between **Fullscreen** and **Window mode**; choosing the second opens the list
+of windows, and hovering a row highlights that window on the screen. **Num5**
+is the shortcut when the window is already in front of you: point at it and
+press. The overlay follows the window as it moves, and resizing it — a video
+going fullscreen, a different player size — reconfigures the worker in place,
+with no black moment. Minimising the window pauses processing.
 
 ## The menu
 
 The dot next to your graphics card is green when neural rendering is really
 running on it, red when it is not.
 
+- **Source** — the whole screen or one window, and which window.
 - **Profile** — how strong the effect is, from *Faithful* to *Extreme*;
   *Natural* by default. The four sliders underneath are the same thing in
   detail. **Save preset** stores the current values under a name and puts it
@@ -96,16 +99,19 @@ running on it, red when it is not.
   brightened automatically so shadows keep their detail.
 - **Before / after wipe** — leaves the left part of the screen unprocessed so
   you can see what the effect is doing. Back to 0 when done.
-- **Boost** — off by default. With it on, the network runs at a reduced
-  resolution and a slider appears to choose which: measured on a 5070 Ti at
-  4K, **45.7 → 72.6 frames** at the default step and **83.4** at the lowest.
+- **Boost** — on by default. The network runs at a reduced resolution and a
+  slider under the switch chooses which: measured on a 5070 Ti at 4K,
+  **45.7 → 72.6 frames** at the default step and **83.4** at the lowest.
   The picture stays sharp — the network's result is composed onto your
-  original frame, so text and edges keep full resolution. Try it and look.
+  original frame, so text and edges keep full resolution. Turn it off to
+  compare.
 
-The interface speaks **12 languages** — English, Russian, French, German,
-Spanish, Italian, Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
-Everything else — the language, which monitor, the theme, autostart, key
-assignments — is behind the sliders icon.
+Everything else is behind the sliders icon: which monitor is processed and
+which card does it, HDR compatibility, the screenshot folder, Spout2 output,
+the recording indicator, leaving an unchanged screen alone, opening the menu
+on launch, autostart, the key assignments, the theme — and the language, of
+which there are **12**: English, Russian, French, German, Spanish, Italian,
+Portuguese, Polish, Ukrainian, Chinese, Japanese and Korean.
 
 ## Recording and screenshots
 
@@ -141,15 +147,16 @@ cursor, and the overlay only shows that one. Borderless fixes it.
 
 **Everything is too bright and the sliders do nothing.** HDR is on for that
 display. Turn it off (Win+Alt+B), or try **HDR compatibility** in the settings,
-under CAPTURE — it is experimental; see [HDR setup](docs/HDR.md).
+under CAPTURE — it is experimental; see [HDR setup](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
 
 **A key does nothing.** Something else claimed it; reassign it in the menu.
 
 ## Known limitations
 
 - **True fullscreen games** cannot have an overlay drawn over them — borderless or windowed only.
-- **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](docs/HDR.md).
-- **Windows 10, two NVIDIA cards and a rotated display are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
+- **HDR displays:** experimental, and off until you turn on **HDR compatibility** (settings, CAPTURE). Recording and Spout exports stay SDR. See [HDR setup and limitations](https://github.com/perseval-BLR/DLSS5-NeuralScreen/blob/main/docs/HDR.md).
+- **Windows 10 and two NVIDIA cards are experimental** — built or fixed from user logs rather than tested here. Reports welcome.
+- **A rotated display:** 180° is turned back over on capture; 90° and 270° are not handled yet and come out with the sides swapped.
 - **Pipeline latency** is 40–60 ms (17-20ms with Boost Mode) — fine interactively, not competitively; **processing resolution is capped at 2560×1440**, output is always your full native resolution.
 
 ## License
