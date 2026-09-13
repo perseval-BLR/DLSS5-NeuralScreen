@@ -254,6 +254,7 @@ def load_config(path: Path) -> dict:
     if lang not in UI_STRINGS:
         lang = DEFAULT_LANG
     cfg["lang"] = lang
+    cfg["gpu_motion"] = cfg.get("gpu_motion") is True
     return cfg
 
 
@@ -368,6 +369,7 @@ def _menu_layout_payload(cfg: dict, params: dict, monitor: int, lang: str,
         # Skip static frames: no new frame from the capture - the network
         # idles instead of re-running on the same picture. A per-frame flag,
         # so it survives a restart through the config alone.
+        "gpu_motion": cfg.get("gpu_motion") is True,
         "skip_static": bool(cfg.get("skip_static", True)),
         # The user's saved presets. Without this key "Save preset" wrote
         # everything EXCEPT the preset: the menu said "Preset saved", the
@@ -572,6 +574,7 @@ def menu_payload(st) -> dict:
         "screenshot_dir": st.cfg.get("screenshot_dir") or "",
         "spout": bool(st.cfg.get("spout", False)),
         "hdr": bool(st.cfg.get("hdr", False)),
+        "gpu_motion": st.cfg.get("gpu_motion") is True,
         "skip_static": bool(st.cfg.get("skip_static", True)),
         # Is the network idling on an unchanged screen right now? The
         # worker says so in its log; without this the menu shows a

@@ -175,6 +175,8 @@ def apply_menu_action(st, action: tuple) -> None:
                 "Autostart ON" if new_state else "Autostart OFF"))
         else:
             st.display.alert(UI_STRINGS[st.lang].get("autostart_err", "Autostart failed"))
+    elif kind == "toggle" and action[1] == "gpu_motion":
+        pipeline.apply_gpu_motion(st, not bool(st.cfg.get("gpu_motion", False)))
     elif kind == "toggle" and action[1] == "rec_indicator":
         # The recording indicator outside the menu: a config flag,
         # the HUD reads it on every redraw.

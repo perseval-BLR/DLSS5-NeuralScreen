@@ -199,6 +199,7 @@ class OverlayMenu:
             "hdr": False,
             # Skip static frames (processing section): no new capture frame -
             # the network idles instead of re-running.
+            "gpu_motion": False,
             "skip_static": True,
             "open_on_start": True,
             "split": 0.0,
@@ -780,6 +781,8 @@ class OverlayMenu:
             # until now the only one answered on another page. The segment
             # sends what the Actions buttons used to send; the list of
             # windows still opens on its own page.
+            toggle("gpu_motion", s["gpu_motion"], bool(self.state.get("gpu_motion", False)), hint=s["gpu_motion_hint"])
+
             section(s["sec_source"])
             in_window = bool(self.state.get("window_mode"))
             segmented("source", "", "window" if in_window else "fullscreen",

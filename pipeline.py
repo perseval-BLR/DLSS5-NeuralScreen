@@ -55,7 +55,7 @@ from winapi import window_frame_rect
 #: Always let through: the pipeline diagnostics. NS_PHASE=1 adds the
 #: per-frame profiler lines ([phase]/[pw]) on top of these.
 _LOG_ALWAYS = ("[host]", "[pure]", "[arch]", "[cap]", "[dda]", "[present]",
-               "[spout]", "[wgc]", "[video]", "[skip]", "[hdr]")
+               "[spout]", "[wgc]", "[video]", "[skip]", "[hdr]", "[gpu-flow]")
 #: [video] lines that are a heartbeat rather than a diagnostic: the "delivered
 #: frame N" line is printed every 30 frames and would bury the log.
 _LOG_SKIP = ("delivered frame",)
@@ -869,3 +869,12 @@ def request_apply(st, new_scale: float, new_profile: str, new_params: dict,
               f"the last value will be applied")
     else:
         do_restart(st, new_scale, new_profile, new_params, new_small=new_small)
+
+
+def apply_gpu_motion(st, enabled: bool) -> None:
+    st.cfg["gpu_motion"] = bool(enabled)
+    os.environ["NS_GPU_FLOW_EXPERIMENT"] = "1" if enabled else "0"
+    settings_io.save_menu_layout(st)
+    print(f"[main] motion backend: {'GPU LK (experimental)' if enabled else 'CPU DIS'} - restarting worker")
+    teardown_pipeline(st)
+    rebuild_pipeline(st, UI_STRINGS[st.lang]["gpu_motion"] if enabled else "CPU DIS")
