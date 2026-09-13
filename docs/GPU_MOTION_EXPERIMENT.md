@@ -43,3 +43,8 @@ gray pair that CPU DIS actually processed. Timing is host wall-clock time and
 includes capture/queue waits, not pure GPU kernel duration. Raw rows and logs
 are saved under `_work/gpu-flow-results/`. Close the application before running
 GPU benchmarks to avoid contention; the harness leaves personal config alone.
+
+Capture sessions without the gray channel retain the supplied CPU motion
+instead of entering the GPU flow path. This fallback was checked using
+`tests/test_hdr_capture.py --run` with `NS_GPU_FLOW_EXPERIMENT=1`: WGC HDR,
+NR, bypass, wipe, SDR export and HDR-to-SDR transition passed (12 frames).
