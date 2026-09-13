@@ -75,6 +75,7 @@ from capture import (ScreenCapture, devicename_for_output_idx, list_monitors,
                      resolve_output_idx)
 from display import Display
 from guides import TemporalGuideGenerator
+from motion_backend import MotionBackendStatus
 from hotkeys import (HotkeyController, build_bindings,
                      describe as describe_hotkeys, numlock_needed, numlock_on,
                      parse_binding)
@@ -373,6 +374,7 @@ def main() -> int:
         last_log = time.monotonic()
         last_fps = 0.0
         last_perf_log = time.monotonic()
+        motion_status = MotionBackendStatus()
         # Stage timings: mean ms over PERF_LOG_INTERVAL (the [perf] log)
         st.perf = {k: [] for k in PERF_KEYS}
 
@@ -575,7 +577,15 @@ def main() -> int:
             try:
                 t0 = time.perf_counter()
                 if st.gray_active:
-                    guide = st.guides.process(gray=st.shm.read_gray())
+                    was_failed = motion_status.failed and motion_status.worker is st.worker
+                    hardware_motion = motion_status.update(st.worker, st.worker_logs)
+                    if motion_status.failed and not was_failed:
+                        st.display.alert(UI_STRINGS[st.lang].get(
+                            "motion_fallback", "NVOFA unavailable - using CPU DIS"))
+                    guide = st.guides.process(
+                        gray=st.shm.read_gray(),
+                        compute_motion=not (st.cfg.get("motion_backend") == "nvofa"
+                                            and hardware_motion))
                 else:
                     guide = st.guides.process(st.work_frame)
                 _perf("guides", t0)

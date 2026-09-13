@@ -278,6 +278,8 @@ def configure(st) -> None:
     _apply_spout_env(st.cfg)
     # And HDR compatibility, read once per worker process as well.
     _apply_hdr_env(st.cfg)
+    from motion_backend import normalize_backend
+    os.environ["NS_MOTION_BACKEND"] = normalize_backend(st.cfg.get("motion_backend"))
     # The same for the card: NS_GPU is read once per worker process.
     _apply_gpu_env(st.cfg)
     st.lang = str(st.cfg["lang"])

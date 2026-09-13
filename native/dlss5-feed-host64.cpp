@@ -4496,6 +4496,8 @@ static void ProfileGpuEnd(ProfileStage, unsigned query_count)
                              g_ts_readback, sizeof(UINT64) * base);
 }
 
+#include "nvofa.inl"
+
 static void ReadProfileGpuTime(int slot)
 {
     if (g_ts_state != 1) return;
@@ -4952,6 +4954,7 @@ static int ReadVideoMessage(VideoState &v, VideoFrameHeader &fh, std::vector<BYT
 
 static void ReleaseVideoTextures(VideoState &v)
 {
+    CloseNvofa();
     if (PhaseEnabled()) { ++g_capture_generation; g_previous_source_qpc = 0; g_frame_stamp = {}; }
     // The shader descriptors referenced these resources - after they are
     // released the descriptors must be reissued (see BindScaleDescriptors).
@@ -5617,7 +5620,10 @@ static int RunVideo()
                 ? SplitXFromFlags(fh.reserved, v.upscale ? v.full_w : v.w) : 0u;
             g_force_next_frame = false;
             const double t_up = PhaseNow();
-            const bool up_ok = UploadMotionOnly(v, mv_ptr,
+            const bool try_nvofa = NvofaRequested() && !g_nvofa.failed && g_gray_mapped;
+            const bool nvofa_used = try_nvofa && RunNvofa(v, fh.reset != 0, defer_tail ? &upload_done : nullptr);
+            if (try_nvofa && !nvofa_used) fh.reset = 1; // do not reuse history after backend failure
+            const bool up_ok = nvofa_used || UploadMotionOnly(v, mv_ptr,
                                   (fh.reserved & FRAME_FLAG_MOTION_SMALL) != 0 && g_motion_w != 0,
                                   defer_tail ? &upload_done : nullptr);
             PhaseAdd(PH_UPLOAD, t_up);
@@ -5768,6 +5774,7 @@ static int RunVideo()
 // ---------------------------------------------------------------------------
 static void CleanupVideoNgx()
 {
+    CloseNvofa();
     if (h.feature != nullptr)
     {
         SafeReleaseFeature(h.feature);

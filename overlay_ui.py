@@ -197,6 +197,7 @@ class OverlayMenu:
             # this dict is dropped by set_state in silence, and the toggle
             # then draws as off while the action behind it fires normally.
             "hdr": False,
+            "motion_backend": "cpu",
             # Skip static frames (processing section): no new capture frame -
             # the network idles instead of re-running.
             "skip_static": True,
@@ -632,6 +633,10 @@ class OverlayMenu:
             toggle("hdr", s.get("hdr_mode", "HDR compatibility"),
                    bool(self.state.get("hdr")),
                    hint=s.get("hdr_mode_hint", ""))
+            choice("motion_backend", s.get("motion_backend", "Motion estimation"),
+                   self.state.get("motion_backend", "cpu"), ["cpu", "nvofa"],
+                   labels=["CPU DIS", s.get("motion_nvofa", "NVOFA (experimental)")],
+                   hint=s.get("motion_hint", "Restarts the worker; CPU fallback if unavailable"))
             # The screenshot folder: a plain button that opens the folder
             # picker (issue #20). The current value is shown as the caption
             # so the user sees what is configured.
@@ -1293,6 +1298,8 @@ class OverlayMenu:
             return [("monitor", value)]
         if key == "gpu":
             return [("gpu", value)]
+        if key == "motion_backend":
+            return [("motion_backend", value)]
         if key == "source":
             # The same two commands the Actions buttons sent: back to the
             # whole screen, or the window list page.

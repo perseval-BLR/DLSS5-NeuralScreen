@@ -77,7 +77,7 @@ class TemporalGuideGenerator:
         return GuideFrame(motion=motion, reset=True, scene_score=1.0)
 
     def process(self, rgba: np.ndarray | None = None,
-                gray: np.ndarray | None = None) -> GuideFrame:
+                gray: np.ndarray | None = None, compute_motion: bool = True) -> GuideFrame:
         """Compute the guides: motion/reset/scene_score.
 
         Either rgba (full-res BGR/RGBA — downsampled here) or a ready gray
@@ -99,7 +99,7 @@ class TemporalGuideGenerator:
         else:
             scene_score = float(np.mean(cv2.absdiff(current, self.previous_gray))) / 255.0
             reset = scene_score > 0.24
-            if reset or scene_score < 0.001:
+            if not compute_motion or reset or scene_score < 0.001:
                 # Reset (scene cut) or static screen (desktop/text): no flow needed.
                 # 0.001: above capture noise (~0.0002 @ +-2 LSB) and static 0.0,
                 # below real motion: 2px scroll 0.03, 2px shift 0.002, fast cursor 0.0013.

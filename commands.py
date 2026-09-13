@@ -197,6 +197,8 @@ def apply_menu_action(st, action: tuple) -> None:
         # HDR compatibility: NS_HDR is read once per worker process too,
         # and it decides the capture format, so this is a restart as well.
         pipeline.apply_hdr(st, not bool(st.cfg.get("hdr", False)))
+    elif kind == "motion_backend":
+        pipeline.apply_motion_backend(st, action[1])
     elif kind == "param":
         new_params = dict(st.params)
         new_params[action[1]] = float(action[2])
