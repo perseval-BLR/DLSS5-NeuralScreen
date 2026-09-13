@@ -19,6 +19,12 @@ Two shapes, because a slider and the resolution slider take different paths
 through the same code: the same work size (only parameters changed) and
 alternating sizes.
 
+Since C1 the first of those does not rebuild at all - a same-size RNSZ
+takes the parameters and acks, the feature untouched - so there is no
+release/create pair left to get wrong. That half of the test now checks
+that the rebuild really is gone; the resolution slider still rebuilds and
+is still measured for growth.
+
 Run:  runtime\\python.exe tests\\test_feature_leak.py
 """
 import os
@@ -92,8 +98,22 @@ def main() -> int:
         print(f"FAIL: worker not found: {WORKER_EXE}")
         return 1
 
-    for name, alt in (("same size (a parameter slider)", False),
-                      ("alternating sizes (the resolution slider)", True)):
+    # The same-size case cannot leak any more, because it no longer rebuilds
+    # at all: a RNSZ whose sizes and mode match what is already built takes
+    # the parameters and acks, feature untouched (C1). That is a stronger
+    # guarantee than "it frees what it releases" - there is no release and
+    # no create to get wrong - so what is checked here is that the rebuild
+    # really is gone. test_param_apply pins that the parameters still land.
+    series = run(False)
+    print(f"    same size (a parameter slider): {len(series) - 1} rebuilds "
+          f"over {CYCLES} parameter changes")
+    if len(series) > 1:
+        failures.append(
+            f"a parameter change rebuilt the feature {len(series) - 1} times "
+            f"over {CYCLES} changes - that is the release/create pair issue "
+            f"#48 leaked through, and it is not needed for parameters")
+
+    for name, alt in (("alternating sizes (the resolution slider)", True),):
         series = run(alt)
         if len(series) < 4:
             failures.append(f"{name}: only {len(series)} feature creates were "

@@ -703,7 +703,9 @@ class OverlayMenu:
                    labels=[STRINGS[L].get(f"lang_{L}", L) for L in langs])
             segmented("theme", s["theme"], self.state.get("theme", "light"),
                       ["light", "dark"], [s["theme_light"], s["theme_dark"]])
-            cy += gap
+            # No extra gap here: segmented() already ends with one, and
+            # section() opens with its own - three stacked was a hole
+            # (user, 13.09: the padding below is excessive).
 
             # The channel label: the header shows the version, the channel
             # lives here (user rule 2026-09-08). A button item - the only
@@ -716,7 +718,9 @@ class OverlayMenu:
                 items.append(Item("button", "channel",
                                   pygame.Rect(pad, cy, inner_w, act_h),
                                   extra={"label": channel, "filled": False}))
-                cy += act_h + pad
+                # The footer below opens with its own rule and spacing; a
+                # full PAD on top of that was the second hole.
+                cy += act_h + self._u(6)
         else:
             section(s["sec_processing"])
             nr_on = bool(self.state.get("nr"))

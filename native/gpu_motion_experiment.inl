@@ -122,8 +122,9 @@ static bool InitFlowExperiment()
  D3D12_DESCRIPTOR_HEAP_DESC hd={D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,28,D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,0};
  return SUCCEEDED(h.dev->CreateDescriptorHeap(&hd,__uuidof(ID3D12DescriptorHeap),f.heap.put_void()));
 }
-static bool RunGpuMotionExperiment(VideoState &v,bool reset)
+static bool RunGpuMotionExperiment(VideoState &v,bool reset,UINT64 *submitted = nullptr)
 {
+ if(submitted) *submitted=0;
  if(!g_gray_uav || !InitFlowExperiment()) return false;
  static bool reported=false; if(!reported) { Log("[gpu-flow] experimental GPU Lucas-Kanade active");reported=true; }
  auto &f=g_flow_exp;
@@ -187,6 +188,7 @@ static bool RunGpuMotionExperiment(VideoState &v,bool reset)
  barrier(f.previous.get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
  barrier(g_gray_uav,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
  auto value=EndCommands();v.inputs_ready=true;f.valid=true;
+ if(submitted) { *submitted=value; DumpExperimentFlow(f.vectors[2].get()); return value != 0; }
  const bool ok=WaitFenceValue(h.fence,value,30000);
  if(ok) DumpExperimentFlow(f.vectors[2].get());
  return ok;

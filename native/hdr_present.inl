@@ -162,7 +162,10 @@ static bool PresentHdr(VideoState &v, bool bypass)
     h.list->ResourceBarrier(1, &export_post);
     const auto fence = EndCommands();
     if (!WaitFenceValue(h.fence, fence, 2000)) return false;
-    const bool ok = SUCCEEDED(g_present_swap->Present(0, 0));
+    // The same status reading as the SDR path: a mode change is a SUCCESS
+    // code, and a chain the desktop has moved out from under shows nothing
+    // while every present on it reports success (#58).
+    const bool ok = PresentStatus(g_present_swap->Present(0, 0), "hdr present");
     if (ok) { RevealOnFirstPresent(); SpoutBridgeSend(); }
     return ok;
 }

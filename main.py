@@ -700,7 +700,7 @@ def main() -> int:
                         # A heavy 4K scene can take ~1 s per NGX frame -
                         # keep the hotkeys alive while main waits (user:
                         # "NR toggle does not always fire in Cyberpunk").
-                        # The switch overlay's spinner must keep animating
+                        # The switch veil's mark must keep animating
                         # while the new worker warms up.
                         if st.display.is_switch_active():
                             st.display.draw_overlay(0.0)

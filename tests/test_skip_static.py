@@ -27,9 +27,12 @@ Checked:
 Run:  runtime\\python.exe tests\\test_skip_static.py
 """
 import ctypes
+import os
+import re
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -147,10 +150,12 @@ def main() -> int:
                          float(params["local_structure"]),
                          float(params["skin_structure"]), 0, 0)
 
-    worker = subprocess.Popen([str(WORKER_EXE), "--live"],
+    env = dict(os.environ, NS_PHASE="1")
+    err_file = tempfile.TemporaryFile()
+    worker = subprocess.Popen([str(WORKER_EXE), "--live"], env=env,
                               cwd=str(WORKER_EXE.parent),
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE)
+                              stderr=err_file)
     failures = []
     motion = np.zeros((H, W, 2), dtype=np.float16)
     try:
@@ -181,7 +186,7 @@ def main() -> int:
         #    does not run. The window is NOT repainted from here on.
         idx = 100
         answers = []
-        for _ in range(16):
+        for _ in range(70):
             send_capture_frame(worker, idx, motion, skip=True)
             state, _ = recv_result(worker)
             answers.append(state)
@@ -225,7 +230,9 @@ def main() -> int:
             pass
         worker.wait(timeout=10)
         pygame.quit()
-        err = worker.stderr.read().decode("utf-8", "replace")
+        err_file.seek(0)
+        err = err_file.read().decode("utf-8", "replace")
+        err_file.close()
         skip_lines = [l for l in err.splitlines() if "[skip]" in l]
         if skip_lines:
             print("worker log:", " | ".join(skip_lines[:4]))
@@ -233,6 +240,29 @@ def main() -> int:
             failures.append("the worker never logged the idle state ([skip] no new frame)")
         if not any("screen changed" in l for l in skip_lines):
             failures.append("the worker never logged the resume ([skip] the screen changed)")
+        activity = [l for l in err.splitlines() if "[phase] activity" in l]
+        if not activity:
+            failures.append("the phase profiler did not report fresh and idle activity")
+        else:
+            counts = [re.search(r"fresh-enhanced=(\d+).*idle=(\d+)", l)
+                      for l in activity]
+            if not any(m and int(m.group(1)) > 0 and int(m.group(2)) > 0
+                       for m in counts):
+                failures.append(f"the activity report did not distinguish fresh "
+                                f"work from idle replies: {activity}")
+        boundaries = [l for l in err.splitlines() if "[phase] boundary" in l]
+        if not any("boundary eval:" in l and "GPU" in l and "gap" in l
+                   for l in boundaries):
+            failures.append(f"the phase profiler did not report the evaluation "
+                            f"boundary: {boundaries}")
+        if "[phase] queue: outstanding-max=" not in err:
+            failures.append("the phase profiler did not report queue retirement")
+        records = [line for line in err.splitlines() if "[phase] frame index=" in line]
+        if not any("result=idle" in line and "fresh=0" in line for line in records):
+            failures.append("frame correlation omitted the idle disposition")
+        if not any("kind=wgc" in line and "clock=acquisition-to-present-call" in line
+                   for line in records):
+            failures.append("WGC correlation omitted its acquisition clock fallback")
 
     if failures:
         for f in failures:
