@@ -608,65 +608,37 @@ def main() -> int:
                 check_worker(st.worker, st.worker_logs)
                 if st.gray_active:
                     prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
-                t0 = time.perf_counter()
-                if bypass:
-                    # NR OFF: the worker skips the NGX evaluate, so nothing
-                    # ever reads this motion field. Computing it anyway cost
-                    # 2.9 ms of DIS per frame (measured, 320x180 flow, moving
-                    # content) - and it cost it on the mode that runs
-                    # FASTEST, 121-133 FPS in bypass, where it came to about
-                    # half a core spent filling a buffer the worker throws
-                    # away. The frame still CARRIES a motion field: the
-                    # header's size contract does not change just because the
-                    # effect is off.
-                    #
-                    # previous_gray goes with it. Keeping the last pre-bypass
-                    # frame as history would mean correlating against a
-                    # screen that is minutes old the moment NR comes back on,
-                    # and the first real flow field would be garbage.
-                    # Cleared, the first NR frame reports a scene cut
-                    # instead - which is what a resumed pipeline is.
-                    st.guides.previous_gray = None
-                    guide = st.guides.zero_guide()
-                elif st.gray_active:
-                    was_failed = motion_status.failed and motion_status.worker is st.worker
-                    hardware_motion = motion_status.update(st.worker, st.worker_logs)
-                    if motion_status.failed and not was_failed:
-                        st.display.alert(UI_STRINGS[st.lang].get(
-                            "motion_fallback", "NVOFA unavailable - using CPU DIS"))
-                    guide = st.guides.process(
-                        gray=st.shm.read_gray(),
-                        compute_motion=not (st.cfg.get("motion_backend") == "nvofa"
-                                            and hardware_motion))
-                else:
-                    guide = st.guides.process(st.work_frame)
-                _perf("guides", t0)
-            except Exception as guide_exc:
-                # guides is not critical: ValueError/TypeError/cv2.error (the
-                # shape of the gray frame, a division by zero) must not take
-                # the process down. We skip the frame - the worker gets the
-                # next one. But a persistent error (an incompatible gray
-                # channel, a broken shape) would spin main at 100% CPU -
-                # after 5 failures in a row we fall back to zero motion: the
-                # frames keep flowing and the picture does not freeze.
-                print(f"[main] guides.process failed ({guide_exc}) - frame skipped",
-                      file=sys.stderr)
-                st.guide_fails += 1
-                if st.guide_fails >= 5:
-                    print(f"[main] guides.process is unstable - zero motion "
-                          f"(frames keep flowing)", file=sys.stderr)
-                    st.guide_fails = 0
-                    guide = st.guides.zero_guide()
-                else:
-                    continue
-            try:
-                check_worker(st.worker, st.worker_logs)
-                if st.gray_active:
-                    prepare_capture(st.worker, st.reader, st.frame_index, st.pts)
                 try:
                     t0 = time.perf_counter()
-                    if st.gray_active:
-                        guide = st.guides.process(gray=st.shm.read_gray())
+                    if bypass:
+                        # NR OFF: the worker skips the NGX evaluate, so nothing
+                        # ever reads this motion field. Computing it anyway cost
+                        # 2.9 ms of DIS per frame (measured, 320x180 flow, moving
+                        # content) - and it cost it on the mode that runs
+                        # FASTEST, 121-133 FPS in bypass, where it came to about
+                        # half a core spent filling a buffer the worker throws
+                        # away. The frame still CARRIES a motion field: the
+                        # header's size contract does not change just because the
+                        # effect is off.
+                        #
+                        # previous_gray goes with it. Keeping the last pre-bypass
+                        # frame as history would mean correlating against a
+                        # screen that is minutes old the moment NR comes back on,
+                        # and the first real flow field would be garbage.
+                        # Cleared, the first NR frame reports a scene cut
+                        # instead - which is what a resumed pipeline is.
+                        st.guides.previous_gray = None
+                        guide = st.guides.zero_guide()
+                    elif st.gray_active:
+                        was_failed = motion_status.failed and motion_status.worker is st.worker
+                        hardware_motion = motion_status.update(st.worker, st.worker_logs)
+                        if motion_status.failed and not was_failed:
+                            st.display.alert(UI_STRINGS[st.lang].get(
+                                "motion_fallback", "NVOFA unavailable - using CPU DIS"))
+                        guide = st.guides.process(
+                            gray=st.shm.read_gray(),
+                            compute_motion=not (st.cfg.get("motion_backend") == "nvofa"
+                                                and hardware_motion))
                     else:
                         guide = st.guides.process(st.work_frame)
                     _perf("guides", t0)
